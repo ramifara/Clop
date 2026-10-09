@@ -22,6 +22,7 @@ async function sourceFixture(script, image, graceful = false) {
     lines.once('line', line => { clearTimeout(timer); resolve(JSON.parse(line)); });
     source.once('exit', code => { clearTimeout(timer); reject(new Error(`Drag source exited ${code}: ${output}`)); });
   }).catch(error => { source.kill(); lines.close(); throw error; });
+  console.log(`${script} source: ${JSON.stringify(ready)}`);
   const gestures = new Set();
   let stopped = false;
   return {

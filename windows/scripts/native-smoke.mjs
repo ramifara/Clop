@@ -15,6 +15,7 @@ let fixture;
 try {
   const ready = once(bridge, 'ready');
   bridge.on('notice', notice => process.stderr.write(notice + '\n'));
+  bridge.on('drag-diagnostic', event => console.log(event.message));
   bridge.start(path.resolve('native/bridge.ps1'));
   await Promise.race([ready, new Promise((_, reject) => { const timeout = setTimeout(() => reject(new Error('Windows bridge did not start')), 15000); timeout.unref(); })]);
   await bridge.request({ type: 'settings', explorerDrag: false });

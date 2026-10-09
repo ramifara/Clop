@@ -53,6 +53,7 @@ namespace ClopWindows {
     static string[] DragPaths = new string[0];
     static readonly HashSet<string> Extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".tif", ".tiff" };
     static void Emit(object value) { Console.WriteLine(Json.Serialize(value)); Console.Out.Flush(); }
+    static void DragDebug(string message) { if (Environment.GetEnvironmentVariable("CLOP_DEBUG_DRAG") == "1") Emit(new { type = "drag-diagnostic", message }); }
     public static void Run() {
       SetProcessDpiAwarenessContext(new IntPtr(-4));
       // Electron pipes UTF-8 JSON. Windows PowerShell's inherited console code page varies
@@ -154,6 +155,7 @@ namespace ClopWindows {
     static void DetectImageDrag() {
       Press press;
       while (Presses.TryDequeue(out press)) {
+        DragDebug("Press: down=" + press.Down + ", window=" + press.Window + ", point=" + press.Point + ", enabled=" + DetectDrag);
         FinishDrag();
         if (!DetectDrag || !press.Down || press.Window == IntPtr.Zero || OwnWindows.Contains(press.Window.ToInt64())) continue;
         Start = press.Point;
@@ -178,7 +180,9 @@ namespace ClopWindows {
       // folder space or resize handles eligible. First hit-test the actual mouse origin.
       IntPtr hit;
       var packedPoint = new IntPtr(unchecked((int)(((uint)(ushort)point.Y << 16) | (ushort)point.X)));
-      if (SendMessageTimeout(window, 0x0084, IntPtr.Zero, packedPoint, 2, 100, out hit) == IntPtr.Zero || hit.ToInt64() != 1) return false;
+      var hitResult = SendMessageTimeout(window, 0x0084, IntPtr.Zero, packedPoint, 2, 100, out hit);
+      DragDebug("Client hit: result=" + hitResult + ", hit=" + hit + ", explorer=" + IsExplorer(window));
+      if (hitResult == IntPtr.Zero || hit.ToInt64() != 1) return false;
       if (IsExplorer(window)) return ExplorerImageAtPress(window, point, out paths);
       IAccessible accessible = null; object child;
       try {
@@ -217,11 +221,11 @@ namespace ClopWindows {
         var element = AutomationElement.FromPoint(new System.Windows.Point(point.X, point.Y));
         for (int depth = 0; element != null && depth < 5; depth++) {
           var info = element.Current;
-          if (Environment.GetEnvironmentVariable("CLOP_DEBUG_DRAG") == "1") Console.Error.WriteLine("Explorer hit: " + info.ControlType.ProgrammaticName + " / " + info.Name);
+          DragDebug("Explorer hit: " + info.ControlType.ProgrammaticName + " / " + info.Name);
           if (info.ControlType == ControlType.Edit || info.ControlType == ControlType.ComboBox) return false;
           if (info.ControlType == ControlType.ListItem || info.ControlType == ControlType.DataItem) {
             paths = ExplorerSelection(window, info.Name);
-            if (Environment.GetEnvironmentVariable("CLOP_DEBUG_DRAG") == "1") Console.Error.WriteLine("Explorer image matches: " + String.Join(", ", paths));
+            DragDebug("Explorer image matches: " + String.Join(", ", paths));
             return paths.Length > 0;
           }
           if (info.ControlType != ControlType.Text && info.ControlType != ControlType.Image && info.ControlType != ControlType.Custom && info.ControlType != ControlType.Pane) return false;
