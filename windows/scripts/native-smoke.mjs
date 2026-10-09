@@ -8,6 +8,7 @@ import os from 'node:os';
 import sharp from 'sharp';
 import { dragFixture, explorerFixture } from './drag-fixture.mjs';
 const bridge = new WindowsBridge();
+process.env.CLOP_DEBUG_DRAG = '1';
 const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-native-'));
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 let fixture;

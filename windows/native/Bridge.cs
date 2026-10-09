@@ -11,6 +11,7 @@ using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Accessibility;
+using System.Windows.Automation;
 
 namespace ClopWindows {
   // Windows PowerShell 5.1 runs this helper on an STA thread. No runtime installation needed.
@@ -178,6 +179,7 @@ namespace ClopWindows {
       IntPtr hit;
       var packedPoint = new IntPtr(unchecked((int)(((uint)(ushort)point.Y << 16) | (ushort)point.X)));
       if (SendMessageTimeout(window, 0x0084, IntPtr.Zero, packedPoint, 2, 100, out hit) == IntPtr.Zero || hit.ToInt64() != 1) return false;
+      if (IsExplorer(window)) return ExplorerImageAtPress(window, point, out paths);
       IAccessible accessible = null; object child;
       try {
         if (AccessibleObjectFromPoint(point, out accessible, out child) != 0 || accessible == null) return false;
@@ -205,6 +207,27 @@ namespace ClopWindows {
         }
       } catch { /* Unknown/inaccessible sources stay quiet rather than guessing a drag. */ }
       finally { if (accessible != null && Marshal.IsComObject(accessible)) Marshal.ReleaseComObject(accessible); }
+      return false;
+    }
+    static bool ExplorerImageAtPress(IntPtr window, Point point, out string[] paths) {
+      paths = new string[0];
+      try {
+        // Modern Explorer exposes its file view through UI Automation, including items
+        // whose legacy MSAA hit test only returns the containing pane.
+        var element = AutomationElement.FromPoint(new System.Windows.Point(point.X, point.Y));
+        for (int depth = 0; element != null && depth < 5; depth++) {
+          var info = element.Current;
+          if (Environment.GetEnvironmentVariable("CLOP_DEBUG_DRAG") == "1") Console.Error.WriteLine("Explorer hit: " + info.ControlType.ProgrammaticName + " / " + info.Name);
+          if (info.ControlType == ControlType.Edit || info.ControlType == ControlType.ComboBox) return false;
+          if (info.ControlType == ControlType.ListItem || info.ControlType == ControlType.DataItem) {
+            paths = ExplorerSelection(window, info.Name);
+            if (Environment.GetEnvironmentVariable("CLOP_DEBUG_DRAG") == "1") Console.Error.WriteLine("Explorer image matches: " + String.Join(", ", paths));
+            return paths.Length > 0;
+          }
+          if (info.ControlType != ControlType.Text && info.ControlType != ControlType.Image && info.ControlType != ControlType.Custom && info.ControlType != ControlType.Pane) return false;
+          element = TreeWalker.ControlViewWalker.GetParent(element);
+        }
+      } catch { /* A disappeared or inaccessible item cannot authorise a drag. */ }
       return false;
     }
     static bool SupportedGraphic(string value) {

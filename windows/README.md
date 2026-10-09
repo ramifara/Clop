@@ -60,7 +60,7 @@ Single-letter shortcuts operate while a card has keyboard focus and no text fiel
 
 ## Development and verification
 
-The Windows app uses Electron, TypeScript, React and Sharp, with a small STA helper using built-in Windows PowerShell 5.1 and .NET Framework. It captures mouse-press coordinates, hit-tests Windows accessibility objects, handles drag-end events and watches clipboard sequence numbers. The mouse hook queues coordinates without doing COM work or reading clipboard data. The renderer is sandboxed, has no Node.js access and receives a narrow preload API. External navigation is blocked.
+The Windows app uses Electron, TypeScript, React and Sharp, with a small STA helper using built-in Windows PowerShell 5.1 and .NET Framework. It captures mouse-press coordinates, hit-tests UI Automation file items in Explorer and MSAA image objects in other apps, handles drag-end events and watches clipboard sequence numbers. The mouse hook queues coordinates without doing COM work or reading clipboard data. The renderer is sandboxed, has no Node.js access and receives a narrow preload API. External navigation is blocked.
 
 Use Node.js 24 or newer. From `windows/`:
 
