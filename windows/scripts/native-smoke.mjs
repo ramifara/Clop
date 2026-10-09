@@ -62,7 +62,7 @@ try {
   await fixture.stop(); fixture = await explorerFixture(png);
   await bridge.request({ type: 'settings', explorerDrag: true });
   const paths = []; bridge.on('drag-start', event => paths.push(event.paths));
-  events.length = 0; await fixture.gesture('image'); await pause(250);
+  events.length = 0; await fixture.gesture('image', { hold: 2500 }); await pause(250);
   assert.deepEqual(events, ['drag-start', 'drag-end'], 'A real Explorer image drag must still announce and finish');
   assert.deepEqual(paths, [[png]], 'Explorer must identify the actual supported image file');
   for (const kind of ['title', 'resize', 'blank']) {

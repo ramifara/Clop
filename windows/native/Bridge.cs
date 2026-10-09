@@ -40,8 +40,12 @@ namespace ClopWindows {
     [DllImport("user32.dll")] static extern bool UnhookWinEvent(IntPtr hook);
     static readonly WinEventCallback DragEvents = OnDragEvent;
     static readonly MouseCallback MouseEvents = OnMouseEvent;
-    sealed class Press { public Point Point; public IntPtr Window; public bool Down; }
+    sealed class Press { public Point Point; public IntPtr Window; public bool Down; public int Generation; }
+    sealed class CheckedPress { public int Generation; public bool Eligible; public string[] Paths; }
     static readonly ConcurrentQueue<Press> Presses = new ConcurrentQueue<Press>();
+    static readonly BlockingCollection<Press> Candidates = new BlockingCollection<Press>();
+    static readonly ConcurrentQueue<CheckedPress> Checked = new ConcurrentQueue<CheckedPress>();
+    static readonly ConcurrentQueue<string> Diagnostics = new ConcurrentQueue<string>();
     static readonly HashSet<long> OwnWindows = new HashSet<long>();
     static readonly ConcurrentQueue<string> Commands = new ConcurrentQueue<string>();
     static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
@@ -49,11 +53,12 @@ namespace ClopWindows {
     static uint Sequence;
     static readonly string ClipboardOwner = Guid.NewGuid().ToString("N");
     static bool Announced, Eligible, DetectDrag = true;
+    static int Generation;
     static Point Start;
     static string[] DragPaths = new string[0];
     static readonly HashSet<string> Extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".tif", ".tiff" };
     static void Emit(object value) { Console.WriteLine(Json.Serialize(value)); Console.Out.Flush(); }
-    static void DragDebug(string message) { if (Environment.GetEnvironmentVariable("CLOP_DEBUG_DRAG") == "1") Emit(new { type = "drag-diagnostic", message }); }
+    static void DragDebug(string message) { if (Environment.GetEnvironmentVariable("CLOP_DEBUG_DRAG") == "1") Diagnostics.Enqueue(message); }
     public static void Run() {
       SetProcessDpiAwarenessContext(new IntPtr(-4));
       // Electron pipes UTF-8 JSON. Windows PowerShell's inherited console code page varies
@@ -63,11 +68,24 @@ namespace ClopWindows {
       Sequence = GetClipboardSequenceNumber();
       var reader = new Thread(() => { string line; while ((line = Console.ReadLine()) != null) Commands.Enqueue(line); Ended = true; });
       reader.IsBackground = true; reader.Start();
+      // Accessibility/COM calls can wait on another app. Keep them away from the hook's
+      // message pump, which Windows must be able to call immediately for every mouse event.
+      var detector = new Thread(() => {
+        try { var desktop = AutomationElement.RootElement.Current.ControlType; } catch { }
+        foreach (var candidate in Candidates.GetConsumingEnumerable()) {
+          if (Ended) break;
+          string[] paths;
+          bool eligible = ImageAtPress(candidate.Window, candidate.Point, out paths);
+          Checked.Enqueue(new CheckedPress { Generation = candidate.Generation, Eligible = eligible, Paths = paths });
+        }
+      });
+      detector.IsBackground = true; detector.SetApartmentState(ApartmentState.MTA); detector.Start();
       var timer = new System.Windows.Forms.Timer { Interval = 100 };
       timer.Tick += (sender, args) => {
-        if (Ended) { timer.Stop(); Application.ExitThread(); return; }
+        if (Ended) { Candidates.CompleteAdding(); timer.Stop(); Application.ExitThread(); return; }
         string line;
         while (Commands.TryDequeue(out line)) Handle(line);
+        string diagnostic; while (Diagnostics.TryDequeue(out diagnostic)) Emit(new { type = "drag-diagnostic", message = diagnostic });
         uint next = GetClipboardSequenceNumber();
         if (next != Sequence) {
           Sequence = next;
@@ -149,6 +167,7 @@ namespace ClopWindows {
       return CallNextHookEx(IntPtr.Zero, code, message, data);
     }
     static void FinishDrag() {
+      Generation++;
       Eligible = false; DragPaths = new string[0];
       if (Announced) { Announced = false; Emit(new { type = "drag-end" }); }
     }
@@ -159,12 +178,18 @@ namespace ClopWindows {
         FinishDrag();
         if (!DetectDrag || !press.Down || press.Window == IntPtr.Zero || OwnWindows.Contains(press.Window.ToInt64())) continue;
         Start = press.Point;
-        Eligible = ImageAtPress(press.Window, press.Point, out DragPaths);
+        press.Generation = Generation; Candidates.Add(press);
       }
-      if (!DetectDrag || !Eligible) return;
+      CheckedPress result;
+      while (Checked.TryDequeue(out result)) {
+        if (result.Generation != Generation || !DetectDrag) continue;
+        Eligible = result.Eligible; DragPaths = result.Paths;
+      }
+      if (!DetectDrag) return;
       // Escape cancels a real drag even when the mouse remains held. Releasing the mouse
       // also cleans up if a source application never sends a drag-end event.
       if ((GetAsyncKeyState(1) & 0x8000) == 0 || (GetAsyncKeyState(27) & 0x8000) != 0) { FinishDrag(); return; }
+      if (!Eligible) return;
       Point cursor; if (!GetCursorPos(out cursor)) return;
       int threshold = Math.Max(12, Math.Max(SystemInformation.DragSize.Width, SystemInformation.DragSize.Height));
       if (!Announced && (Math.Abs(cursor.X - Start.X) > threshold || Math.Abs(cursor.Y - Start.Y) > threshold)) {
