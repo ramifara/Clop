@@ -45,7 +45,11 @@ try {
   $item = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$listCondition) | Where-Object { $_.Current.Name -eq $file.Name -or $_.Current.Name -eq $filename -or $_.Current.Name -eq [IO.Path]::GetFileNameWithoutExtension($filename) } | Select-Object -First 1
   if ($null -eq $item) { throw 'The supported image item was not exposed by Explorer accessibility' }
   $rect = $item.Current.BoundingRectangle
-  @{ window = [long]$hwnd; width = 800; height = 600; image = @{ x = [int]($rect.X + 30); y = [int]($rect.Y + $rect.Height/2) }; title = @{x = 260; y = 72}; blank = @{x = 740; y = 540}; resize = @{x = 857; y = 657} } | ConvertTo-Json -Compress
+  # Start on the file icon. The name cell can enter Explorer's inline rename editor.
+  $point = New-Object System.Windows.Point(($rect.X + 8),($rect.Y + $rect.Height/2))
+  $hit = [System.Windows.Automation.AutomationElement]::FromPoint($point)
+  [Console]::Error.WriteLine("Explorer icon before drag: $($hit.Current.ControlType.ProgrammaticName) / $($hit.Current.Name); selected: $($owned.Document.SelectedItems().Count)")
+  @{ window = [long]$hwnd; width = 800; height = 600; image = @{ x = [int]$point.X; y = [int]$point.Y }; title = @{x = 260; y = 72}; blank = @{x = 740; y = 540}; resize = @{x = 857; y = 657} } | ConvertTo-Json -Compress
   # Keep only this Explorer window alive until Node closes its stdin.
   [Console]::In.ReadLine() | Out-Null
 } finally {
