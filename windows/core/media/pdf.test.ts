@@ -154,6 +154,21 @@ test('a failed Ghostscript pass is retried three times, a chunk twice, and nothi
   assert.deepEqual(await leftovers(w.out), []);
 });
 
+test('aborting while the PDF loads starts no Ghostscript chunk or render', async t => {
+  if (process.platform === 'win32') return t.skip('the logging gs wrapper is a shell script');
+  const w = await workspace(t, 'gs'); if (!w) return;
+  const gs = await wrapGhostscript(t, w.dir);
+  const input = await w.file('long.pdf', await textPDF(160));
+  for (const start of [(signal: AbortSignal) => optimisePDF(input, w.out, { signal }), (signal: AbortSignal) => renderPDFPages(input, w.out, { signal })]) {
+    const controller = new AbortController();
+    const job = start(controller.signal);
+    controller.abort();
+    await assert.rejects(job, { name: 'AbortError' });
+  }
+  assert.equal(await gs.starts(), 0);
+  assert.deepEqual(await readdir(w.out), []);
+});
+
 test('encrypted and invalid PDFs are refused', async t => {
   const w = await workspace(t, 'gs'); if (!w) return;
   const plain = await w.file('plain.pdf', await textPDF(1));

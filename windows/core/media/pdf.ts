@@ -185,6 +185,8 @@ export function resolvePDFDPI(imageDPIs: number[], { dpi, setting = PDF_DPI_ADAP
 
 /** Runs tasks with at most `limit` at once; the first failure stops the rest and is rethrown once all have settled. */
 async function inParallel<T>(items: T[], limit: number, signal: AbortSignal | undefined, task: (item: T, signal: AbortSignal) => Promise<void>) {
+  // An abort during the caller's earlier awaits has already fired its event, so check before listening.
+  signal?.throwIfAborted();
   const controller = new AbortController();
   const abort = () => controller.abort(signal!.reason);
   signal?.addEventListener('abort', abort, { once: true });
