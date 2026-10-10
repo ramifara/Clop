@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 import { queue, retryBusy, run, ToolError, type RunOptions } from '../run';
@@ -8,6 +8,7 @@ import { videoInfo, type VideoInfo } from './detect';
 import { ffprobe } from './ffprobe';
 import { CONVERSION_EXTENSIONS, encoderFamily, videoConversionArgs, videoEncoderArgs, type VideoCodecConversion, type VideoEncoderSetting } from './videoCompression';
 import { chooseEncoder, hevcHardware } from './videoEncoders';
+import { moveResult, withTemp } from './output';
 import type { MediaJobOptions, MediaOutput } from './types';
 
 /** A crop or resize target; `smartCrop` does not apply to video. */
@@ -42,7 +43,8 @@ export interface VideoOptimiseOptions {
 }
 type Options = VideoOptimiseOptions & MediaJobOptions;
 
-const PROGRESS = ['-progress', 'pipe:2', '-nostats', '-stats_period', '0.1'];
+/** Makes ffmpeg write `-progress` lines such as `out_time_us=…` to stderr ten times a second. */
+export const PROGRESS = ['-progress', 'pipe:2', '-nostats', '-stats_period', '0.1'];
 const ENCODED_CONTAINERS = new Set(['mp4', 'mov', 'hevc']);
 // Linear light, BT.709 primaries, Hable's curve, then back to 8-bit BT.709 video. Needs ffmpeg built with zimg.
 const TONE_MAP = ['zscale=t=linear:npl=100', 'format=gbrpf32le', 'zscale=p=bt709', 'tonemap=tonemap=hable:desat=0', 'zscale=t=bt709:m=bt709:r=tv', 'format=yuv420p'];
@@ -154,18 +156,9 @@ const without = (args: string[], part: string[]) => {
 };
 
 async function finish(input: string, file: string, outputDir: string, name: string | undefined, ext: string, signal?: AbortSignal): Promise<MediaOutput> {
-  const stem = name ?? path.parse(input).name;
-  let output = path.join(outputDir, `${stem}.${ext}`);
-  if (path.resolve(output) === path.resolve(input)) output = path.join(outputDir, `${stem}-optimised.${ext}`);
-  await retryBusy(() => rename(file, output));
+  const output = await moveResult(input, file, outputDir, name ?? path.parse(input).name, ext);
   const info = videoInfo(await ffprobe(output, { signal }));
   return { path: output, bytes: (await stat(output)).size, format: ext, width: info.width, height: info.height, durationMs: info.durationMs };
-}
-
-async function withTemp<T>(outputDir: string, task: (tmp: string) => Promise<T>) {
-  await mkdir(outputDir, { recursive: true });
-  const tmp = await mkdtemp(path.join(outputDir, '.clop-'));
-  try { return await task(tmp); } finally { await rm(tmp, { recursive: true, force: true }); }
 }
 
 /**

@@ -1,7 +1,6 @@
+import { findSize, groupMatches, type CropSizeGroup, type Size } from './cropSizes';
+
 // Port of Shared/PaperSizes.swift. Sizes are in millimetres, width × height.
-export interface Size { width: number; height: number }
-/** Paper sizes sharing one aspect ratio, so cropping to any member gives the same result (CropSizeGroup in Shared/CropSize.swift). */
-export interface CropSizeGroup { name: string; width: number; height: number; members: string[]; summary?: string }
 
 const sizes = (table: Record<string, [number, number]>) => Object.fromEntries(Object.entries(table).map(([name, [width, height]]) => [name, { width, height }])) as Record<string, Size>;
 
@@ -50,16 +49,8 @@ export const PAPER_SIZE_GROUPS: { category: string; groups: CropSizeGroup[] }[] 
 ];
 
 export function paperSizeGroup(name: string): CropSizeGroup | undefined {
-  const needle = name.toLowerCase();
-  return PAPER_SIZE_GROUPS.flatMap(c => c.groups).find(g => g.name.toLowerCase() === needle || g.members.some(m => m.toLowerCase() === needle));
+  return PAPER_SIZE_GROUPS.flatMap(c => c.groups).find(g => groupMatches(g, name));
 }
 
 /** Resolves a paper size or paper group name to its dimensions, case-insensitively. */
-export function findPaperSize(name: string): Size | undefined {
-  if (Object.hasOwn(PAPER_SIZES, name)) return PAPER_SIZES[name];
-  const needle = name.toLowerCase();
-  const key = Object.keys(PAPER_SIZES).find(k => k.toLowerCase() === needle);
-  if (key) return PAPER_SIZES[key];
-  const found = paperSizeGroup(name);
-  return found && { width: found.width, height: found.height };
-}
+export const findPaperSize = (name: string) => findSize(PAPER_SIZES, paperSizeGroup, name);

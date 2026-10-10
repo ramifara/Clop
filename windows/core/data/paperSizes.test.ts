@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { findPaperSize, PAPER_SIZE_GROUPS, PAPER_SIZE_NAMES, PAPER_SIZES, PAPER_SIZES_BY_CATEGORY, paperSizeGroup } from './paperSizes';
 
-const swift = readFileSync(fileURLToPath(new URL('../../../Shared/PaperSizes.swift', import.meta.url)), 'utf8');
+// A Windows checkout has CRLF line endings; the parsers below expect \n.
+const swift = readFileSync(fileURLToPath(new URL('../../../Shared/PaperSizes.swift', import.meta.url)), 'utf8').replace(/\r\n/g, '\n');
 const section = (from: string, to: string) => swift.slice(swift.indexOf(from), swift.indexOf(to));
 const unescape = (text: string) => text.replace(/\\u\{([0-9A-Fa-f]+)\}/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
 
