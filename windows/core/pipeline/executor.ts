@@ -1,10 +1,11 @@
-import { copyToClipboard, fork, runScript, runShortcut } from './actions';
+import { copyToClipboard, fork } from './actions';
 import { copyStep, deleteStep, moveStep, renameStep } from './files';
 import { evaluateFilter } from './filters';
 import { stepEntry, textName, type Pipeline, type PipelineStep } from './model';
 import { formatStep } from './parser';
 import { isCompilable, isProcessing, runBatch, runSolo, stepLocation } from './processing';
 import { RunState, type PipelineRunOptions } from './run-state';
+import { runScript, runShortcut } from './scripts';
 import { stepTemplate } from './templates';
 
 export type { PipelineEffects, PipelineProgress, PipelineRunOptions } from './run-state';
