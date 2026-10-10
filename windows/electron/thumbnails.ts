@@ -56,6 +56,7 @@ export function placeholder(kind: Exclude<MediaKind, 'image'>) {
   if (!preview) {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${MEDIA_BOX.width}" height="${MEDIA_BOX.height}"><defs><linearGradient id="g" x2="0" y2="1"><stop stop-color="#4a4150"/><stop offset="1" stop-color="#231f26"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/>${GLYPHS[kind]}</svg>`;
     preview = png(Buffer.from(svg), MEDIA_BOX);
+    preview.catch(() => placeholders.delete(kind));
     placeholders.set(kind, preview);
   }
   return preview;
