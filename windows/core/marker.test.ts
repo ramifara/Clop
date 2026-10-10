@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { exists } from './fileops';
@@ -140,6 +140,20 @@ test('on Windows marking also writes the alternate data stream hint', { skip: pr
   assert.equal(await marker.hint(file), true);
   assert.equal(await readFile(`${file}:clop.optimisation.status`, 'utf8'), 'true');
   assert.equal(await marker.isOptimised(file), true, 'the stream does not disturb the recorded size and time');
+});
+
+test('the stream hint follows a renamed file while its size is unchanged', async t => {
+  // Off Windows a "stream" is a sibling file named like one, which exercises the same logic.
+  const { dir, file, marker } = await setup(t, { platform: 'win32' });
+  await marker.markOptimised(file);
+  assert.equal(await marker.hintMatches(file), true);
+  const renamed = path.join(dir, 'renamed.png');
+  await rename(file, renamed);
+  if (process.platform !== 'win32') for (const stream of ['status', 'size']) await rename(`${file}:clop.optimisation.${stream}`, `${renamed}:clop.optimisation.${stream}`);
+  assert.equal(await marker.isOptimised(renamed), false, 'the cache is keyed by path');
+  assert.equal(await marker.hintMatches(renamed), true);
+  await appendFile(renamed, 'an edit');
+  assert.equal(await marker.hintMatches(renamed), false, 'an edit that changes the size clears the hint');
 });
 
 test('the stream hint does not exist off Windows and never decides the answer', async t => {
