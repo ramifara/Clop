@@ -46,7 +46,7 @@ export class ImageEngine extends EventEmitter {
         if (!info || !INPUT.has(info.format) || !info.width || !info.height) throw new Error('Use PNG, JPEG, WebP, GIF, AVIF, HEIC, JPEG XL, TIFF, BMP or SVG.');
         const { format, width, height, pages } = info;
         if (format === 'tiff' && pages > 1) throw new Error('Use a single-page TIFF image. Multi-page documents are not supported.');
-        if (pages > 250 || width * height * pages > PIXELS) throw new Error('This image has too many pixels or animation frames. Use an image under 60 megapixels in total.');
+        if (pages > 250 || info.pixels > PIXELS) throw new Error('This image has too many pixels or animation frames. Use an image under 60 megapixels in total.');
         const originalPath = path.join(directory, `original.${format}`);
         await rename(staged, originalPath);
         const preview = await thumbnail(originalPath, DECODED.has(format) || info.deep);

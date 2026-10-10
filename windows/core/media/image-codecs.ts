@@ -22,6 +22,8 @@ export interface ImageInfo {
   format: string; width: number; height: number; pages: number;
   /** More than 8 bits per sample, so possibly HDR. */
   deep: boolean;
+  /** Pixels a decode reads: every frame, or every top-level image of a HEIC, since heif-dec writes them all. */
+  pixels: number;
   /** sharp's reading, for the formats it reads. */
   meta?: Metadata;
 }
@@ -33,10 +35,16 @@ export async function probeImage(file: string, signal?: AbortSignal): Promise<Im
   if (!meta) {
     const { stdout } = await run('exiftool', ['-charset', 'filename=utf8', '-j', '-n', '-ImageWidth', '-ImageHeight', file], { signal });
     const { ImageWidth: width, ImageHeight: height } = JSON.parse(stdout.toString())[0];
-    return { format, width: Math.abs(width ?? 0), height: Math.abs(height ?? 0), pages: 1, deep: false };
+    return { format, width: Math.abs(width ?? 0), height: Math.abs(height ?? 0), pages: 1, deep: false, pixels: Math.abs((width ?? 0) * (height ?? 0)) };
   }
-  const width = meta.width ?? 0, height = meta.pageHeight ?? meta.height ?? 0, turned = (meta.orientation ?? 1) >= 5;
-  return { format, width: turned ? height : width, height: turned ? width : height, pages: format === 'heic' ? 1 : meta.pages ?? 1, deep: (meta.bitsPerSample ?? 8) > 8 || meta.depth === 'ushort', meta };
+  const width = meta.width ?? 0, height = meta.pageHeight ?? meta.height ?? 0, turned = (meta.orientation ?? 1) >= 5, pages = meta.pages ?? 1;
+  let pixels = width * height * pages;
+  // The images of a HEIC can differ in size; sharp reads each one's header without decoding it.
+  if (format === 'heic' && pages > 1) {
+    pixels = 0;
+    for (let page = 0; page < pages; page++) { const image = await sharp(file, { page }).metadata(); pixels += (image.width ?? 0) * (image.height ?? 0); }
+  }
+  return { format, width: turned ? height : width, height: turned ? width : height, pages: format === 'heic' ? 1 : pages, deep: (meta.bitsPerSample ?? 8) > 8 || meta.depth === 'ushort', pixels, meta };
 }
 
 export interface DecodeOptions {

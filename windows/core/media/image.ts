@@ -94,10 +94,10 @@ export function optimiseImage(input: string, outputDir: string, opts: Options): 
 
 async function optimise(input: string, outputDir: string, opts: Options): Promise<MediaOutput> {
   opts.signal?.throwIfAborted();
-  const info = await probeImage(input, opts.signal).catch(() => undefined), source = info?.format, sourceMeta = info?.meta;
+  const info = await probeImage(input, opts.signal).catch(error => { if (opts.signal?.aborted) throw error; }), source = info?.format, sourceMeta = info?.meta;
   if (!info || !source || !SOURCES.has(source)) throw new Error(`Clop cannot optimise ${source?.toUpperCase() ?? 'this'} images. Use PNG, JPEG, GIF, WebP, AVIF, HEIC, JPEG XL, TIFF, BMP or SVG.`);
   // Checked before anything is decoded or rasterised.
-  if (info.width * info.height * info.pages > MAX_PIXELS) throw new Error('This image has too many pixels or animation frames. Use an image under 60 megapixels in total.');
+  if (info.pixels > MAX_PIXELS) throw new Error('This image has too many pixels or animation frames. Use an image under 60 megapixels in total.');
   // HEIC and JPEG XL files are read for their primary image only.
   const animated = (sourceMeta?.pages ?? 1) > 1 && source !== 'heic';
   if (animated && source !== 'gif' && source !== 'webp') throw new Error('Clop can only optimise animated GIF and WebP images.');

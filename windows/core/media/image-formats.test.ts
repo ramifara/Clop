@@ -167,11 +167,12 @@ test('a HEIC with several images is read for its primary image, whatever their s
   const red = await w.file('red.png', sharp({ create: { width: 64, height: 48, channels: 3, background: '#ff0000' } }).png());
   const blue = await w.file('blue.png', sharp({ create: { width: 64, height: 48, channels: 3, background: '#0000ff' } }).png());
   const tall = await w.file('tall.png', sharp({ create: { width: 32, height: 80, channels: 3, background: '#00ff00' } }).png());
-  for (const [name, images, size, colour] of [['same', [red, blue], [64, 48], 0], ['mixed', [tall, red], [32, 80], 1]] as const) {
+  for (const [name, images, size, colour, pixels] of [['same', [red, blue], [64, 48], 0, 2 * 64 * 48], ['mixed', [tall, red], [32, 80], 1, 32 * 80 + 64 * 48]] as const) {
     const heic = path.join(w.dir, `${name}.heic`);
     // heif-enc makes the first image the primary one.
     await run('heif-enc', ['-q', '95', '-o', heic, ...images]);
-    assert.deepEqual(await probeImage(heic).then(info => [info.format, info.width, info.height, info.pages]), ['heic', ...size, 1], name);
+    // The size limit counts every image, since heif-dec decodes them all.
+    assert.deepEqual(await probeImage(heic).then(info => [info.format, info.width, info.height, info.pages, info.pixels]), ['heic', ...size, 1, pixels], name);
     const output = await optimiseImage(heic, w.out, { compression: at(30), format: 'png', name });
     assert.deepEqual([output.width, output.height], size, name);
     const pixel = await firstPixel(output.path, w.dir);
@@ -218,4 +219,15 @@ test('stripping metadata reports the size of JPEG XL and BMP images too', async 
     const stripped = await stripImageMetadata(file, w.out);
     assert.deepEqual([stripped.format, stripped.width, stripped.height], [path.extname(file).slice(1), 120, 80]);
   }
+});
+
+test('aborting while the image is probed reports the abort, not an unreadable image', async t => {
+  const w = await workspace(t); if (!w) return;
+  const png = await w.file('photo.png', photo(64, 48).png());
+  const jxl = path.join(w.dir, 'photo.jxl');
+  await run('cjxl', [png, jxl, '-q', '90', '--quiet']);
+  const controller = new AbortController();
+  // JPEG XL sizes come from exiftool, so the abort lands while it runs.
+  setTimeout(() => controller.abort(), 20);
+  await assert.rejects(optimiseImage(jxl, w.out, { compression: at(30), signal: controller.signal }), { name: 'AbortError' });
 });
