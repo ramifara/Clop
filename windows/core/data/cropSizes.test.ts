@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { settingsSchema } from '../settings/schema';
 import { DEFAULT_CROP_ASPECT_RATIOS, DEFAULT_CROP_SIZES, groupMatches } from './cropSizes';
 
-const swift = readFileSync(fileURLToPath(new URL('../../../Clop/Settings.swift', import.meta.url)), 'utf8');
+// A Windows checkout has CRLF line endings; the parsers below expect \n.
+const swift = readFileSync(fileURLToPath(new URL('../../../Clop/Settings.swift', import.meta.url)), 'utf8').replace(/\r\n/g, '\n');
 const list = (name: string) => {
   const start = swift.indexOf(`let ${name}: [CropSize] = [`);
   assert.ok(start >= 0, name);

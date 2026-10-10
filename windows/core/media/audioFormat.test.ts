@@ -7,12 +7,15 @@ import {
   loweredBitrate, loweredBitrateByFactor, outputAudioFormat, resolveBitrate, roundedAudioBitrate, type AudioFormat,
 } from './audioFormat';
 
-const swift = readFileSync(fileURLToPath(new URL('../../../Shared/AudioFormat.swift', import.meta.url)), 'utf8');
+// A Windows checkout has CRLF line endings; the parsers below expect \n.
+const swift = readFileSync(fileURLToPath(new URL('../../../Shared/AudioFormat.swift', import.meta.url)), 'utf8').replace(/\r\n/g, '\n');
 /** The `case .a, .b: value` lines of one Swift switch property, as format → value text. */
 function cases(property: string) {
   const start = swift.indexOf(`var ${property}`);
   assert.ok(start >= 0, property);
-  const body = swift.slice(start, swift.indexOf('\n    }\n', start));
+  const end = swift.indexOf('\n    }\n', start);
+  assert.ok(end > start, `end of ${property}`);
+  const body = swift.slice(start, end);
   const values = new Map<string, string>();
   for (const [, names, value] of body.matchAll(/case ((?:\.\w+(?:, )?)+): (.+)/g)) for (const [, name] of names.matchAll(/\.(\w+)/g)) values.set(name, value.trim());
   values.delete('sameAsInput');

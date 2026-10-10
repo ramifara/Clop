@@ -4,8 +4,13 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DEVICE_SIZE_GROUPS, DEVICE_SIZES, deviceSizeGroup, findDeviceSize } from './deviceSizes';
 
-const swift = readFileSync(fileURLToPath(new URL('../../../Shared/DeviceSizes.swift', import.meta.url)), 'utf8');
-const section = (from: string, to: string) => swift.slice(swift.indexOf(from), swift.indexOf(to));
+// A Windows checkout has CRLF line endings; the parsers below expect \n.
+const swift = readFileSync(fileURLToPath(new URL('../../../Shared/DeviceSizes.swift', import.meta.url)), 'utf8').replace(/\r\n/g, '\n');
+function section(from: string, to: string) {
+  const start = swift.indexOf(from), end = swift.indexOf(to, start);
+  assert.ok(start >= 0 && end > start, `${from} … ${to}`);
+  return swift.slice(start, end);
+}
 const unescape = (text: string) => text.replace(/\\u\{([0-9A-Fa-f]+)\}/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
 
 test('the device size table matches Shared/DeviceSizes.swift', () => {
