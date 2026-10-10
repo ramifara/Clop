@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
-import { queue, retryBusy, run, ToolError } from '../run';
+import { queue, retryBusy, run, ToolError, type RunOptions } from '../run';
 import type { CompressionQuality, CropSize } from '../settings/schema';
 import { videoInfo, type VideoInfo } from './detect';
 import { ffprobe } from './ffprobe';
@@ -76,7 +76,7 @@ export function atempoChain(factor: number) {
   return filters.join(',');
 }
 
-/** `CropSize.computedSize`: the size a crop or aspect-ratio target gives a source of this size. */
+/** `CropSize.computedSize`: the size a crop or aspect-ratio target gives a source of this size. Aspect-ratio sizes are rounded to even, as encoded. */
 export function croppedSize(crop: VideoCrop, width: number, height: number): [number, number] {
   if (crop.cropRect) {
     const r = clampRect(crop.cropRect);
@@ -88,8 +88,8 @@ export function croppedSize(crop: VideoCrop, width: number, height: number): [nu
     const ratio = Math.min(crop.width, crop.height) / Math.max(crop.width, crop.height);
     const portrait = !crop.longEdge && crop.width < crop.height ? true : !crop.longEdge && crop.height < crop.width ? false : width <= height;
     // cropToPortrait / cropToLandscape (Shared.swift): the largest centred area of that ratio.
-    if (portrait) return width / height > ratio ? [height * ratio, height] : [width, width / ratio];
-    return height / width > ratio ? [width, width * ratio] : [height / ratio, height];
+    const [w, h] = portrait ? (width / height > ratio ? [height * ratio, height] : [width, width / ratio]) : (height / width > ratio ? [width, width * ratio] : [height / ratio, height]);
+    return [even(w), even(h)];
   }
   const factor = crop.longEdge ? (crop.width || crop.height) / Math.max(width, height) : !crop.width ? crop.height / height : crop.width / width;
   return [even(width * factor), even(height * factor)];
@@ -114,8 +114,8 @@ export function scaleFilters(source: { width: number; height: number } | undefin
   const [w, h] = crop.isAspectRatio ? croppedSize(crop, source.width, source.height) : [crop.width, crop.height];
   if (!(w > 0 && h > 0) || (crop.longEdge && !crop.isAspectRatio)) {
     // One side given: keep the aspect ratio.
-    if (!crop.longEdge) return [`scale=w=${w === 0 ? '-2' : int(w)}:h=${h === 0 ? '-2' : int(h)}`];
-    return source.width > source.height ? [`scale=w=${crop.width || crop.height}:h=-2`] : [`scale=w=-2:h=${crop.height || crop.width}`];
+    if (!crop.longEdge) return [`scale=w=${w === 0 ? '-2' : even(w)}:h=${h === 0 ? '-2' : even(h)}`];
+    return source.width > source.height ? [`scale=w=${even(crop.width || crop.height)}:h=-2`] : [`scale=w=-2:h=${even(crop.height || crop.width)}`];
   }
   let cropString: string;
   if (source.width / w > source.height / h) {
@@ -125,7 +125,8 @@ export function scaleFilters(source: { width: number; height: number } | undefin
     const diff = int((source.height - (h / w) * source.width) / 2);
     cropString = `in_w:in_h-${diff * 2}:0:${diff}`;
   }
-  return [`crop=${cropString}`, `scale=w=${int(w)}:h=${int(h)}`];
+  // Even sizes, which yuv420p and NV12 encoders require; Swift truncates and can produce odd ones.
+  return [`crop=${cropString}`, `scale=w=${even(w)}:h=${even(h)}`];
 }
 
 /**
@@ -142,16 +143,27 @@ export function adaptiveUsesSoftware(info: Pick<VideoInfo, 'width' | 'height' | 
   return (info?.width && info.height ? info.width * info.height : Infinity) < 1920 * 1080 || (info?.durationMs ?? 999_999_000) < 10_000 || bytes < 5_000_000;
 }
 
-/** Runs each argument set in turn until one succeeds, as `tryProc(argArray:)` does. */
-async function ffmpegFirstWorking(argSets: string[][], opts: { signal?: AbortSignal; onStderrLine?: (line: string) => void }) {
+/**
+ * Runs each argument set in turn until one succeeds, as `tryProc(argArray:)` and `tryProc(tries:)` do.
+ * Only tool failures are retried, never an abort. `before` prepares each attempt.
+ */
+async function firstWorking(tool: 'ffmpeg' | 'gifski', argSets: string[][], opts: RunOptions, before?: () => Promise<void>) {
   let failure: unknown;
   for (const args of argSets) {
-    try { return await run('ffmpeg', args, opts); } catch (error) {
+    try { await before?.(); return await run(tool, args, opts); } catch (error) {
       if (!(error instanceof ToolError)) throw error;
       failure = error;
     }
   }
   throw failure;
+}
+const TRIES = 3;
+const tries = (args: string[]) => Array<string[]>(TRIES).fill(args);
+
+/** Progress that never goes backwards, also when a failed attempt is retried. */
+function rising(onProgress?: (fraction: number) => void) {
+  let last = 0;
+  return onProgress && ((fraction: number) => { if (fraction > last) onProgress(last = fraction); });
 }
 
 const without = (args: string[], part: string[]) => {
@@ -187,10 +199,16 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
   signal?.throwIfAborted();
   const info = videoInfo(await ffprobe(input, { signal }));
   const inputBytes = (await stat(input)).size, inputExt = extension(input);
-  const tenBit = info.bitDepth > 8;
   const convert = opts.convert, wantsHardwareHEVC = convert?.codec === 'hevc' && (!convert.compression || convert.compression.tier === 'fast');
+  const conversionExt = convert && { hevc: 'mp4', x265: 'mp4', av1: 'mkv', webm: 'webm' }[convert.codec];
+  const ext = conversionExt ?? (opts.format ?? (inputExt || 'mp4')).toLowerCase();
+  const useEncoder = !!convert || ENCODED_CONTAINERS.has(ext);
+  const family = encoderFamily(opts.encoder ?? 'auto');
+  const outputCodec = convert?.codec ?? (useEncoder ? family : ext === 'webm' ? 'vp9' : 'h264');
+  const toneMap = info.hdr && (opts.hdrToSdr ?? outputCodec === 'h264');
+  // Tone mapping ends in 8-bit video, so hardware encoders take 8-bit input then too.
+  const tenBit = info.bitDepth > 8 && !toneMap;
   const conversion = convert && videoConversionArgs(convert.codec, convert.compression, wantsHardwareHEVC ? await hevcHardware(opts.encoder) : undefined, tenBit);
-  const ext = conversion?.ext ?? (opts.format ?? (inputExt || 'mp4')).toLowerCase();
   const fps = info.fps;
 
   const extra: string[] = [];
@@ -220,12 +238,8 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
     // setpts alone keeps every frame, so the rate scales with the speed; resampling to the source rate drops frames instead.
     if (opts.playbackSpeedFrameBehaviour === 'dropFrames' && fps) filters.push(`fps=${fps.toFixed(3)}`);
   }
-  const useEncoder = !!conversion || ENCODED_CONTAINERS.has(ext);
-  const family = encoderFamily(opts.encoder ?? 'auto');
   // The adaptive tier picks hardware for small or short clips and software for the rest.
   const tier = opts.compression.tier === 'adaptive' ? (adaptiveUsesSoftware(info, inputBytes, opts.adaptiveVideoSize) ? 'smaller' : 'fast') : opts.compression.tier;
-  const outputCodec = convert?.codec ?? (useEncoder ? family : ext === 'webm' ? 'vp9' : 'h264');
-  const toneMap = info.hdr && (opts.hdrToSdr ?? outputCodec === 'h264');
   if (toneMap) filters.push(...TONE_MAP);
   if (filters.length) extra.push('-vf', filters.join(','));
   // Variable frame rate sources report their average rate; passing frames through keeps the ones that move.
@@ -255,14 +269,16 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
     // Without the stream maps, then also without copying the audio, for inputs those trip up.
     const argSets = [args, without(args, maps), without(args, ['-c:a', 'copy', ...maps])].filter((set, i, all) => all.findIndex(other => other.join('\0') === set.join('\0')) === i);
     const totalUs = info.durationMs ? info.durationMs * 1000 / (speed ?? 1) : undefined;
-    await ffmpegFirstWorking(argSets, { signal, onStderrLine: ffmpegProgress(totalUs, opts.onProgress) });
-    const plain = !size && !crop && !speed && !conversion && ext === inputExt;
+    const onProgress = rising(opts.onProgress);
+    await firstWorking('ffmpeg', argSets, { signal, onStderrLine: ffmpegProgress(totalUs, onProgress) });
+    // Only a plain optimisation may hand back the input: anything else asked for would be silently dropped.
+    const plain = !size && !crop && !speed && !conversion && ext === inputExt && !opts.removeAudio && !opts.convertAudioToAAC && !(toneMap && opts.hdrToSdr);
     if (plain && !opts.allowLarger && (await stat(out)).size >= inputBytes) {
-      opts.onProgress?.(1);
+      onProgress?.(1);
       return { path: input, bytes: inputBytes, format: inputExt, width: info.width, height: info.height, durationMs: info.durationMs, unchanged: true };
     }
     const result = await finish(input, out, outputDir, opts.name, ext, signal);
-    opts.onProgress?.(1);
+    onProgress?.(1);
     return result;
   });
 }
@@ -277,10 +293,11 @@ export function removeVideoAudio(input: string, outputDir: string, opts: MediaJo
       const out = path.join(tmp, `video.${ext}`);
       const strip = opts.stripMetadata ?? true;
       const movflags = ext === 'webm' ? [] : ['-movflags', strip ? '+faststart' : '+faststart+use_metadata_tags'];
-      await run('ffmpeg', ['-y', '-nostdin', '-hide_banner', '-i', input, '-an', '-vcodec', 'copy', ...(strip ? ['-map_metadata', '-1'] : []), ...movflags, ...PROGRESS, out],
-        { signal: opts.signal, onStderrLine: ffmpegProgress(info.durationMs && info.durationMs * 1000, opts.onProgress) });
+      const onProgress = rising(opts.onProgress);
+      await firstWorking('ffmpeg', tries(['-y', '-nostdin', '-hide_banner', '-i', input, '-an', '-vcodec', 'copy', ...(strip ? ['-map_metadata', '-1'] : []), ...movflags, ...PROGRESS, out]),
+        { signal: opts.signal, onStderrLine: ffmpegProgress(info.durationMs && info.durationMs * 1000, onProgress) });
       const result = await finish(input, out, outputDir, opts.name, ext, opts.signal);
-      opts.onProgress?.(1);
+      onProgress?.(1);
       return result;
     });
   });
@@ -301,21 +318,23 @@ export interface VideoToGIFOptions {
  * Progress runs to one half while ffmpeg extracts frames and to one while gifski encodes them.
  */
 export function convertVideoToGIF(input: string, outputDir: string, opts: VideoToGIFOptions & Omit<MediaJobOptions, 'aggressive'> = {}): Promise<MediaOutput> {
-  const { maxWidth = 960, fps = 15, signal, onProgress } = opts;
+  const { maxWidth = 960, fps = 15, signal } = opts;
+  const onProgress = rising(opts.onProgress);
   return queue('video')(async () => {
     signal?.throwIfAborted();
     const info = videoInfo(await ffprobe(input, { signal }));
     return withTemp(outputDir, async tmp => {
       const frames = path.join(tmp, 'frames');
-      await mkdir(frames);
-      await run('ffmpeg', ['-nostdin', '-hide_banner', '-i', input, ...PROGRESS, '-fpsmax', String(fps), path.join(frames, 'frame%04d.png')],
-        { signal, onStderrLine: ffmpegProgress(info.durationMs && info.durationMs * 1000, onProgress, f => f / 2) });
+      // Each attempt starts from an empty folder, so a failed one leaves no stray frames.
+      const emptyFrames = async () => { await rm(frames, { recursive: true, force: true }); await mkdir(frames); };
+      await firstWorking('ffmpeg', tries(['-y', '-nostdin', '-hide_banner', '-i', input, ...PROGRESS, '-fpsmax', String(fps), path.join(frames, 'frame%04d.png')]),
+        { signal, onStderrLine: ffmpegProgress(info.durationMs && info.durationMs * 1000, onProgress, f => f / 2) }, emptyFrames);
       const pngs = (await readdir(frames)).filter(name => name.endsWith('.png'));
       if (!pngs.length) throw new Error(`${path.basename(input)} has no frames to make a GIF from.`);
       const out = path.join(tmp, 'video.gif');
       // gifski expands the pattern itself on Windows, whose command line could not hold thousands of frame names.
       const files = process.platform === 'win32' ? ['frame*.png'] : pngs;
-      await run('gifski', ['-o', out, '--width', String(maxWidth), '--fps', String(fps), '--quality', opts.aggressive ? '60' : '90', ...files], {
+      await firstWorking('gifski', tries(['-o', out, '--width', String(maxWidth), '--fps', String(fps), '--quality', opts.aggressive ? '60' : '90', ...files]), {
         signal, cwd: frames, onStdoutLine: line => {
           for (const [, frame, total] of line.matchAll(/Frame (\d+) \/ (\d+)/g)) if (+frame > 0) onProgress?.(0.5 + Math.min(+frame / +total, 1) / 2);
         },

@@ -30,13 +30,14 @@ const near = (actual: number | undefined, expected: number, tolerance: number, w
 
 test('a 1080p clip optimises on the default fast tier with progress events', async t => {
   const w = await workspace(t); if (!w) return;
-  const input = await clip(w.file('screen.mp4'), { width: 1920, height: 1080 });
+  // Two seconds, so ffmpeg reports progress before it finishes.
+  const input = await clip(w.file('screen.mp4'), { width: 1920, height: 1080, seconds: 2 });
   const progress: number[] = [];
   const output = await optimiseVideo(input, w.out, { compression: { tier: 'fast', factor: 50 }, onProgress: f => progress.push(f) });
   t.diagnostic(`${(await stat(input)).size} -> ${output.bytes} bytes, progress ${progress.map(f => f.toFixed(2)).join(' ')}`);
-  assert.deepEqual([output.path, output.format, output.width, output.height, output.durationMs, output.unchanged], [path.join(w.out, 'screen.mp4'), 'mp4', 1920, 1080, 500, undefined]);
+  assert.deepEqual([output.path, output.format, output.width, output.height, output.durationMs, output.unchanged], [path.join(w.out, 'screen.mp4'), 'mp4', 1920, 1080, 2000, undefined]);
   assert.ok(output.bytes < (await stat(input)).size && output.bytes === (await stat(output.path)).size);
-  assert.ok(progress.length >= 2 && progress.every((f, i) => f > 0 && f <= 1 && (i === 0 || f >= progress[i - 1])), 'progress rises from above 0 to 1');
+  assert.ok(progress.length >= 2 && progress.every((f, i) => f > 0 && f <= 1 && (i === 0 || f > progress[i - 1])), 'progress rises from above 0 to 1');
   assert.equal(progress.at(-1), 1);
   const info = await video(output.path);
   assert.deepEqual([info.codec, info.codecTag, info.hasAudio, info.fps], ['h264', 'avc1', true, 30]);
@@ -53,6 +54,11 @@ test('aggressive compresses harder; a result that is not smaller keeps the input
   assert.deepEqual(again, { path: aggressive.path, bytes: aggressive.bytes, format: 'mp4', width: 320, height: 240, durationMs: 500, unchanged: true });
   const forced = await optimiseVideo(aggressive.path, w.out, { compression: { tier: 'lossless', factor: 5 }, name: 'forced', allowLarger: true });
   assert.ok(!forced.unchanged && forced.bytes > aggressive.bytes);
+  // Asked-for changes are never dropped by keeping the input, even when the result is larger.
+  const muted = await optimiseVideo(aggressive.path, w.out, { compression: { tier: 'lossless', factor: 5 }, removeAudio: true, name: 'muted' });
+  assert.ok(!muted.unchanged && !(await video(muted.path)).hasAudio);
+  const aac = await optimiseVideo(aggressive.path, w.out, { compression: { tier: 'lossless', factor: 5 }, convertAudioToAAC: true, name: 'aac' });
+  assert.ok(!aac.unchanged && aac.bytes > aggressive.bytes);
 });
 
 test('the encoder setting chooses H.264 or HEVC and keeps software tiers in software', async t => {
@@ -130,7 +136,9 @@ test('scale and crop filters match getScaleFilters', () => {
   assert.deepEqual(scaleFilters(landscape, { width: 0, height: 0, cropRect: { x: 0.25, y: 0.1, width: 0.5, height: 0.5 } }), ['crop=floor(in_w*0.500000/2)*2:floor(in_h*0.500000/2)*2:in_w*0.250000:in_h*0.100000']);
   assert.deepEqual(scaleFilters(landscape, { width: 64, height: 47, cropRect: { x: 0.25, y: 0.1, width: 0.5, height: 0.5 } }).at(-1), 'scale=w=64:h=48');
   assert.deepEqual(scaleFilters(landscape, { width: 0, height: 0, cropRect: { x: 0, y: 0, width: 1, height: 1 } }), ['scale=w=-2:h=-2']);
-  assert.deepEqual(croppedSize({ width: 9, height: 16, isAspectRatio: true }, 320, 240), [135, 240]);
+  assert.deepEqual(croppedSize({ width: 9, height: 16, isAspectRatio: true }, 320, 240), [136, 240]);
+  assert.deepEqual(scaleFilters(landscape, { width: 9, height: 16, isAspectRatio: true }), ['crop=in_w-184:in_h:92:0', 'scale=w=136:h=240']);
+  assert.deepEqual(scaleFilters(landscape, { width: 161, height: 0 }), ['scale=w=162:h=-2']);
   assert.deepEqual(croppedSize({ width: 0, height: 0, cropRect: { x: 0.5, y: 0.5, width: 0.9, height: 0.9 } }, 320, 240), [288, 216]);
 });
 
@@ -144,6 +152,7 @@ test('videos scale and crop to the requested size, but never upscale to a long e
   assert.deepEqual(await size('half', { width: 160, height: 120 }), [160, 120]);
   assert.deepEqual(await size('rect', { crop: { width: 0, height: 0, cropRect: { x: 0.25, y: 0.25, width: 0.5, height: 0.5 } } }), [160, 120]);
   assert.deepEqual(await size('square', { crop: { width: 1, height: 1, isAspectRatio: true } }), [240, 240]);
+  assert.deepEqual(await size('story', { crop: { width: 9, height: 16, isAspectRatio: true } }), [136, 240], 'odd crop widths are rounded to even for the encoder');
   assert.deepEqual(await size('long-edge', { crop: { width: 160, height: 0, longEdge: true } }), [160, 120]);
   assert.deepEqual(await size('no-upscale', { crop: { width: 640, height: 0, longEdge: true } }), [320, 240]);
 });
@@ -171,7 +180,9 @@ test('audio is copied, converted to AAC on request, and re-encoded when the cont
   assert.equal(await audio(pcm, { convertAudioToAAC: true }, 'aac'), 'aac');
   // MP4 cannot hold A-law audio, so the copy fails and the encode is retried without copying (`tryProc(argArray:)`).
   const alaw = await clip(w.file('alaw.mov'), { audio: 'pcm_alaw' });
-  assert.equal(await audio(alaw, { format: 'mp4' }, 'alaw'), 'aac');
+  const progress: number[] = [];
+  assert.equal(await audio(alaw, { format: 'mp4', onProgress: f => progress.push(f) }, 'alaw'), 'aac');
+  assert.ok(progress.length && progress.every((f, i) => i === 0 || f > progress[i - 1]), `progress never goes back across attempts: ${progress.join(' ')}`);
 });
 
 test('HDR becomes SDR for H.264 but stays HDR in an HEVC conversion', async t => {
@@ -183,6 +194,9 @@ test('HDR becomes SDR for H.264 but stays HDR in an HEVC conversion', async t =>
   assert.deepEqual([kept.codec, kept.bitDepth, kept.transfer, kept.hdr], ['hevc', 10, 'smpte2084', true]);
   const asked = await video((await optimiseVideo(input, w.out, { compression: smaller(), convert: { codec: 'x265' }, hdrToSdr: true, name: 'asked' })).path);
   assert.deepEqual([asked.transfer, asked.hdr], ['bt709', false]);
+  // The fast tier may use a hardware HEVC encoder; tone-mapped video stays 8-bit there too.
+  const fast = await video((await optimiseVideo(input, w.out, { compression: smaller(), convert: { codec: 'hevc', compression: { tier: 'fast', factor: 50 } }, hdrToSdr: true, name: 'fast' })).path);
+  assert.deepEqual([fast.codec, fast.bitDepth, fast.transfer], ['hevc', 8, 'bt709']);
 });
 
 test('identifying metadata is stripped unless asked to keep it', async t => {
