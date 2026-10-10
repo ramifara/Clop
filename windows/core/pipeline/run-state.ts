@@ -35,6 +35,8 @@ export interface PipelineRunOptions {
   effects: PipelineEffects;
   /** Whether `runScript` and `runShortcut` may run. The caller decides, as `mcpAllowScriptSteps` does for agents. */
   allowScripts: boolean;
+  /** Where `runShortcut(name:)` finds its scripts; `%APPDATA%\Clop for Windows\scripts` by default. */
+  scriptsDir?: string;
   /** The app that copied a clipboard item, for `if(copiedBy:)`: its executable path or app ID, and its name. */
   sourceApp?: { id?: string; name?: string };
   /** A per-request placement (CLI `--convert-behaviour`), which a `convert` step's default location follows. */
