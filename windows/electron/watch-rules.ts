@@ -1,4 +1,4 @@
-import { open, readdir, readFile, stat } from 'node:fs/promises';
+import { open, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { ClopSettings } from '../core/settings/schema';
 import type { MediaKind } from '../core/media/types';
@@ -6,6 +6,7 @@ import { expandHome } from '../core/settings/paths';
 import { probeImage } from '../core/media/image-codecs';
 import { probe } from '../core/media/detect';
 import { mediaKind, skipsFormat } from './clipboard';
+export { clopIgnored, ignoredBy } from '../core/clopignore';
 
 // The rules for which files appearing in a watched folder are optimised: FileOptimisationWatcher.swift and the
 // `shouldHandleImage`/`Video`/`PDF`/`Audio` checks beside it.
@@ -70,36 +71,6 @@ export async function qualifies(kind: MediaKind, file: string, s: ClopSettings, 
   if (!size) return kind !== 'image';
   const { width, height } = size, min = w.minResolution, max = w.maxResolution;
   return (!min || (width >= min && height >= min)) && (!max || (width <= max && height <= max));
-}
-
-const glob = (pattern: string) => pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*\/|\/\*\*|\*\*|\*|\?/g, token =>
-  token === '**/' ? '(?:.*/)?' : token === '/**' ? '(?:/.*)?' : token === '**' ? '.*' : token === '*' ? '[^/]*' : '[^/]');
-
-/**
- * Whether `relative` (a `/`-separated path inside a watched folder) is ignored by gitignore-style `rules`, as the
- * `.clopignore-<type>` file in a watched folder holds them: `#` comments, `!` to re-include, a leading or inner `/` anchors a
- * pattern to the folder, a trailing `/` matches folders only, and `*`, `?` and `**` wildcards. The last matching rule wins.
- */
-export function ignoredBy(rules: string, relative: string, platform: NodeJS.Platform = process.platform): boolean {
-  const parts = relative.split('/');
-  let ignored = false;
-  for (let line of rules.split(/\r?\n/)) {
-    line = line.trim();
-    if (!line || line.startsWith('#')) continue;
-    const negate = line.startsWith('!'); if (negate) line = line.slice(1);
-    const folder = line.endsWith('/'); if (folder) line = line.slice(0, -1);
-    const anchored = line.includes('/'), expression = new RegExp(`^${glob(line.replace(/^\//, ''))}$`, platform === 'win32' ? 'i' : '');
-    // A folder rule matches the folders above the file; any other rule also matches the file itself.
-    const candidates = parts.slice(0, folder ? -1 : undefined).map((part, i) => anchored ? parts.slice(0, i + 1).join('/') : part);
-    if (candidates.some(candidate => expression.test(candidate))) ignored = !negate;
-  }
-  return ignored;
-}
-
-/** Whether `file` is ignored by the `.clopignore-<kind>` file in the watched folder `root`, read afresh each time as macOS does. */
-export async function clopIgnored(kind: MediaKind, root: string, file: string) {
-  const rules = await readFile(path.join(root, `.clopignore-${kind}`), 'utf8').catch(() => '');
-  return !!rules && ignoredBy(rules, path.relative(root, file).split(path.sep).join('/'));
 }
 
 /**
