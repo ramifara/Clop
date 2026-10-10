@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { defaultSettings, type ClopSettings, type SettingKey } from './schema';
@@ -14,13 +14,39 @@ async function folder(t: { after: (fn: () => Promise<void>) => void }) {
 }
 const readJson = async (file: string) => JSON.parse(await readFile(file, 'utf8'));
 
-test('a missing or corrupt file loads the defaults without writing', async t => {
+test('a missing file loads the defaults without writing', async t => {
   const dir = await folder(t);
-  const missing = new SettingsStore(path.join(dir, 'settings.json'), paths);
-  assert.deepEqual(await missing.load(), defaultSettings(paths));
-  assert.deepEqual(await readdir(dir), []);
-  await writeFile(path.join(dir, 'settings.json'), '{"enableClipboardOptimiser": fal');
   assert.deepEqual(await new SettingsStore(path.join(dir, 'settings.json'), paths).load(), defaultSettings(paths));
+  assert.deepEqual(await readdir(dir), []);
+});
+
+test('a corrupt file is moved aside before the defaults are used and saved', async t => {
+  for (const content of ['{"enableClipboardOptimiser": fal', '[1, 2]', 'null']) {
+    const dir = await folder(t), file = path.join(dir, 'settings.json');
+    await writeFile(file, content);
+    const store = new SettingsStore(file, paths);
+    assert.deepEqual(await store.load(), defaultSettings(paths));
+    const [aside, ...rest] = await readdir(dir);
+    assert.match(aside, /^settings\.json\.corrupt-/);
+    assert.deepEqual(rest, []);
+    assert.equal(await readFile(path.join(dir, aside), 'utf8'), content);
+    await store.set({ keepDropZoneVisible: true });
+    assert.equal((await readJson(file)).keepDropZoneVisible, true);
+  }
+});
+
+test('an unreadable file is never overwritten', async t => {
+  const dir = await folder(t), file = path.join(dir, 'settings.json');
+  // A folder in the file's place fails to read on every platform, like a file without read permission.
+  await mkdir(file);
+  const store = new SettingsStore(file, paths);
+  await assert.rejects(store.load(), /could not read its settings file .*EISDIR/);
+  assert.deepEqual(store.get(), defaultSettings(paths));
+  await assert.rejects(store.set({ keepDropZoneVisible: true }), /will not save changes/);
+  await assert.rejects(store.save(), /will not save changes/);
+  assert.equal(store.get('keepDropZoneVisible'), false);
+  assert.deepEqual(await readdir(dir), ['settings.json']);
+  assert.ok((await stat(file)).isDirectory());
 });
 
 test('a legacy file is migrated and written back in the new shape', async t => {

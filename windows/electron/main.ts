@@ -291,8 +291,9 @@ else {
     storage = path.join(app.getPath('userData'), 'images');
     store = new SettingsStore(path.join(app.getPath('userData'), 'settings.json'), { home: app.getPath('home'), desktop: app.getPath('desktop'), userData: app.getPath('userData') });
     await mkdir(storage, { recursive: true });
-    // A failed write-back of migrated settings still leaves them loaded in memory.
-    settings = await store.load().catch(() => store.get());
+    // An unreadable settings file is left alone; the defaults are used and the reason is shown once the windows exist.
+    let settingsError: unknown;
+    settings = await store.load().catch(error => { settingsError = error; return store.get(); });
     // Retain originals for seven days. Never touch the source files dropped into Clop.
     for (const dir of await readdir(storage, { withFileTypes: true })) if (dir.isDirectory()) {
       const file = path.join(storage, dir.name);
@@ -302,6 +303,7 @@ else {
     engine.on('change', () => { syncFloating(); broadcast(); });
     engine.on('ready', (id: string) => { hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
     await createWindows();
+    if (settingsError) inform(message(settingsError));
     const icon = nativeImage.createFromPath(path.join(here, 'icon.png'));
     tray = new Tray(icon); tray.setToolTip('Clop'); tray.on('double-click', showLatest); updateTray();
     for (const [key, callback] of [
