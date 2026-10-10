@@ -155,6 +155,16 @@ test('loudness normalisation reaches the target and keeps the sample rate', asyn
   assert.equal((await audio(output.path)).sampleRate, 44100);
 });
 
+test('a loudness change is kept even when the file does not get smaller', async t => {
+  const w = await workspace(t); if (!w) return;
+  const input = await tone(w.file('quiet.wav'), { volume: -25 });
+  const output = await optimiseAudio(input, w.out, { loudnorm: -16, formatsToConvertToMP3: [] });
+  assert.equal(output.unchanged, undefined);
+  assert.equal(output.format, 'wav');
+  const { stderr } = await run('ffmpeg', ['-nostdin', '-hide_banner', '-i', output.path, '-af', 'loudnorm=print_format=json', '-f', 'null', '-']);
+  near(Number(JSON.parse(stderr.slice(stderr.lastIndexOf('{'), stderr.lastIndexOf('}') + 1)).input_i), -16, 2, 'integrated loudness');
+});
+
 test('cover art is optimised, kept, removed or dropped by format', async t => {
   const w = await workspace(t, 'jpegoptim', 'pngquant'); if (!w) return;
   const cover = await coverImage(w.file('cover.jpg'), 800, 800);

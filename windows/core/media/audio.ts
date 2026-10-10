@@ -24,7 +24,7 @@ export interface AudioOptimiseOptions extends AudioConversionSettings, CoverArtO
   bitrate?: number;
   /** Output format. By default `formatsToConvertToAAC` and `formatsToConvertToMP3` pick AAC or MP3, and other inputs keep their format. */
   format?: AudioFormat;
-  /** Normalise loudness to this many LUFS. */
+  /** Normalise loudness to this many LUFS. The result is kept even when it is not smaller. */
   loudnorm?: number;
   /** Keep a result that is not smaller when the format changes. A same-format result never replaces a smaller input. */
   allowLarger?: boolean;
@@ -94,7 +94,8 @@ async function optimise(input: string, outputDir: string, opts: Options<AudioOpt
     const loudnorm = opts.loudnorm === undefined ? [] : ['-af', `loudnorm=I=${opts.loudnorm}:TP=-1.5:LRA=11,aresample=${rate}`];
     const args = ['-i', input, ...await coverArtArgs(input, format, tmp, opts, signal), ...audioEncodingArgs(format, bitrate, { aggressive: opts.aggressive, inputSampleRate: info.sampleRate }), ...loudnorm];
     await ffmpeg(args, out, info, opts);
-    if ((await stat(out)).size >= inputBytes && (sameFormat || !opts.allowLarger)) {
+    // A requested loudness change is kept whatever its size; dropping it would ignore the request.
+    if (opts.loudnorm === undefined && (await stat(out)).size >= inputBytes && (sameFormat || !opts.allowLarger)) {
       opts.onProgress?.(1);
       return { path: input, bytes: inputBytes, format: inputExt, durationMs: info.durationMs, bitrate: inputKbps, unchanged: true };
     }
