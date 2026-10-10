@@ -199,21 +199,31 @@ export const orList = (values: readonly string[]) => values.length < 3 ? values.
  * filter without a condition. The text parser refuses them; stored pipelines keep them (see `pipelineProblems`). Regexes
  * are not checked here: macOS writes ICU syntax, which the executor reads.
  */
-export function stepProblems(step: PipelineStep): StepProblem[] {
-  const problems: StepProblem[] = [];
-  const number = (param: string, value: number | undefined, rule: NumberRule) => { if (value !== undefined && breaks(value, rule)) problems.push({ param, message: `${param} must be ${describe(rule)}, got ${value}` }); };
+export const stepProblems = (step: PipelineStep): StepProblem[] => checkStep(step).map(({ problem }) => problem);
+
+/**
+ * The problems that make a step unsafe to run at all: a number out of range (`downscale(factor: 0)`), an empty value
+ * (`rename(to: "")`), a step missing what it needs. The executor refuses these; unknown names and values are left to it.
+ */
+export const blockingProblems = (step: PipelineStep): StepProblem[] => checkStep(step).filter(({ blocking }) => blocking).map(({ problem }) => problem);
+
+function checkStep(step: PipelineStep): { problem: StepProblem; blocking: boolean }[] {
+  const found: { problem: StepProblem; blocking: boolean }[] = [];
+  const problems = { push: (problem: StepProblem, blocking = true) => found.push({ problem, blocking }) };
+  const number = (param: string, value: number | undefined, rule: NumberRule, blocking = true) => { if (value !== undefined && breaks(value, rule)) problems.push({ param, message: `${param} must be ${describe(rule)}, got ${value}` }, blocking); };
   const filled = (param: string, value: string | undefined) => { if (value !== undefined && !value.trim()) problems.push({ param, message: `${param} needs a value` }); };
-  const oneOf = (param: string, value: string, values: readonly string[]) => { if (!values.includes(value)) problems.push({ param, message: `${param} must be ${orList(values)}, got "${value}"` }); };
+  const oneOf = (param: string, value: string, values: readonly string[]) => { if (!values.includes(value)) problems.push({ param, message: `${param} must be ${orList(values)}, got "${value}"` }, false); };
   const [kind, p] = stepEntry(step);
   if ('location' in p) filled('location', p.location);
   switch (kind) {
     case 'optimise':
-      number('dpi', p.dpi, POSITIVE_INT);
-      if (p.compression && JSON.stringify(effectiveCompression(p.compression)) !== JSON.stringify({ tier: p.compression.tier, factor: p.compression.factor })) problems.push({ param: 'compression', message: `compression ${JSON.stringify(p.compression)} is not a tier Clop knows with a factor from 0 to 100` });
+      // A stored dpi of 0 means adaptive to the PDF engine, so it runs.
+      number('dpi', p.dpi, POSITIVE_INT, p.dpi !== 0);
+      if (p.compression && JSON.stringify(effectiveCompression(p.compression)) !== JSON.stringify({ tier: p.compression.tier, factor: p.compression.factor })) problems.push({ param: 'compression', message: `compression ${JSON.stringify(p.compression)} is not a tier Clop knows with a factor from 0 to 100` }, false);
       break;
     case 'downscale': number('factor', p.factor, { above: 0, max: 1 }); break;
     case 'lowerBitrate': number('kbps', p.kbps, POSITIVE_INT); break;
-    case 'convert': filled('to', p.to); if (p.to.trim() && !/^[a-z0-9]+$/i.test(p.to)) problems.push({ param: 'to', message: `to must be a format extension such as webp or mp4, got "${p.to}"` }); break;
+    case 'convert': filled('to', p.to); if (p.to.trim() && !/^[a-z0-9]+$/i.test(p.to)) problems.push({ param: 'to', message: `to must be a format extension such as webp or mp4, got "${p.to}"` }, false); break;
     case 'crop':
       for (const key of ['width', 'height', 'longEdge'] as const) number(key, p[key], POSITIVE_INT);
       if (p.aspectRatio !== undefined && !parseAspectRatio(p.aspectRatio)) problems.push({ param: 'aspectRatio', message: `aspectRatio must look like 16:9 or 1.91:1, got "${p.aspectRatio}"` });
@@ -244,7 +254,7 @@ export function stepProblems(step: PipelineStep): StepProblem[] {
     case 'uploadWith': oneOf('app', p.app, UPLOAD_APPS); break;
     case 'openWith': filled('app', p.app); break;
   }
-  return problems;
+  return found;
 }
 
 const typeLabel = (type: ClopFileType) => type === 'pdf' ? 'PDF' : type;
