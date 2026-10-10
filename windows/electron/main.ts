@@ -99,18 +99,24 @@ async function dismiss(id: string) {
   hideTimers.delete(id); hidden.delete(id); await engine.dismiss(id);
   if (!quiet.delete(id)) removed(id);
 }
+/** Shows a result that hid or was dismissed again, with its hide timer, and takes it out of the removed order. */
+function bringBack(id: string) {
+  if (!((hidden.has(id) && engine.has(id)) || engine.bringBack(id))) return false;
+  hidden.delete(id);
+  const at = removedOrder.lastIndexOf(id);
+  if (at >= 0) removedOrder.splice(at, 1);
+  scheduleHide(id); syncFloating(); broadcast();
+  return true;
+}
 /** "Bring back last result": the result that hid or was dismissed last shows again. */
 function bringBackLast() {
-  while (removedOrder.length) {
-    const id = removedOrder.pop()!;
-    if ((hidden.has(id) && engine.has(id)) || engine.bringBack(id)) { hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); return; }
-  }
+  while (removedOrder.length) if (bringBack(removedOrder.at(-1)!)) return; else removedOrder.pop();
   inform('There is no result to bring back.');
 }
 /** "Revert last optimisations": the latest batch of results gets its originals back, over the files of watched folders too. */
 async function revertLast() {
   // A result dismissed since, such as one cancelled while it was being placed, comes back to be restored.
-  const ids = lastBatch.take().filter(id => engine.has(id) || engine.bringBack(id));
+  const ids = lastBatch.take().filter(id => engine.has(id) || bringBack(id));
   if (!ids.length) { inform('There are no recent optimisations to revert.'); return; }
   // Each result on its own: one the user edited, moved or deleted since stays as it is, and the rest are still restored.
   const { restored, failures } = await restoreAll(engine, ids);
