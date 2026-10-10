@@ -1,9 +1,23 @@
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { lstat, mkdir, readdir, rm, rmdir, stat, unlink } from 'node:fs/promises';
+import { lstat, mkdir, readdir, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { copyTo, exists, moveTo, samePath } from './fileops';
 import { expandHome } from './settings/paths';
+
+/** Dropped into the working directory so a later start knows the folder was made for Clop. */
+const MARKER = '.clop-workdir';
+const LAYOUT = new Set(['backups', 'batch-backups', 'temp', MARKER]);
+
+/** The first symlink or junction among `dir` and its ancestors. */
+async function linkAmong(dir: string): Promise<string | undefined> {
+  for (let current = dir; ;) {
+    if ((await lstat(current).catch(() => undefined))?.isSymbolicLink()) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
 
 /** Whether `child` is `parent` or inside it. */
 const within = (parent: string, child: string, platform: NodeJS.Platform = process.platform) => {
@@ -67,10 +81,20 @@ export class Workdir {
     return [this.backups, this.batchBackups, this.temp].some(dir => within(dir, path.resolve(file)));
   }
 
+  /**
+   * Creates the layout. Refuses a folder that holds other files (unless Clop made it), because the cleaner
+   * deletes inside `backups` and `temp`, and refuses links anywhere on the path, because a link could point
+   * the cleaner at someone else's files.
+   */
   async ensure(): Promise<this> {
-    // The cleaner deletes inside these two, so they must be real folders: a link could point it at someone else's files.
-    for (const dir of [this.backups, this.temp]) if ((await lstat(dir).catch(() => undefined))?.isSymbolicLink()) throw new Error(`${dir} is a link. Remove it so Clop can use its own folder.`);
+    for (const dir of [this.backups, this.temp]) {
+      const link = await linkAmong(dir);
+      if (link) throw new Error(`${link} is a link. Remove it so Clop can use its own folder.`);
+    }
+    const entries = await readdir(this.root).catch(() => undefined);
+    if (entries && !entries.includes(MARKER) && !entries.every(name => LAYOUT.has(name))) throw new Error(`${this.root} already holds files that are not Clop's. Choose an empty folder for the working directory.`);
     await Promise.all([this.backups, this.batchBackups, this.temp].map(dir => mkdir(dir, { recursive: true })));
+    await writeFile(path.join(this.root, MARKER), 'Clop working directory. Files in backups and temp are deleted after the cleanup interval.\n', { flag: 'a' });
     return this;
   }
 
@@ -125,7 +149,7 @@ export class Workdir {
 
   private async sweepAll(maxAgeMs: number, now: number) {
     let removed = 0;
-    for (const dir of [this.backups, this.temp]) removed += await sweep(dir, maxAgeMs, now, this.protectedDirs);
+    if (!await linkAmong(this.root)) for (const dir of [this.backups, this.temp]) removed += await sweep(dir, maxAgeMs, now, this.protectedDirs);
     for (const dir of this.legacy) {
       removed += await sweep(dir, maxAgeMs, now, this.protectedDirs);
       await rmdir(dir).catch(() => {});

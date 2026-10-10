@@ -19,7 +19,7 @@ async function put(file: string, content = 'x') { await mkdir(path.dirname(file)
 test('lays out backups, batch-backups and temp under the root, expanding ~', async t => {
   const dir = await folder(t);
   const workdir = await new Workdir(path.join(dir, 'work')).ensure();
-  assert.deepEqual((await readdir(workdir.root)).sort(), ['backups', 'batch-backups', 'temp']);
+  assert.deepEqual((await readdir(workdir.root)).sort(), ['.clop-workdir', 'backups', 'batch-backups', 'temp']);
   assert.deepEqual([workdir.backups, workdir.batchBackups, workdir.temp], ['backups', 'batch-backups', 'temp'].map(name => path.join(dir, 'work', name)));
   assert.equal(new Workdir('~/Clop/work', { home: dir }).root, path.join(dir, 'Clop', 'work'));
   assert.equal(new Workdir('$HOME/work', { home: dir }).root, path.join(dir, 'work'));
@@ -100,7 +100,7 @@ test('protected folders survive cleanup and force clean; force clean empties the
   unprotect();
   assert.equal(await workdir.forceClean(), 1);
   assert.deepEqual([await exists(live), await exists(backup), await exists(batch)], [false, false, true]);
-  assert.deepEqual((await readdir(workdir.root)).sort(), ['backups', 'batch-backups', 'temp'], 'the layout is recreated');
+  assert.deepEqual((await readdir(workdir.root)).sort(), ['.clop-workdir', 'backups', 'batch-backups', 'temp'], 'the layout is recreated');
 });
 
 test('force clean removes files whatever their timestamps say, including ones dated after now', async t => {
@@ -136,6 +136,7 @@ test('the cleaner sweeps right away, reads the interval on every pass and stops 
   for (const end = Date.now() + 2000; await exists(file) && Date.now() < end;) await delay(20);
   assert.equal(await exists(file), false);
   stop();
+  await delay(100); // a pass that was already running may still finish
   const next = await put(path.join(workdir.temp, 'b.png'));
   await delay(80);
   assert.equal(await exists(next), true, 'a stopped cleaner does nothing');
@@ -153,9 +154,9 @@ test('a legacy folder that holds the working directory or batch backups is never
   assert.equal(await exists(other), true, 'a folder that contains the working directory is not a legacy folder');
   // A legacy folder inside batch-backups is also left alone.
   const inside = new Workdir(path.join(dir, 'w2'), { legacy: [path.join(dir, 'w2', 'batch-backups', 'old'), path.join(dir, 'w2', 'old-images')] });
+  await inside.ensure();
   const kept = await put(path.join(dir, 'w2', 'batch-backups', 'old', 'k.png'));
   const swept = await put(path.join(dir, 'w2', 'old-images', 's.png'));
-  await inside.ensure();
   await inside.cleanup(DAY, later(30));
   assert.deepEqual([await exists(kept), await exists(swept)], [true, false]);
 });
@@ -183,4 +184,33 @@ test('the cleaner refuses linked roots and never follows links inside them', { s
   assert.equal(await workdir.cleanup(DAY, later(30)), 1);
   assert.equal(await exists(precious), true);
   assert.deepEqual(await readdir(workdir.temp), []);
+});
+
+test('a folder that holds other files is refused, a Clop-made or empty one is accepted, and the choice is remembered', async t => {
+  const dir = await folder(t);
+  const broad = path.join(dir, 'profile');
+  const theirs = await put(path.join(broad, 'temp', 'their-notes.txt'));
+  await put(path.join(broad, 'Documents', 'a.docx'));
+  await assert.rejects(new Workdir(broad).ensure(), /not Clop's/);
+  assert.equal(await exists(theirs), true, 'nothing of theirs is touched');
+  // Only Clop's own layout (an earlier start without the marker) is adopted.
+  const earlier = path.join(dir, 'earlier');
+  await put(path.join(earlier, 'backups', 'b.png'));
+  await new Workdir(earlier).ensure();
+  assert.ok((await readdir(earlier)).includes('.clop-workdir'));
+  // Once marked, extra files beside the layout are fine.
+  await put(path.join(earlier, 'notes.txt'));
+  await new Workdir(earlier).ensure();
+  // A new, empty folder works as before.
+  await new Workdir(path.join(dir, 'fresh')).ensure();
+});
+
+test('a link anywhere on the working directory path is refused and never swept', { skip: process.platform === 'win32' ? 'creating links needs privileges on Windows' : false }, async t => {
+  const dir = await folder(t), real = path.join(dir, 'real');
+  await put(path.join(real, 'work', 'temp', 'victim.png'));
+  await symlink(real, path.join(dir, 'via'), 'dir');
+  const workdir = new Workdir(path.join(dir, 'via', 'work'));
+  await assert.rejects(workdir.ensure(), /is a link/);
+  assert.equal(await workdir.cleanup(DAY, later(30)), 0);
+  assert.equal(await exists(path.join(real, 'work', 'temp', 'victim.png')), true);
 });
