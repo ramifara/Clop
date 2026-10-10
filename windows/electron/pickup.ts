@@ -11,9 +11,18 @@ export class ClipboardPickup {
   private pending?: ClipboardChange & { editing: boolean };
   private timer: unknown;
   private session?: { process: number; at: number };
-  constructor(private pick: (change: ClipboardChange) => void, private settle = 300, private sessionGap = 30_000, private timers: Timers = systemTimers) {}
+  constructor(private pick: (change: ClipboardChange) => void, private settle = 500, private sessionGap = 30_000, private timers: Timers = systemTimers) {}
   change(change: ClipboardChange) {
     const now = this.timers.now(), process = change.process || 0;
+    // One copy can change the clipboard sequence several times, e.g. when OLE flushes it.
+    // Changes that arrive while the previous one is settling belong to that same copy.
+    if (this.pending && !this.pending.editing) {
+      if (this.session && change.image && this.session.process === process) this.session.at = now;
+      this.cancel();
+      this.pending = { ...change, editing: false };
+      this.timer = this.timers.set(() => this.flush(), this.settle);
+      return;
+    }
     let editing = false;
     if (change.image && process) {
       editing = autoCopyEditors.has(change.app ?? '') || (this.session?.process === process && now - this.session.at < this.sessionGap);
