@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import { ImageEngine, message } from './engine';
 import { defaultSettings, parseSettings } from './settings';
 import { WindowsBridge } from './native';
+import { ClipboardPickup } from './pickup';
 import type { AppState, ImageOptions, ImageResult, Settings } from '../src/types';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -18,6 +19,7 @@ const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
 let clipboardBusy = false, lastFingerprint = '', lastOwnFingerprint = '', clipboardTimer: NodeJS.Timeout | undefined;
 let lastClipboardSequence: number | undefined;
+const pickup = new ClipboardPickup(change => { void optimiseClipboard(change.sequence, change.paths); });
 let pendingClipboard: { sequence?: number; paths: string[]; manual: boolean; aggressive: boolean } | undefined;
 let clipboardWrites: Promise<void> = Promise.resolve();
 const bridge = new WindowsBridge();
@@ -228,6 +230,7 @@ function updateTray() {
 }
 async function updateSettings(value: Partial<Settings>) {
   settings = parseSettings(value, settings);
+  if (!settings.clipboard) pickup.cancel();
   await writeFile(settingsPath, JSON.stringify(settings, null, 2));
   floating.setAlwaysOnTop(settings.alwaysOnTop);
   syncFloating();
@@ -306,17 +309,18 @@ else {
     ] as const) if (!globalShortcut.register(key, callback)) inform(`${key} is already in use. Use the tray menu or floating shelf instead.`);
     if (process.platform === 'win32') {
       bridge.on('ready', () => { bridgeReady = true; void bridge.request(nativeSettings()).then(() => { if (settings.clipboard) void optimiseClipboard(); }).catch(error => inform(message(error))); });
-      bridge.on('clipboard', event => { if (settings.clipboard) void optimiseClipboard(event.sequence, event.paths); });
+      bridge.on('clipboard', event => { if (settings.clipboard) pickup.change(event); });
+      bridge.on('foreground', event => pickup.focus(Number(event.process)));
       bridge.on('drag-start', () => { if (settings.explorerDrag) { dragging = true; dropActive = true; floating.setIgnoreMouseEvents(false); syncFloating(); broadcast(); } });
       bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
-      bridge.on('stopped', () => { bridgeReady = false; startClipboardFallback(); });
+      bridge.on('stopped', () => { bridgeReady = false; pickup.cancel(); startClipboardFallback(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));
     } else startClipboardFallback();
     const files = process.argv.slice(1).filter(arg => /\.(png|jpe?g|webp|gif|avif|tiff?)$/i.test(arg) && path.isAbsolute(arg));
     if (files.length) await importPaths(files, 'file');
   }).catch(error => { dialog.showErrorBox('Clop could not start', message(error)); app.quit(); });
-  app.on('before-quit', () => { quitting = true; if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
+  app.on('before-quit', () => { quitting = true; pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });
   app.on('activate', () => { if (engine) showLatest(); });
 }
