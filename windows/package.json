@@ -12,7 +12,7 @@
     "dev": "vite --host 127.0.0.1",
     "desktop": "node scripts/dev.mjs",
     "build": "tsc --noEmit && vite build && node scripts/build.mjs",
-    "test": "tsx --test electron/engine.test.ts electron/settings.test.ts electron/pickup.test.ts",
+    "test": "tsx --test \"core/**/*.test.ts\" \"electron/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "dist:win": "npm run build && electron-builder --win nsis portable --x64 --publish never"
   },
