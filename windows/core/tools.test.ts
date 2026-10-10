@@ -11,7 +11,7 @@ import { TOOL_NAMES, executableName, hasTool, toolDirs, toolPath, toolsDir, type
 
 const windowsRoot = fileURLToPath(new URL('..', import.meta.url));
 const bundle = path.join(windowsRoot, '.tools', 'win32-x64', 'bin');
-const packages: { version: string; provides?: ToolName[] }[] = JSON.parse(readFileSync(path.join(windowsRoot, 'scripts', 'tools.json'), 'utf8'))['win32-x64'];
+const packages: { name: string; version: string; license: string; url: string; provides?: ToolName[]; sources?: string[] }[] = JSON.parse(readFileSync(path.join(windowsRoot, 'scripts', 'tools.json'), 'utf8'))['win32-x64'];
 const VERSION_ARGS: Record<ToolName, string[]> = { ffmpeg: ['-version'], ffprobe: ['-version'], gs: ['--version'], gifsicle: ['--version'], gifski: ['--version'], jpegoptim: ['--version'], pngquant: ['--version'], exiftool: ['-ver'], 'heif-dec': ['--version'], 'heif-enc': ['--version'], cjxl: ['--version'], djxl: ['--version'] };
 
 /** Missing tools skip locally; CI must have every tool. */
@@ -98,4 +98,25 @@ test('the Windows bundle carries every DLL its programs load, apart from Windows
     missing.push(`${file} needs ${dll}`);
   }
   assert.deepEqual(missing, []);
+});
+
+test('the Windows bundle carries licence texts for every package and notices with download and source addresses', async t => {
+  if (!existsSync(bundle)) {
+    if (process.env.CI) assert.fail('The tool bundle is missing. Run node scripts/fetch-tools.mjs.');
+    return t.skip('the tool bundle has not been fetched');
+  }
+  const text = await readFile(path.join(bundle, 'THIRD_PARTY_NOTICES.txt'), 'utf8'), notices = text.split('\r\n\r\n');
+  assert.match(text, /^Clop for Windows\r\n[^]*GNU General\s+Public License, version 3/);
+  for (const pkg of packages) {
+    const licenses = await readdir(path.join(bundle, 'licenses', pkg.name), { recursive: true, withFileTypes: true }).catch(() => []);
+    assert.ok(licenses.some(entry => entry.isFile()), `${pkg.name} has no licence file`);
+    const notice = notices.find(block => block.startsWith(`${pkg.name} ${pkg.version}\r\n`)) ?? '';
+    assert.ok(notice.includes(pkg.url), `${pkg.name} has no notice with its download address`);
+    // Every package except proprietary ones (the Visual C++ runtime) needs source: that covers the GPL family,
+    // including MSYS2 packages whose licence is declared only as "custom", such as x264.
+    if (/GPL/.test(pkg.license) || !pkg.license.startsWith('LicenseRef-')) {
+      assert.ok(pkg.sources?.length, `${pkg.name} has no source address`);
+      for (const source of pkg.sources) assert.ok(notice.includes(source), `${pkg.name}'s notice lacks ${source}`);
+    }
+  }
 });

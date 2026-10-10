@@ -3,12 +3,15 @@
 //   npx tsx scripts/resolve-msys2.ts libheif:heif-dec,heif-enc pngquant:pngquant
 // Each argument is <package>:<tool>[,<tool>...]; the tools are the package's bin/<tool>.exe. Following real PE imports
 // rather than package dependencies keeps out libraries the tools never load (SDL2 for heif-view, for example).
+// Licence files come from each package's share/licenses; packages without any keep the hand-pinned licenseTexts
+// already in tools.json, and a warning names any package that still has none.
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { zstdDecompressSync } from 'node:zlib';
 import { peImports } from './pe-imports';
 
 const REPO = 'https://repo.msys2.org/mingw/ucrt64/', PREFIX = 'mingw-w64-ucrt-x86_64-';
-interface Package { name: string; version: string; filename: string; sha256: string; license: string; files: string[]; depends: string[] }
+interface Package { name: string; version: string; base: string; homepage: string; filename: string; sha256: string; license: string; files: string[]; depends: string[] }
 
 function untar(tar: Buffer) {
   const entries = new Map<string, Buffer>();
@@ -43,7 +46,7 @@ const db = untar(zstdDecompressSync(await download(`${REPO}ucrt64.files`)));
 for (const [entry, body] of db) {
   if (!entry.endsWith('/desc')) continue;
   const fields = new Map(body.toString('utf8').split('\n\n').map(block => { const [key, ...values] = block.trim().split('\n'); return [key, values] as const; }));
-  const pkg: Package = { name: fields.get('%NAME%')![0], version: fields.get('%VERSION%')![0], filename: fields.get('%FILENAME%')![0], sha256: fields.get('%SHA256SUM%')![0], license: (fields.get('%LICENSE%') ?? []).join(' AND ').replace(/spdx:/g, ''), files: db.get(entry.replace(/desc$/, 'files'))!.toString('utf8').split('\n').slice(1).filter(Boolean), depends: (fields.get('%DEPENDS%') ?? []).map(dep => dep.split(/[<>=]/)[0]) };
+  const pkg: Package = { name: fields.get('%NAME%')![0], version: fields.get('%VERSION%')![0], base: fields.get('%BASE%')![0], homepage: fields.get('%URL%')?.[0] ?? '', filename: fields.get('%FILENAME%')![0], sha256: fields.get('%SHA256SUM%')![0], license: (fields.get('%LICENSE%') ?? []).join(' AND ').replace(/spdx:/g, ''), files: db.get(entry.replace(/desc$/, 'files'))!.toString('utf8').split('\n').slice(1).filter(Boolean), depends: (fields.get('%DEPENDS%') ?? []).map(dep => dep.split(/[<>=]/)[0]) };
   packages.set(pkg.name, pkg);
   for (const file of pkg.files) if (/^ucrt64\/bin\/[^/]+\.dll$/i.test(file)) owners.set(file.slice(11).toLowerCase(), [...owners.get(file.slice(11).toLowerCase()) ?? [], pkg]);
 }
@@ -83,11 +86,15 @@ for (const { name, tools } of wanted) {
   }
 }
 
-const json = (value: unknown) => JSON.stringify(value).replace(/","/g, '", "').replace(/":"/g, '": "');
+const pinned: { name: string; licenseTexts?: unknown[] }[] = JSON.parse(readFileSync(new URL('tools.json', import.meta.url), 'utf8'))['win32-x64'];
+const json = (value: unknown): string => Array.isArray(value) ? `[${value.map(json).join(', ')}]` : value && typeof value === 'object' ? `{${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)}: ${json(item)}`).join(', ')}}` : JSON.stringify(value);
 const lines = [...needed.values()].sort((a, b) => a.pkg.name.localeCompare(b.pkg.name)).map(({ pkg, files, usedBy }) => {
   const short = pkg.name.slice(PREFIX.length), root = wanted.find(w => w.name === short);
   // A tool's package records the upstream version, which is what the tool prints and what CI checks.
-  const fields = { name: `msys2-${short}`, version: root ? pkg.version.replace(/-\d+$/, '') : pkg.version, ...(root ? { provides: root.tools } : { usedBy: [...usedBy].sort() }), license: pkg.license, url: REPO + pkg.filename, sha256: pkg.sha256, archive: 'tar.zst', files: Object.fromEntries([...files].sort().map(file => [file, file.slice(11)])) };
+  const licenses = pkg.files.filter(file => file.startsWith('ucrt64/share/licenses/') && !file.endsWith('/')).sort();
+  const licenseTexts = pinned.find(entry => entry.name === `msys2-${short}`)?.licenseTexts;
+  if (!licenses.length && !licenseTexts) console.error(`${pkg.name} ships no licence files; add licenseTexts for msys2-${short} to tools.json.`);
+  const fields = { name: `msys2-${short}`, version: root ? pkg.version.replace(/-\d+$/, '') : pkg.version, ...(root ? { provides: root.tools } : { usedBy: [...usedBy].sort() }), license: pkg.license, homepage: pkg.homepage, url: REPO + pkg.filename, sha256: pkg.sha256, archive: 'tar.zst', files: Object.fromEntries([...files].sort().map(file => [file, file.slice(11)])), ...(licenses.length ? { licenses } : {}), ...(licenseTexts ? { licenseTexts } : {}), sources: [`https://repo.msys2.org/mingw/sources/${pkg.base}-${pkg.version}.src.tar.zst`] };
   return `    { ${Object.entries(fields).map(([key, value]) => `"${key}": ${json(value)}`).join(', ')} }`;
 });
 console.log(lines.join(',\n'));
