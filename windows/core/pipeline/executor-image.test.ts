@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 import { graphic, photo } from '../media/image.fixtures';
@@ -59,6 +59,20 @@ test('steps that ran as one pass fail together, named as a range', async t => {
   await assert.rejects(w.run('optimise -> crop(width: 100) -> convert(to: bmp) -> optimise', input), (error: PipelineStepError) =>
     error instanceof PipelineStepError && error.step === 0 && error.lastStep === 2
     && error.message.startsWith('Steps 1–3, optimise -> crop(width: 100) -> convert(to: bmp), failed: Clop cannot convert images to bmp'));
+});
+
+test('a result in the original\'s format keeps its extension as the original spells it', async t => {
+  const w = await pipelineWorkspace(t, 'jpegoptim'); if (!w) return;
+  for (const name of ['photo.jpg', 'SHOT.JPG']) {
+    const input = w.file(name);
+    await photo(400, 300).jpeg({ quality: 98 }).toFile(input);
+    assert.equal((await w.run('optimise', input)).file, input, name);
+  }
+  const input = w.file('photo.jpg');
+  assert.equal((await w.run('downscale(factor: 0.5, location: sameFolder)', input)).file, input, 'same name and format: replaced, with a backup');
+  assert.equal((await w.run('downscale(factor: 0.5, location: "%f-small")', input)).file, w.file('photo-small.jpg'));
+  assert.equal((await w.run('convert(to: png)', input)).file, w.file('photo.png'), 'a conversion takes the new extension');
+  assert.deepEqual((await readdir(w.files)).sort(), ['SHOT.JPG', 'photo-small.jpg', 'photo.jpg', 'photo.png']);
 });
 
 test('a crop the image already fits leaves it as it is', async t => {

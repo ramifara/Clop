@@ -91,9 +91,23 @@ export async function destinationPath(env: PlacementEnv, type: FileType, kind: O
   }
 }
 
+/** Extensions that name one format, so `photo.jpg` optimised as JPEG stays `photo.jpg`. */
+const FORMAT_ALIASES: Record<string, string> = { jpg: 'jpeg', jpe: 'jpeg', tif: 'tiff', heif: 'heic', aif: 'aiff', htm: 'html', mpg: 'mpeg', qt: 'mov' };
+const formatOf = (ext: string) => { const bare = ext.replace(/^\./, '').toLowerCase(); return FORMAT_ALIASES[bare] ?? bare; };
+const extensionOf = (file: string) => /\.[^.\\/]*$/.exec(file)?.[0] ?? '';
+/**
+ * The extension a result placed for `original` takes: the original's own spelling (`.jpg`, `.JPG`, `.tif`) when the format did
+ * not change, the produced file's when it did (a conversion), and the original's when the produced file has none.
+ */
+export function placedExtension(produced: string, original: string): string {
+  const own = extensionOf(original), made = extensionOf(produced);
+  return !made ? own : own && formatOf(own) === formatOf(made) ? own : made;
+}
+
 /**
  * Port of `planPlacement`: decides the behaviour and destination, including the `%i` counter, with no
- * heavy I/O. The result carries the produced file's extension, so a conversion lands as e.g. `.webp`.
+ * heavy I/O. A conversion lands under the produced file's extension (`.webp`); a result in the original's format keeps
+ * the original's spelling of it (`.jpg`, not the encoder's `.jpeg`).
  * Throws when the destination folder is not writable, before anything is encoded.
  */
 export async function planPlacement(env: PlacementEnv, args: { produced: string; original: string; type: FileType; kind?: OutputKind; overrides?: PlacementOverride }): Promise<PlacementPlan> {
@@ -102,7 +116,7 @@ export async function planPlacement(env: PlacementEnv, args: { produced: string;
   if (behaviour === 'temporary') return { behaviour };
   let dest = await destinationPath(env, type, kind, original, overrides);
   if (!dest) return { behaviour };
-  const p = pathApi(env), extension = p.extname(produced) || p.extname(original);
+  const p = pathApi(env), extension = placedExtension(produced, original);
   if (p.extname(dest).toLowerCase() !== extension.toLowerCase()) dest = p.join(p.dirname(dest), p.parse(dest).name + extension);
   // Replacing a file needs write access to the folder holding it, not to the file.
   const folder = p.dirname(dest);

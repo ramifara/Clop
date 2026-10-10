@@ -2,7 +2,7 @@ import { mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { copyTo, exists, moveTo, samePath } from '../fileops';
 import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } from '../media/detect';
-import { executePlacement, type FileBehaviour } from '../placement';
+import { executePlacement, placedExtension, type FileBehaviour } from '../placement';
 import type { RunState } from './run-state';
 
 // Where step results go (`applyLocation` in Clop/Pipeline.swift) and the file steps copy, move, rename and delete
@@ -43,12 +43,14 @@ async function place(run: RunState, behaviour: FileBehaviour, produced: string, 
  */
 export async function applyLocation(run: RunState, location: string, result: string, original: string): Promise<string> {
   const unchanged = samePath(result, original);
+  // A result in the original's format keeps the original's spelling of the extension (`photo.jpg`, not the encoder's `photo.jpeg`).
+  const ownExtension = placedExtension(result, original), name = path.parse(result).name + ownExtension;
   switch (location) {
     case 'inPlace':
       if (unchanged) { await run.mark(original); return original; }
-      return place(run, 'inPlace', result, original, path.join(path.dirname(original), path.basename(result)));
+      return place(run, 'inPlace', result, original, path.join(path.dirname(original), name));
     case 'sameFolder': {
-      const dest = path.join(path.dirname(original), path.basename(result));
+      const dest = path.join(path.dirname(original), name);
       if (samePath(dest, result)) return result;
       return place(run, samePath(dest, original) ? 'inPlace' : 'sameFolder', result, original, dest);
     }
@@ -58,12 +60,12 @@ export async function applyLocation(run: RunState, location: string, result: str
   }
   const resolved = run.resolve(location);
   if (!resolved) return result;
-  const ext = extension(result) || extension(original);
+  const ext = ownExtension.slice(1);
   let dest: string;
   if (!SEPARATOR.test(resolved)) dest = path.join(path.dirname(original), hasFileExtension(resolved, [ext]) ? resolved : `${resolved}.${ext}`);
   else {
     const absolute = path.resolve(path.dirname(original), resolved);
-    dest = endsInSeparator(resolved) || await isDirectory(absolute) ? path.join(absolute, path.basename(result)) : absolute;
+    dest = endsInSeparator(resolved) || await isDirectory(absolute) ? path.join(absolute, name) : absolute;
   }
   if (!hasFileExtension(path.basename(dest), [extension(result), extension(original)]) && ext) dest = `${dest}.${ext}`;
   if (samePath(dest, result)) return result;
