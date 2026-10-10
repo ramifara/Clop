@@ -8,14 +8,16 @@ import type { CompressionQuality } from '../settings/schema';
 import * as cq from './compression';
 import { centreRect, cropGeometry, type CropSpec, type Rect } from './crop-size';
 import { copyMetadata } from './exif';
-import { encodeHEIC, encodeJXL, readableImage, sniffImage } from './image-codecs';
+import { encodeHEIC, encodeJXL, probeImage, readableImage } from './image-codecs';
+import { toneMapToSDR } from './hdr';
 import type { MediaJobOptions, MediaOutput } from './types';
 import { watermarkFilters, watermarkOverlay, type Watermark } from './watermark';
 
 // Windows cannot delete or rename a file that sharp's file cache still holds open.
 sharp.cache({ files: 0 });
 /** Every decode refuses corrupt data and stays under the engine's 60-megapixel budget, counted across all frames. */
-const decode = (file: string, animated = false) => sharp(file, { failOn: 'error', limitInputPixels: 60_000_000, animated });
+const MAX_PIXELS = 60_000_000;
+const decode = (file: string, animated = false) => sharp(file, { failOn: 'error', limitInputPixels: MAX_PIXELS, animated });
 
 export type ImageFormat = 'png' | 'jpeg' | 'webp' | 'avif' | 'gif' | 'heic' | 'jxl';
 export const IMAGE_FORMATS: readonly ImageFormat[] = ['png', 'jpeg', 'webp', 'avif', 'gif', 'heic', 'jxl'];
@@ -45,7 +47,11 @@ interface Job {
   edited: boolean;
   /** `input` is a PNG decoded or tone-mapped from the source, not the source itself. */
   decoded: boolean;
-  compression: CompressionQuality; lossless: boolean; adaptive: boolean; opts: Options; warnings: string[]; started?: boolean;
+  compression: CompressionQuality; lossless: boolean; adaptive: boolean; opts: Options; warnings: string[];
+  /** Bits per sample of the source when deeper than 8, for a lossless HEIC. */
+  bits?: number;
+  /** Reports progress 0 the first time a tool runs. */
+  start: () => void;
 }
 /**
  * An optimiser's result; `quantized` is the PNG pngquant started from, `stored` means the source's
@@ -64,7 +70,7 @@ const threads = () => `--threads=${availableParallelism()}`;
  */
 function tool(job: Job, name: ToolName, args: string[]) {
   const running = run(name, args, { signal: job.opts.signal, cwd: job.tmp });
-  if (!job.started) { job.started = true; job.opts.onProgress?.(0); }
+  job.start();
   return running;
 }
 const local = (file: string) => path.basename(file);
@@ -88,8 +94,10 @@ export function optimiseImage(input: string, outputDir: string, opts: Options): 
 
 async function optimise(input: string, outputDir: string, opts: Options): Promise<MediaOutput> {
   opts.signal?.throwIfAborted();
-  const { format: source, meta: sourceMeta } = await sniffImage(input);
-  if (!source || !SOURCES.has(source)) throw new Error(`Clop cannot optimise ${source?.toUpperCase() ?? 'this'} images. Use PNG, JPEG, GIF, WebP, AVIF, HEIC, JPEG XL, TIFF, BMP or SVG.`);
+  const info = await probeImage(input, opts.signal).catch(() => undefined), source = info?.format, sourceMeta = info?.meta;
+  if (!info || !source || !SOURCES.has(source)) throw new Error(`Clop cannot optimise ${source?.toUpperCase() ?? 'this'} images. Use PNG, JPEG, GIF, WebP, AVIF, HEIC, JPEG XL, TIFF, BMP or SVG.`);
+  // Checked before anything is decoded or rasterised.
+  if (info.width * info.height * info.pages > MAX_PIXELS) throw new Error('This image has too many pixels or animation frames. Use an image under 60 megapixels in total.');
   // HEIC and JPEG XL files are read for their primary image only.
   const animated = (sourceMeta?.pages ?? 1) > 1 && source !== 'heic';
   if (animated && source !== 'gif' && source !== 'webp') throw new Error('Clop can only optimise animated GIF and WebP images.');
@@ -102,8 +110,10 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
   try {
     const copy = path.join(tmp, `source.${source}`);
     await copyFile(input, copy);
-    const readable = await readableImage(copy, source, opts.signal);
-    const meta = readable.decoded ? await decode(readable.file).metadata() : sourceMeta!;
+    let started = false;
+    const start = () => { if (!started) { started = true; opts.onProgress?.(0); } };
+    const readable = await readableImage(copy, source, { signal: opts.signal, onStart: start, keepHDR: lossless });
+    let meta = readable.decoded ? await decode(readable.file).metadata() : sourceMeta!;
     const [sourceWidth, sourceHeight] = displaySize(meta);
     const geometry = opts.cropSize ? cropGeometry(opts.cropSize, sourceWidth, sourceHeight) : undefined;
     const width = geometry?.width ?? opts.width ?? sourceWidth, height = geometry?.height ?? opts.height ?? sourceHeight;
@@ -116,14 +126,25 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
     }
     const resized = width !== (crop?.width ?? sourceWidth) || height !== (crop?.height ?? sourceHeight);
     const edited = resized || !!crop || !!opts.watermark;
+    const originalBytes = await size(input);
+    if (readable.hdr) {
+      // Lossless keeps an HDR photo it is not asked to change; a requested edit or conversion is written as SDR, since nothing Clop writes on Windows holds HDR.
+      if (!edited && (!opts.format || opts.format === source)) { opts.onProgress?.(1); return { path: input, bytes: originalBytes, format: source, width: sourceWidth, height: sourceHeight, unchanged: true }; }
+      const sdr = path.join(tmp, 'sdr.png');
+      await toneMapToSDR(readable.file, sdr, readable.hdr, opts.signal);
+      Object.assign(readable, { file: sdr, decoded: true });
+      meta = await decode(sdr).metadata();
+    }
     let format = opts.format ?? await defaultFormat(source as Source, readable.file);
     // A JPEG keeps its pixels only when jpegoptim works on it as it is; edited or converted, it becomes PNG.
     if (lossless && format === 'jpeg' && (edited || source !== 'jpeg')) format = 'png';
+    // x265 encodes at most 12 bits per sample, so a lossless HEIC of a 16-bit source would lose precision.
+    const bits = meta.depth === 'ushort' ? sourceMeta?.bitsPerSample ?? 16 : undefined;
+    if (lossless && format === 'heic' && bits && bits > 12) format = 'png';
     // GIF's 256-colour palette only keeps the pixels of a GIF that is not edited. Anything else stays in a format that can hold them.
     if (lossless && format === 'gif' && (source !== 'gif' || edited)) format = animated ? 'webp' : 'png';
     const converting = format !== source;
-    const job: Job = { input: readable.file, tmp, source: source as Source, meta, width, height, crop, fill, resized, edited, decoded: readable.decoded, compression, lossless, adaptive: compression.tier === 'adaptive' && !opts.format, opts, warnings: [] };
-    const originalBytes = await size(input);
+    const job: Job = { input: readable.file, tmp, source: source as Source, meta, width, height, crop, fill, resized, edited, decoded: readable.decoded, compression, lossless, adaptive: compression.tier === 'adaptive' && !opts.format, opts, warnings: [], bits, start };
     const done = (output: MediaOutput): MediaOutput => { opts.onProgress?.(1); return job.warnings.length ? { ...output, warnings: job.warnings } : output; };
     const unchanged = () => done({ path: input, bytes: originalBytes, format: source, width: sourceWidth, height: sourceHeight, unchanged: true });
     let result = animated ? await optimiseAnimation(job, format) : await optimiseStill(job, format);
@@ -168,7 +189,8 @@ async function optimiseStill(job: Job, format: ImageFormat): Promise<Encoded> {
     case 'gif': return job.source === 'gif' && !job.opts.watermark ? { ...await optimiseGIF(job, job.input), stored: !job.edited } : optimiseGIF(job, await encode(job, 'gif'), false);
     case 'heic': case 'jxl': {
       const png = await encode(job, 'png'), size = displaySize(await decode(png).metadata()), out = path.join(job.tmp, `encoded.${format}`);
-      return { file: await (format === 'heic' ? encodeHEIC : encodeJXL)(png, out, job.compression, job.opts.signal), format, size };
+      const coded = { signal: job.opts.signal, onStart: job.start };
+      return { file: await (format === 'heic' ? encodeHEIC(png, out, job.compression, { ...coded, bits: job.lossless ? job.bits : undefined }) : encodeJXL(png, out, job.compression, coded)), format, size };
     }
     default: return { file: await encode(job, format), format };
   }

@@ -7,7 +7,9 @@ import sharp, { type Sharp } from 'sharp';
 import { run } from '../run';
 import { needTools } from '../testing';
 import { optimiseImage } from './image';
-import { sniffImage, toPNG } from './image-codecs';
+import { toneMapToSDR } from './hdr';
+import { probeImage, sniffImage, toPNG } from './image-codecs';
+import { stripImageMetadata } from './image-ops';
 import { graphic, photo } from './image.fixtures';
 
 const at = (factor: number) => ({ tier: 'custom', factor }) as const;
@@ -119,12 +121,15 @@ async function patchValues(file: string, count: number) {
   return Array.from({ length: count }, (_, i) => data[(4 * info.width + 16 * i + 8) * info.channels]);
 }
 
-test('PQ and HLG HDR photos are tone-mapped to SDR with SDR white at the reference level', async t => {
+test('PQ and HLG HDR photos are tone-mapped to SDR, with light below the reference white kept', async t => {
   const w = await workspace(t); if (!w) return;
   // Dark, 100 nits, the 203-nit reference white and a 1000-nit highlight.
   const pqSource = await w.file('pq.png', patches([pq(0), pq(100), pq(203), pq(1000)]));
   const pqHEIC = path.join(w.dir, 'pq.heic');
   await run('heif-enc', ['-L', '-b', '10', '--colour_primaries', '9', '--transfer_characteristic', '16', '--matrix_coefficients', '0', '-o', pqHEIC, pqSource]);
+  // Lossless keeps an HDR photo it is not asked to change.
+  const kept = await optimiseImage(pqHEIC, w.out, { compression: lossless, name: 'kept' });
+  assert.deepEqual([kept.unchanged, kept.path, kept.format], [true, pqHEIC, 'heic']);
   const pqOut = await optimiseImage(pqHEIC, w.out, { compression: lossless, format: 'png', name: 'pq' });
   const [black, hundred, white, highlight] = await patchValues(pqOut.path, 4);
   assert.equal(black, 0);
@@ -146,4 +151,71 @@ test('PQ and HLG HDR photos are tone-mapped to SDR with SDR white at the referen
   const sdr = await w.file('sdr.png', patches([0.5]));
   const sdrOut = await optimiseImage(sdr, w.out, { compression: lossless, format: 'png', name: 'sdr' });
   assert.deepEqual(await patchValues(sdrOut.path, 1), [128]);
+});
+
+test('tone-mapping stops when aborted', async t => {
+  const w = await workspace(t); if (!w) return;
+  const source = await w.file('pq.png', patches([pq(100), pq(1000)]));
+  await assert.rejects(toneMapToSDR(source, path.join(w.dir, 'sdr.png'), { transfer: 'smpte2084', primaries: 'bt2020' }, AbortSignal.abort()), { name: 'AbortError' });
+});
+
+/** The first pixel's colour as decoded by heif-dec. */
+async function firstPixel(file: string, dir: string) { const { data } = await decode(file, dir); return [...data.subarray(0, 3)]; }
+
+test('a HEIC with several images is read for its primary image, whatever their sizes', async t => {
+  const w = await workspace(t); if (!w) return;
+  const red = await w.file('red.png', sharp({ create: { width: 64, height: 48, channels: 3, background: '#ff0000' } }).png());
+  const blue = await w.file('blue.png', sharp({ create: { width: 64, height: 48, channels: 3, background: '#0000ff' } }).png());
+  const tall = await w.file('tall.png', sharp({ create: { width: 32, height: 80, channels: 3, background: '#00ff00' } }).png());
+  for (const [name, images, size, colour] of [['same', [red, blue], [64, 48], 0], ['mixed', [tall, red], [32, 80], 1]] as const) {
+    const heic = path.join(w.dir, `${name}.heic`);
+    // heif-enc makes the first image the primary one.
+    await run('heif-enc', ['-q', '95', '-o', heic, ...images]);
+    assert.deepEqual(await probeImage(heic).then(info => [info.format, info.width, info.height, info.pages]), ['heic', ...size, 1], name);
+    const output = await optimiseImage(heic, w.out, { compression: at(30), format: 'png', name });
+    assert.deepEqual([output.width, output.height], size, name);
+    const pixel = await firstPixel(output.path, w.dir);
+    assert.ok(pixel[colour] > 200 && pixel.filter((_, i) => i !== colour).every(v => v < 60), `${name}: ${pixel}`);
+  }
+});
+
+test('a lossless HEIC keeps a 10-bit source exactly, and a 16-bit source becomes PNG', async t => {
+  const w = await workspace(t); if (!w) return;
+  const source = await w.file('deep.png', patches([0.1, 0.3, 0.5, 0.9]));
+  const tenBit = path.join(w.dir, 'deep.heic');
+  await run('heif-enc', ['-L', '-b', '10', '-o', tenBit, source]);
+  const again = await optimiseImage(tenBit, w.out, { compression: lossless, format: 'heic', cropSize: { width: 0, height: 0, cropRect: { x: 0, y: 0, width: 0.5, height: 1 } }, name: 'again' });
+  const deep = async (file: string, name: string) => { await run('heif-dec', ['--quiet', file, path.join(w.dir, name)]); return sharp(path.join(w.dir, name)).toColourspace('rgb16').raw({ depth: 'ushort' }).toBuffer(); };
+  const [before, after] = [await deep(tenBit, 'before.png'), await deep(again.path, 'after.png')];
+  const left = Buffer.concat(Array.from({ length: 8 }, (_, row) => before.subarray(row * 64 * 6, row * 64 * 6 + 32 * 6)));
+  assert.deepEqual([again.format, again.width, after.equals(left)], ['heic', 32, true]);
+  assert.equal((await optimiseImage(source, w.out, { compression: lossless, format: 'heic', name: 'sixteen' })).format, 'png');
+});
+
+test('images over 60 megapixels are refused before they are decoded', async t => {
+  const w = await workspace(t); if (!w) return;
+  const svg = await w.file('huge.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10000" height="7000"/>'));
+  await assert.rejects(optimiseImage(svg, w.out, { compression: at(30) }), /60 megapixels/);
+});
+
+test('HEIC and JPEG XL encodes report progress', async t => {
+  const w = await workspace(t); if (!w) return;
+  const png = await w.file('photo.png', photo(64, 48).png());
+  for (const format of ['heic', 'jxl'] as const) {
+    const progress: number[] = [];
+    await optimiseImage(png, w.out, { compression: at(30), format, name: format, onProgress: fraction => progress.push(fraction) });
+    assert.deepEqual(progress, [0, 1], format);
+  }
+});
+
+test('stripping metadata reports the size of JPEG XL and BMP images too', async t => {
+  const w = await workspace(t); if (!w) return;
+  const png = await w.file('photo.png', photo(120, 80).png());
+  const jxl = path.join(w.dir, 'photo.jxl'), bmp = path.join(w.dir, 'photo.bmp');
+  await run('cjxl', [png, jxl, '-q', '90', '--quiet']);
+  await run('ffmpeg', ['-v', 'error', '-i', png, bmp]);
+  for (const file of [jxl, bmp]) {
+    const stripped = await stripImageMetadata(file, w.out);
+    assert.deepEqual([stripped.format, stripped.width, stripped.height], [path.extname(file).slice(1), 120, 80]);
+  }
 });

@@ -35,7 +35,7 @@ const KNEE = 0.75;
  * convert the primaries to BT.709, then roll off highlights above the knee with an extended Reinhard
  * curve on the largest channel (keeps hue) so the content's peak lands on white. Alpha is kept.
  */
-export async function toneMapToSDR(input: string, output: string, colour: Colour) {
+export async function toneMapToSDR(input: string, output: string, colour: Colour, signal?: AbortSignal) {
   const { data, info } = await sharp(input, { ignoreIcc: true }).autoOrient().toColourspace('rgb16').raw({ depth: 'ushort' }).toBuffer({ resolveWithObject: true });
   const samples = new Uint16Array(data.buffer, data.byteOffset, data.length / 2), channels = info.channels;
   const pq = colour.transfer === 'smpte2084', matrix = TO_709[colour.primaries ?? ''];
@@ -55,15 +55,26 @@ export async function toneMapToSDR(input: string, output: string, colour: Colour
     return rgb;
   };
   let peak = 1;
-  for (let i = 0; i < samples.length; i += channels) { const c = linear(i); peak = Math.max(peak, c[0], c[1], c[2]); }
+  await inChunks(samples.length, channels, signal, i => { const c = linear(i); peak = Math.max(peak, c[0], c[1], c[2]); });
   const out = Buffer.alloc(samples.length), span = (peak - KNEE) / (1 - KNEE);
-  for (let i = 0; i < samples.length; i += channels) {
+  await inChunks(samples.length, channels, signal, i => {
     const [r, g, b] = linear(i), max = Math.max(r, g, b);
     const scale = max > KNEE ? rollOff(max, span) / max : 1;
     out[i] = srgb(r * scale); out[i + 1] = srgb(g * scale); out[i + 2] = srgb(b * scale);
     if (channels === 4) out[i + 3] = samples[i + 3] >> 8;
-  }
+  });
   await sharp(out, { raw: { width: info.width, height: info.height, channels: channels as 3 | 4 } }).png({ compressionLevel: 1 }).toFile(output);
+}
+
+/** Calls `pixel` for every pixel's first sample, yielding to the event loop between chunks of a million pixels so an abort can land. */
+async function inChunks(length: number, channels: number, signal: AbortSignal | undefined, pixel: (i: number) => void) {
+  const chunk = 1 << 20;
+  for (let start = 0; start < length; start += chunk * channels) {
+    signal?.throwIfAborted();
+    for (let i = start, end = Math.min(length, start + chunk * channels); i < end; i += channels) pixel(i);
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  signal?.throwIfAborted();
 }
 
 function pqToNits(value: number) {
