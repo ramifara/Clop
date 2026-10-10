@@ -22,6 +22,11 @@ test('pipelinesFor finds the pipelines attached to a folder or the clipboard, re
   assert.deepEqual(pipelinesFor('image', '/home/rami/Downloads', settings, { home: '/home/rami', platform: 'linux' }), [saved], 'a portable key matches the full path');
   assert.deepEqual(pipelinesFor('image', '/srv/Shots', settings, { platform: 'linux' }), [clipboard], 'entries this version cannot read are left out');
   assert.deepEqual(pipelinesFor('image', '/srv/shots', settings, { platform: 'linux' }), [], 'POSIX paths are case-sensitive');
+
+  // A reference to a saved pipeline this version cannot read is skipped, not run as an empty pipeline.
+  const newer = decodePipelines([JSON.stringify({ id: 'NEWER-SAVED', steps: [{ teleport: {} }] })])!;
+  const withNewer = { ...settings, savedPipelines: [saved, ...newer], pipelinesToRunOnImage: { clipboard: [referenceTo({ ...saved, id: 'NEWER-SAVED' }), referenceTo(saved)] } };
+  assert.deepEqual(pipelinesFor('image', 'clipboard', withNewer), [saved]);
 });
 
 test('on Windows a folder matches ignoring case and slash direction', () => {

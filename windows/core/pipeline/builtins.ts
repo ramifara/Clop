@@ -1,4 +1,4 @@
-import { isReadable, type Stored } from './codec';
+import { isReadable, storedId, type Stored } from './codec';
 import type { ClopFileType, Pipeline } from './model';
 import { parseSteps } from './parser';
 
@@ -30,15 +30,6 @@ export const builtinPipeline = (def: BuiltinPipelineDef): Pipeline => ({
   id: def.id, steps: parseSteps(def.rawText, { fileType: def.fileType }), name: def.name, rawText: def.rawText,
   skipOptimisation: def.skipOptimisation, hideResult: false, fileType: def.fileType, icon: def.icon, details: def.details,
 });
-
-/** The id of a saved entry, also of one this version cannot read: from its raw object or the JSON string macOS stores. */
-function storedId(entry: Stored<Pipeline>): string | undefined {
-  if (isReadable(entry)) return entry.id;
-  let raw = entry.raw;
-  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { return undefined; } }
-  const id = typeof raw === 'object' && raw !== null ? (raw as { id?: unknown }).id : undefined;
-  return typeof id === 'string' ? id : undefined;
-}
 
 /**
  * `seedBuiltinPipelines`: adds the built-ins newer than `seededVersion` to the library, once per version, so a built-in the
