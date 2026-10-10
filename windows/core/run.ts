@@ -4,7 +4,11 @@ import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as delay } from 'node:timers/promises';
 import { TOOL_NAMES, toolPath, type ToolName } from './tools';
 
-export interface RunOptions { signal?: AbortSignal; cwd?: string; input?: Buffer; timeoutMs?: number; onStderrLine?: (line: string) => void; onStdoutLine?: (line: string) => void; env?: NodeJS.ProcessEnv }
+export interface RunOptions {
+  signal?: AbortSignal; cwd?: string; input?: Buffer; timeoutMs?: number; onStderrLine?: (line: string) => void; onStdoutLine?: (line: string) => void; env?: NodeJS.ProcessEnv;
+  /** Windows only: pass the arguments unquoted, for `cmd.exe /s /c "…"`, which parses its own quotes. */
+  windowsVerbatimArguments?: boolean;
+}
 export interface RunResult { code: number; stdout: Buffer; stderr: string }
 export class ToolError extends Error {
   constructor(message: string, readonly exitCode: number | null, readonly stderr: string) { super(message); this.name = 'ToolError'; }
@@ -48,7 +52,7 @@ export function run(tool: ToolName | string, args: string[], opts: RunOptions = 
     const command = isToolName(tool) ? toolPath(tool) : tool;
     const name = path.basename(command);
     // A detached child leads its own process group on POSIX, so the whole tree can be killed at once.
-    const child = spawn(command, args, { cwd: opts.cwd, env: opts.env, windowsHide: true, detached: process.platform !== 'win32', stdio: [opts.input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { cwd: opts.cwd, env: opts.env, windowsHide: true, windowsVerbatimArguments: opts.windowsVerbatimArguments, detached: process.platform !== 'win32', stdio: [opts.input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     const stdout: Buffer[] = [];
     let stderr = '', failure: Error | undefined, timer: NodeJS.Timeout | undefined;
     const stop = (error: Error) => { failure ??= error; killTree(child); };
