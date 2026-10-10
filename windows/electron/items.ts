@@ -14,6 +14,7 @@ import { detectKind, probe, type AudioInfo, type VideoInfo } from '../core/media
 import type { MediaJobOptions, MediaKind, MediaOutput } from '../core/media/types';
 import { safeFileName } from '../core/template';
 import { imageThumbnail, mediaThumbnail } from './thumbnails';
+import type { PipelinesOutcome } from '../core/pipeline/triggers';
 import { imageCompression, parseOptions } from './settings';
 import { mediaKind } from './clipboard';
 
@@ -33,16 +34,31 @@ export interface ItemPlacement {
   /** Puts the original back; resolves with where it now is, or undefined when the shelf's own copy is the original. */
   restore(): Promise<string | undefined>;
 }
+/** What the attached pipelines did to a file (`runPipelines` in core/pipeline/triggers.ts). */
+export type ItemPipelineOutcome = Pick<PipelinesOutcome, 'file' | 'anyRan' | 'warnings'>;
+/** The pipelines attached to where a file came from, which run once, after or instead of its optimisation. */
+export interface ItemAutomation {
+  /** Every pipeline skips the plain optimisation, so they start from the original. */
+  skipOptimisation: boolean;
+  /** When the pipelines skipped optimisation but did nothing (a filter stopped them), optimise as usual: copying is a strong intent, watching a folder is not. */
+  fallback: boolean;
+  /** Runs the pipelines. `optimised` is the optimised result when there is one; otherwise they start from the source (see `ItemPipelineRun`). */
+  run(input: ItemPipelineRun): Promise<ItemPipelineOutcome>;
+}
+/** `original` is the shelf's copy of the source, which a pipeline must never change: `fresh` gives a copy of it to work on. */
+export interface ItemPipelineRun { optimised?: string; original: string; fresh: () => Promise<string>; signal: AbortSignal }
 /**
  * `cancel` stops this item's running job when it is dismissed; `running` says a job is under way, `shown` that a result was ever ready to paste.
  * `jobs` holds one controller per scheduled job, so stopping also stops jobs still waiting in the queue.
  */
 interface Entry {
   result: ItemResult; originalPath: string; outputPath: string; directory: string; inputFormat: string; revision: number; cancel: AbortController; running?: boolean; shown?: boolean;
-  placement?: ItemPlacement; placedPath?: string; jobs: Set<AbortController>;
+  placement?: ItemPlacement; placedPath?: string; jobs: Set<AbortController>; automation?: ItemAutomation;
   /** A result is being placed outside the shelf: dismissing it now must keep what is needed to restore it. */
   placing?: boolean;
 }
+/** `placement` puts each result back where the file came from; `staged` hears the result's id as soon as it is in the shelf; `automation` runs attached pipelines. */
+export interface ImportExtra { placement?: ItemPlacement; staged?: (id: string) => void; automation?: ItemAutomation }
 /** Dismissed results kept for `bringBack`. */
 const REMOVED = 40;
 export type ItemSettings = Pick<ClopSettings, 'imageCompression' | 'stripMetadata' | 'preserveColorMetadata' | 'gifFrameDropBehaviour' | 'videoCompression' | 'videoEncoder' | 'capVideoFPS' | 'targetVideoFPS'
@@ -76,7 +92,7 @@ export class ItemEngine extends EventEmitter {
    * Imports a local file under `name` (its own by default). `placement` puts each result back where the file came from;
    * `staged` hears the result's id as soon as it is in the shelf, before it is optimised.
    */
-  async importPath(file: string, source: ItemResult['source'], options: ImageOptions, name = path.basename(file), extra: { placement?: ItemPlacement; staged?: (id: string) => void } = {}) {
+  async importPath(file: string, source: ItemResult['source'], options: ImageOptions, name = path.basename(file), extra: ImportExtra = {}) {
     const info = await stat(file).catch(error => { throw unreadable(file, error); });
     if (!info.isFile()) throw new Error(`${path.basename(file)} is not a file.`);
     if (info.size > LIMIT && await detectKind(file).catch(() => undefined) === 'image') throw new Error('Choose an image file smaller than 128 MB.');
@@ -84,11 +100,11 @@ export class ItemEngine extends EventEmitter {
     // The copy keeps the source's dates, which results take with `preserveDates`.
     return this.add(name, source, options, staged => copyFile(file, staged).then(() => utimes(staged, info.atime, info.mtime)).catch(error => { throw unreadable(file, error); }), extra);
   }
-  async importBuffer(buffer: Buffer, name: string, source: ItemResult['source'], options: ImageOptions): Promise<string> {
+  async importBuffer(buffer: Buffer, name: string, source: ItemResult['source'], options: ImageOptions, extra: ImportExtra = {}): Promise<string> {
     if (!buffer.length || buffer.length > LIMIT) throw new Error('Choose a file smaller than 128 MB.');
-    return this.add(name, source, options, staged => writeFile(staged, buffer));
+    return this.add(name, source, options, staged => writeFile(staged, buffer), extra);
   }
-  private async add(name: string, source: ItemResult['source'], options: ImageOptions, write: (staged: string) => Promise<unknown>, extra: { placement?: ItemPlacement; staged?: (id: string) => void } = {}) {
+  private async add(name: string, source: ItemResult['source'], options: ImageOptions, write: (staged: string) => Promise<unknown>, extra: ImportExtra = {}) {
     options = parseOptions(options);
     const signal = this.controller.signal;
     signal.throwIfAborted();
@@ -105,7 +121,7 @@ export class ItemEngine extends EventEmitter {
       if (!kind) throw new Error('Use an image, a video, a PDF or an audio file.');
       const result = { id, kind, name: display, source, status: 'processing', options, animated: false, createdAt: Date.now() } as const;
       entry = kind === 'image' ? await this.stageImage(staged, directory, result) : await this.stageMedia(staged, directory, { ...result, kind });
-      entry.placement = extra.placement;
+      entry.placement = extra.placement; entry.automation = extra.automation;
       this.entries.set(id, entry);
       this.emit('add', id); extra.staged?.(id);
       this.changed();
@@ -155,11 +171,19 @@ export class ItemEngine extends EventEmitter {
     const e = this.entries.get(id);
     if (!e) return;
     const r = e.result, signal = AbortSignal.any([this.controller.signal, e.cancel.signal, job.signal]);
-    r.status = 'processing'; r.error = undefined; r.progress = undefined; e.running = true; this.changed();
+    r.status = 'processing'; r.error = undefined; r.progress = undefined; r.notes = undefined; e.running = true; this.changed();
     try {
       signal.throwIfAborted();
       // Each result gets a folder of its own and keeps the original's name, so a pasted or dragged file is named like its source.
       const outputDir = path.join(e.directory, String(e.revision + 1)), name = path.parse(e.originalPath).name;
+      // Attached pipelines run once, on the first job; later card actions only optimise.
+      const automation = e.automation;
+      e.automation = undefined;
+      if (automation?.skipOptimisation) {
+        const outcome = await automation.run(this.pipelineRun(e, undefined, signal));
+        if (outcome.anyRan || !automation.fallback) return await this.finishPipelines(id, e, outcome, signal, options);
+        r.notes = outcome.warnings.length ? outcome.warnings : undefined;
+      }
       let output: MediaOutput, width = r.originalWidth, height = r.originalHeight;
       if (r.kind === 'image') {
         const factor = Math.min(options.scale, options.maxEdge ? options.maxEdge / Math.max(r.originalWidth, r.originalHeight) : 1);
@@ -187,6 +211,10 @@ export class ItemEngine extends EventEmitter {
       const preview = r.kind !== 'image' || output.unchanged ? r.originalPreview : await imageThumbnail(output.path, DECODED.has(output.format));
       Object.assign(r, { status: 'ready', options, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes, preview,
         durationMs: output.durationMs ?? r.durationMs, pages: output.pages ?? r.pages, progress: undefined, unchanged: !!output.unchanged, restored: false });
+      if (automation && !automation.skipOptimisation) {
+        const outcome = await automation.run(this.pipelineRun(e, e.placedPath ?? (output.unchanged ? undefined : output.path), signal));
+        return await this.finishPipelines(id, e, outcome, signal, options);
+      }
       e.shown = true; this.changed();
       if (this.entries.get(id) === e) this.emit('ready', id);
     } catch (error) { Object.assign(r, { status: 'error', error: signal.aborted ? 'Stopped.' : message(error), progress: undefined }); this.changed(); }
@@ -199,6 +227,70 @@ export class ItemEngine extends EventEmitter {
         await discard(e);
       }
     }
+  }
+  /** What a pipeline run gets: the optimised result to work on, or a fresh copy of the source in a folder of its own. */
+  private pipelineRun(e: Entry, optimised: string | undefined, signal: AbortSignal): ItemPipelineRun {
+    return {
+      optimised, original: e.originalPath, signal,
+      fresh: async () => {
+        const dir = path.join(e.directory, `pipeline-${randomUUID().slice(0, 8)}`);
+        await mkdir(dir, { recursive: true });
+        const copy = path.join(dir, path.basename(e.originalPath));
+        await copyFile(e.originalPath, copy);
+        return copy;
+      },
+    };
+  }
+  /**
+   * Shows what the pipelines left: the card follows their final file (its size, format and preview), and lists their warnings
+   * and failures. Pipelines that did nothing leave the card as it was, or show the original unchanged when nothing ran before them.
+   */
+  private async finishPipelines(id: string, e: Entry, outcome: ItemPipelineOutcome, signal: AbortSignal, options: ImageOptions) {
+    const r = e.result;
+    signal.throwIfAborted();
+    const info = outcome.anyRan ? await stat(outcome.file).catch(() => undefined) : undefined;
+    if (info?.isFile()) {
+      const kind = await detectKind(outcome.file, { signal }).catch(() => undefined) ?? r.kind;
+      e.placedPath = outcome.file;
+      e.revision++;
+      Object.assign(r, { format: path.extname(outcome.file).slice(1).toLowerCase() || r.format, outputBytes: info.size, unchanged: false, restored: false });
+      if (kind === 'image') {
+        // The preview is made from a copy in the item's folder, so nothing is ever written beside a file in the user's folders.
+        const copy = path.join(e.directory, `preview-${e.revision}${path.extname(outcome.file)}`);
+        await copyFile(outcome.file, copy);
+        const probed = await probeImage(copy, signal).catch(() => undefined);
+        if (probed) Object.assign(r, { width: probed.width, height: probed.height, format: probed.format, preview: await imageThumbnail(copy, DECODED.has(probed.format) || probed.deep).catch(() => r.preview) });
+        await rm(copy, { force: true });
+      } else if (kind === 'video' || kind === 'audio') {
+        // ffprobe only reads, so the file is probed where it is; the preview stays the source's, as for optimised media.
+        const media = await probe(outcome.file, { signal }).catch(() => undefined) as VideoInfo | AudioInfo | undefined;
+        if (media?.kind === 'video') Object.assign(r, { width: media.width, height: media.height });
+        if (media?.durationMs) r.durationMs = media.durationMs;
+      }
+    } else if (r.status === 'processing' && !e.shown) {
+      // Nothing ran and nothing was optimised: the card shows the original as it is.
+      Object.assign(r, { format: e.inputFormat, outputBytes: r.originalBytes, unchanged: true });
+    }
+    Object.assign(r, { status: 'ready', options, progress: undefined, notes: outcome.warnings.length ? outcome.warnings : undefined });
+    e.shown = true; this.changed();
+    if (this.entries.get(id) === e) this.emit('ready', id);
+  }
+  /** "Run pipeline…" from the card: runs on the current result, or on a fresh copy of the original when there is none. */
+  runPipeline(id: string, run: (input: ItemPipelineRun) => Promise<ItemPipelineOutcome>) {
+    const e = this.get(id);
+    if (e.result.status !== 'ready') throw new Error('Wait for this result to finish first.');
+    const job = this.job(e);
+    return this.schedule(e.result.kind, async () => {
+      if (this.entries.get(id) !== e) return;
+      const signal = AbortSignal.any([this.controller.signal, e.cancel.signal, job.signal]), r = e.result;
+      r.status = 'processing'; r.error = undefined; e.running = true; this.changed();
+      try {
+        const current = e.placedPath ?? e.outputPath;
+        const outcome = await run(this.pipelineRun(e, current === e.originalPath ? undefined : current, signal));
+        await this.finishPipelines(id, e, outcome, signal, r.options);
+      } catch (error) { Object.assign(r, { status: 'error', error: signal.aborted ? 'Stopped.' : message(error), progress: undefined }); this.changed(); }
+      finally { e.running = false; e.jobs.delete(job); }
+    });
   }
   private optimiseMedia(kind: Exclude<MediaKind, 'image'>, file: string, outputDir: string, job: MediaJobOptions & { name: string }): Promise<MediaOutput> {
     const s = this.settings();
@@ -213,10 +305,11 @@ export class ItemEngine extends EventEmitter {
   }
   restore(id: string) { return this.schedule(this.kindOf(id), async () => {
     const e = this.get(id);
-    if (e.placement) e.placedPath = await e.placement.restore();
+    // A pipeline's file outside the shelf is no longer the result once the original is back.
+    e.placedPath = e.placement ? await e.placement.restore() : undefined;
     e.outputPath = e.originalPath;
     Object.assign(e.result, { status: 'ready', width: e.result.originalWidth, height: e.result.originalHeight, outputBytes: e.result.originalBytes,
-      format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, maxEdge: undefined, format: 'auto' }, restored: true, unchanged: true, error: undefined });
+      format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, maxEdge: undefined, format: 'auto' }, restored: true, unchanged: true, error: undefined, notes: undefined });
     e.shown = true; this.changed(); this.emit('ready', id);
   }); }
   /**
