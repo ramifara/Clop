@@ -47,7 +47,7 @@ Originals and results live in the working directory (see below) and are deleted 
 
 ## Working directory, placement and names
 
-The working directory is `%APPDATA%\Clop for Windows\work` unless the `workdir` setting says otherwise (`~` and `$HOME` mean your profile folder). A new `workdir` applies the next time Clop starts. It holds three folders:
+The working directory is `%APPDATA%\Clop for Windows\work` unless the `workdir` setting says otherwise (an absolute path; `~` and `$HOME` mean your profile folder; an empty or relative value is refused and Clop uses the default folder). A new `workdir` applies the next time Clop starts. It holds three folders:
 
 - `backups`: the original of every file Clop replaces in place, named `<name>-<hash>.<ext>`. Restoring copies it back byte for byte and keeps the original modification time.
 - `batch-backups`: batch-mode backups. Nothing here is ever deleted automatically, because it can be the only copy of a file.
@@ -61,6 +61,8 @@ Every 10 minutes Clop deletes files in `backups` and `temp` that have not change
 - `inPlace`: the original moves into `backups` and the result takes its place, with the result's extension. If the backup cannot be made, nothing is replaced.
 - `sameFolder`: the result is written next to the original under `sameFolderNameTemplate*` (default `%f-optimised`).
 - `specificFolder`: the result goes to the path made by `specificFolderNameTemplate*` (default `%P/optimised/%f`), creating folders as needed.
+
+If another file already sits at the destination, it is copied into `backups` first and the result reports it as `replaced`. Folders that come from `%P` or `%F` keep their names exactly; only the literal parts of a template and the file name are made safe.
 
 A file that already sits at its templated location is left there, so templates never stack (`a-optimised-optimised.png`). Copies go through a temporary file in the destination folder and replace the target in one rename, retrying while Defender or a preview handler holds the file. There are no copy-on-write clones on Windows; every backup is a full copy.
 

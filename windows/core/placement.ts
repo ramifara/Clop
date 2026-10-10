@@ -29,7 +29,8 @@ export interface PlacementPlan {
   /** Undefined means leave `produced` where it is and the original untouched. */
   dest?: string;
 }
-export interface PlacedOutput { path: string; backup?: string; originalRemoved: boolean }
+/** `backup` holds the replaced original; `replaced` holds an unrelated file that already sat at the destination. */
+export interface PlacedOutput { path: string; backup?: string; originalRemoved: boolean; replaced?: string }
 
 // Templates are stored portable (`~/Pictures/%f`), so a specific-folder template is expanded before anything treats it as a real path.
 const DEFAULT_SAME_FOLDER = '%f-optimised', DEFAULT_SPECIFIC_FOLDER = '%P/optimised/%f';
@@ -58,6 +59,7 @@ function templateOf(env: PlacementEnv, type: FileType, kind: OutputKind, folder:
   return folder === 'same' ? template : resolveHome(template, env.home, env.platform);
 }
 
+const platformOf = (env: PlacementEnv) => env.platform ?? process.platform;
 const pathApi = (env: PlacementEnv) => (env.platform ?? process.platform) === 'win32' ? path.win32 : path.posix;
 const context = (env: PlacementEnv, file: string) => ({ path: file, counter: env.counter, home: env.home, platform: env.platform });
 const stemOf = (file: string, env: PlacementEnv) => pathApi(env).parse(file).name;
@@ -116,7 +118,12 @@ export async function planPlacement(env: PlacementEnv, args: { produced: string;
 export async function executePlacement(env: PlacementEnv, plan: PlacementPlan, produced: string, original: string): Promise<PlacedOutput> {
   if (!plan.dest) return { path: produced, originalRemoved: false };
   const { dest } = plan, { workdir } = env;
-  let backup: string | undefined, originalRemoved = false;
+  let backup: string | undefined, originalRemoved = false, replaced: string | undefined;
+  // A different file already at the destination (a template collision, or `shot.webp` beside `shot.png`) would be lost to the copy, so keep it first.
+  const same = (a: string, b: string) => platformOf(env) === 'win32' ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b);
+  if (!same(dest, original) && !same(dest, produced) && await exists(dest)) {
+    replaced = await workdir.backup(dest, { force: true }).catch(error => { throw new Error(`Could not back up ${dest} before replacing it: ${error instanceof Error ? error.message : error}`); });
+  }
   if (plan.behaviour === 'inPlace' && await exists(original)) {
     if (path.resolve(original) === path.resolve(produced)) {
       // The optimiser rewrote the original where it stood, so there is nothing to move. Report the copy taken before it ran.
@@ -132,7 +139,7 @@ export async function executePlacement(env: PlacementEnv, plan: PlacementPlan, p
     throw error;
   }
   await (env.marker ?? defaultMarker()).markOptimised(dest).catch(() => {});
-  return { path: dest, backup, originalRemoved };
+  return { path: dest, backup, originalRemoved, replaced };
 }
 
 /** Port of `placeOutput`. */

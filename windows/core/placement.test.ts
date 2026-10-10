@@ -95,6 +95,36 @@ test('sameFolder writes the templated name next to the original and keeps the or
   assert.equal(await marker.isOptimised(original), false);
 });
 
+test('a different file already at the destination is backed up before it is replaced', async t => {
+  const { env, original, bytes, produced, result, source, workdir } = await setup(t, { ...behaviour('sameFolder'), sameFolderNameTemplateImage: '%f-small' });
+  const existing = path.join(source, 'shot-small.png');
+  await writeFile(existing, 'someone else\'s file');
+  const placed = await placeOutput(env, { produced, original, type: 'image' });
+  assert.equal(placed.path, existing);
+  assert.deepEqual(await readFile(existing), result);
+  assert.equal(path.dirname(placed.replaced!), workdir.backups);
+  assert.equal(await readFile(placed.replaced!, 'utf8'), 'someone else\'s file');
+  assert.deepEqual(await readFile(original), bytes);
+  assert.equal(placed.backup, undefined);
+});
+
+test('inPlace with a changed extension keeps a shot.webp that was already there', async t => {
+  const { env, original, bytes, source, workdir } = await setup(t, behaviour('inPlace'));
+  const webp = path.join(source, 'shot.webp'), produced = path.join(workdir.temp, 'result.webp');
+  await writeFile(webp, 'older webp'); await writeFile(produced, 'new webp');
+  const placed = await placeOutput(env, { produced, original, type: 'image' });
+  assert.equal(await readFile(webp, 'utf8'), 'new webp');
+  assert.equal(await readFile(placed.replaced!, 'utf8'), 'older webp');
+  assert.deepEqual(await readFile(placed.backup!), bytes);
+});
+
+test('placing over the original or a file without a different occupant makes no extra backup', async t => {
+  const { env, original, produced, workdir } = await setup(t, behaviour('inPlace'));
+  const placed = await placeOutput(env, { produced, original, type: 'image' });
+  assert.equal(placed.replaced, undefined);
+  assert.deepEqual(await readdir(workdir.backups), [path.basename(placed.backup!)]);
+});
+
 test('sameFolder is idempotent: a file already named by the template keeps its name', async t => {
   const { env, produced, source } = await setup(t, { ...behaviour('sameFolder'), sameFolderNameTemplateImage: '%f-optimised' });
   const already = path.join(source, 'img-optimised.png');
@@ -133,6 +163,16 @@ test('specificFolder expands ~ and tokens, and is idempotent for a file already 
   assert.equal(await exists(path.join(home, 'Clop', 'out')), true);
   const again = await planPlacement(custom, { produced, original: plan.dest!, type: 'image' });
   assert.equal(again.dest, plan.dest);
+});
+
+test('specificFolder keeps a source folder name with &, quotes, # and $', async t => {
+  const { env, dir, produced, result } = await setup(t, behaviour('specificFolder'));
+  const folder = path.join(dir, "Dev & Stuff", "Rami's Photos #1 $x"), original = path.join(folder, 'shot.png');
+  await mkdir(folder, { recursive: true }); await writeFile(original, 'pixels');
+  const placed = await placeOutput(env, { produced, original, type: 'image' });
+  assert.equal(placed.path, path.join(folder, 'optimised', 'shot.png'));
+  assert.deepEqual(await readFile(placed.path), result);
+  assert.deepEqual(await readdir(path.dirname(folder)), ["Rami's Photos #1 $x"]);
 });
 
 test('a relative specificFolder template matches wherever its folder sits', async t => {
