@@ -100,10 +100,14 @@ The Windows build ships these programs unmodified, as separate executables in `r
 | ExifTool, with its Strawberry Perl runtime | [exiftool.org](https://exiftool.org) | Perl Artistic Licence or GPL |
 | libheif `heif-dec` and `heif-enc` | [MSYS2](https://packages.msys2.org/base/mingw-w64-libheif) | LGPLv3, examples MIT |
 | libjxl `cjxl` and `djxl` | [libjxl/libjxl](https://github.com/libjxl/libjxl) | BSD-3-Clause |
-| DLLs used by libheif and pngquant (libde265, x265, x264, aom, dav1d, libpng, zlib and others) | MSYS2 | Each package's own licence, listed in `scripts/tools.json` |
+| DLLs used by libheif and pngquant (libde265, x265, x264, aom, dav1d, libpng, zlib and others) | MSYS2 | Each package's own licence as declared by MSYS2, listed in `scripts/tools.json` |
 | Microsoft Visual C++ runtime, for Ghostscript and gifski | [conda-forge](https://anaconda.org/conda-forge/vc14_runtime) | Microsoft Visual C++ redistributable licence |
 
 Ghostscript and gifski are AGPLv3. They run as separate programs, and section 13 of GPLv3 permits combining GPLv3 and AGPLv3 work. Source for each tool is available from the linked project.
+
+### Refreshing pinned tools
+
+To update a tool, change its entry in `scripts/tools.json`: the version, the URL, the sha256 of the download and the archive paths in `files`. Then run `node scripts/fetch-tools.mjs --platform win32`, which refuses a download whose hash differs. repo.msys2.org removes old package versions, so the MSYS2 entries eventually stop downloading. Regenerate them with `npx tsx scripts/resolve-msys2.ts libheif:heif-dec,heif-enc pngquant:pngquant`. It reads the current MSYS2 package database, follows the tools' DLL imports to every package they load and prints their entries with sha256; replace the `msys2-*` entries with its output. CI checks that each tool reports its pinned version and that the bundle carries every DLL its programs import.
 
 ## Attribution
 
