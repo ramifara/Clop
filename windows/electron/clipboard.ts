@@ -45,30 +45,66 @@ export function clipboardFiles(files: readonly string[], { manual, bitmap, setti
 
 export type ClipboardText = { type: 'path'; path: string } | { type: 'image'; bytes: Buffer; ext: string } | { type: 'url'; url: string };
 const DATA_URL = /^(?:url\(\s*["']?)?data:image\/([a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)["']?\s*\)?$/i;
+const BASE64 = /^[a-z0-9+/\s]+={0,2}$/i;
+/** The image format of decoded base64 text by its signature, for text that is an image without a data URL around it. */
+function imageSignature(bytes: Buffer) {
+  if (bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) return 'png';
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpeg';
+  if (bytes.toString('latin1', 0, 4) === 'GIF8') return 'gif';
+  if (bytes.toString('latin1', 0, 4) === 'RIFF' && bytes.toString('latin1', 8, 12) === 'WEBP') return 'webp';
+  if (bytes.toString('latin1', 4, 8) === 'ftyp' && /^(avif|avis)$/.test(bytes.toString('latin1', 8, 12))) return 'avif';
+  if (bytes.toString('latin1', 4, 8) === 'ftyp' && /^(heic|heix|mif1)$/.test(bytes.toString('latin1', 8, 12))) return 'heic';
+}
 /**
- * What copied text holds, as `ClipboardType.fromString` reads it: a base64 data URL of an image, an absolute file path
- * (quoted or as a `file:` URL), or an http(s) link. A path must be absolute: a drive or UNC path on Windows.
+ * What copied text holds, as `ClipboardType.fromString` reads it: an absolute file path (quoted or as a `file:` URL) and,
+ * for a `manual` optimisation only, an image as a base64 data URL or bare base64, or an http(s) link. Automatic
+ * optimisation never decodes long text: a path is short.
  */
-export function parseClipboardText(text: string, platform: NodeJS.Platform = process.platform): ClipboardText | undefined {
-  if (text.length > MAX_DATA_URL) return;
+export function parseClipboardText(text: string, platform: NodeJS.Platform = process.platform, { manual = false } = {}): ClipboardText | undefined {
+  if (text.length > (manual ? MAX_DATA_URL : MAX_PATH + 2)) return;
   const value = text.trim().replace(/^"(.*)"$/s, '$1').trim();
-  const data = DATA_URL.exec(value);
-  if (data) {
-    const bytes = Buffer.from(data[2].replace(/\s+/g, ''), 'base64');
-    return bytes.length ? { type: 'image', bytes, ext: data[1].toLowerCase() === 'svg+xml' ? 'svg' : data[1].toLowerCase() } : undefined;
+  if (manual) {
+    const data = DATA_URL.exec(value);
+    if (data) {
+      const bytes = Buffer.from(data[2].replace(/\s+/g, ''), 'base64');
+      return bytes.length ? { type: 'image', bytes, ext: data[1].toLowerCase() === 'svg+xml' ? 'svg' : data[1].toLowerCase() } : undefined;
+    }
+    if (value.length >= 16 && BASE64.test(value)) {
+      const bytes = Buffer.from(value.replace(/\s+/g, ''), 'base64'), ext = imageSignature(bytes);
+      if (ext) return { type: 'image', bytes, ext };
+    }
   }
   if (!value || value.length > MAX_PATH || /[\r\n]/.test(value)) return;
   if (/^file:/i.test(value)) { try { return { type: 'path', path: fileURLToPath(value, { windows: platform === 'win32' }) }; } catch { return; } }
   if (platform === 'win32' ? /^([a-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/i.test(value) : value.startsWith('/')) return { type: 'path', path: value };
-  if (/^https?:\/\/\S+$/i.test(value)) { try { return { type: 'url', url: new URL(value).href }; } catch { return; } }
+  if (manual && /^https?:\/\/\S+$/i.test(value)) { try { return { type: 'url', url: new URL(value).href }; } catch { return; } }
 }
 
+/**
+ * Whether a path is on this computer: a drive path on Windows. UNC paths (`\\host\share`, also from `file://host/…`) and
+ * device paths (`\\.\…`, `\\?\…`) are not; merely looking one up makes Windows contact that host and offer it the user's
+ * credentials, so automatic optimisation never touches them.
+ */
+export const isLocalPath = (file: string, platform: NodeJS.Platform = process.platform) => platform === 'win32' ? /^[a-z]:[\\/]/i.test(file) : file.startsWith('/') && !file.startsWith('//');
+
+/**
+ * The media kind of a copied path when it should be optimised, decided without touching the file system: a manual
+ * optimisation takes any media path, an automatic one only a local path that is not Clop's own and whose type its setting allows.
+ */
+export function textPathKind(file: string, { manual, settings, owns, platform = process.platform }: { manual: boolean; settings: ClipboardSettings; owns: (file: string) => boolean; platform?: NodeJS.Platform }) {
+  const kind = mediaKind(file);
+  if (!kind || TEMPORARY.test(path.basename(file))) return;
+  if (manual) return kind;
+  return isLocalPath(file, platform) && !owns(file) && takesFile(kind, file, settings) ? kind : undefined;
+}
+
+export type ClipboardSnapshot = ClipboardChange & { owned?: boolean; transient?: boolean };
 /** A clipboard change or snapshot from the Windows helper, checked field by field. Undefined when it is malformed. */
-export function clipboardChange(event: unknown): ClipboardChange & { owned?: boolean; transient?: boolean } | undefined {
+export function clipboardChange(event: unknown): ClipboardSnapshot | undefined {
   if (!event || typeof event !== 'object') return;
   const e = event as Record<string, unknown>;
   const flag = (key: string) => e[key] === undefined || typeof e[key] === 'boolean';
-  if (!Number.isSafeInteger(e.sequence) || (e.sequence as number) < 0 || !Array.isArray(e.paths) || e.paths.length > MAX_FILES) return;
+  if (!isSequence(e.sequence) || !Array.isArray(e.paths) || e.paths.length > MAX_FILES) return;
   if (!e.paths.every(file => typeof file === 'string' && file.length > 0 && file.length <= MAX_PATH && path.isAbsolute(file))) return;
   if (!['image', 'bitmap', 'text', 'owned', 'transient'].every(flag)) return;
   if (e.process !== undefined && !Number.isSafeInteger(e.process)) return;
@@ -78,4 +114,120 @@ export function clipboardChange(event: unknown): ClipboardChange & { owned?: boo
     ...(e.process === undefined ? {} : { process: e.process as number }), ...(e.app === undefined ? {} : { app: e.app as string }),
     ...(e.owned === undefined ? {} : { owned: e.owned as boolean }), ...(e.transient === undefined ? {} : { transient: e.transient as boolean }),
   };
+}
+const isSequence = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+/** The clipboard sequence number in a `sequence` reply from the Windows helper. */
+export function sequenceReply(reply: unknown): number {
+  const sequence = (reply as Record<string, unknown> | null)?.sequence;
+  if (!isSequence(sequence)) throw new Error('The Windows helper sent an unreadable clipboard sequence.');
+  return sequence;
+}
+/** A `copy` reply: skipped because the clipboard changed meanwhile, or written with the clipboard's new sequence number. */
+export function copyReply(reply: unknown): { skipped: true } | { skipped: false; sequence: number } {
+  const r = reply as Record<string, unknown> | null;
+  if (r?.skipped === true) return { skipped: true };
+  if (r?.skipped !== undefined && r?.skipped !== false) throw new Error('The Windows helper sent an unreadable clipboard reply.');
+  return { skipped: false, sequence: sequenceReply(reply) };
+}
+
+/** What the clipboard watcher remembers between changes: the last sequence it handled, and what it last optimised and wrote. */
+export interface ClipboardMemory { sequence?: number; fingerprint: string; own: string }
+export interface IntakeSources {
+  settings: ClipboardSettings;
+  owns: (file: string) => boolean;
+  platform?: NodeJS.Platform;
+  /** A snapshot from the Windows helper; undefined without one. */
+  read: () => Promise<ClipboardSnapshot | undefined>;
+  image: () => Promise<Buffer>;
+  text: () => Promise<string>;
+  isFile: (file: string) => Promise<boolean>;
+  /** Recognises files by path, size and modification time. */
+  fingerprint: (files: string[]) => Promise<string>;
+  hash: (bytes: Buffer) => string;
+}
+export type ClipboardPlan =
+  | { type: 'files'; files: string[]; sequence?: number; text?: boolean }
+  | { type: 'image'; bytes: Buffer; ext: string; sequence?: number }
+  | { type: 'url'; url: string }
+  /** The clipboard changed while it was read; look at the newer change instead. */
+  | { type: 'retry'; change: ClipboardSnapshot }
+  | { type: 'none'; notice?: string };
+
+const pathSettings = (s: ClipboardSettings) => s.optimiseImagePathClipboard || s.optimiseVideoClipboard || s.optimisePDFClipboard || s.optimiseAudioClipboard;
+/**
+ * Decides what to optimise from the clipboard, in the order of `handleClipboardChange` (ClopApp.swift): files of each
+ * type the settings allow, then image data, then a copied path. A manual optimisation takes any media file and also
+ * copied data-URL images and links. Settings are checked before a copied path is looked up.
+ */
+export async function clipboardIntake(change: ClipboardSnapshot | undefined, manual: boolean, memory: ClipboardMemory, sources: IntakeSources): Promise<ClipboardPlan> {
+  const { settings, owns } = sources, none = { type: 'none' } as const;
+  let snapshot = change;
+  if (!snapshot) {
+    snapshot = await sources.read();
+    if (!manual && (snapshot?.owned || snapshot?.transient)) return none;
+  }
+  const sequence = snapshot?.sequence;
+  if (!manual && sequence !== undefined && sequence === memory.sequence) return none;
+  if (sequence !== undefined) memory.sequence = sequence;
+  const listed = clipboardFiles(snapshot?.paths ?? [], { manual, bitmap: !!snapshot?.bitmap, settings, owns });
+  if (listed.files.length) {
+    if (!manual) {
+      const hash = await sources.fingerprint(listed.files);
+      if (hash === memory.fingerprint) return none;
+      memory.fingerprint = hash;
+    }
+    return { type: 'files', files: listed.files, sequence };
+  }
+  if (listed.media && !manual) return none;
+  const bytes = !snapshot || snapshot.bitmap ? await sources.image() : Buffer.alloc(0);
+  const text = !bytes.length && (!snapshot || snapshot.text) && (manual || pathSettings(settings)) ? parseClipboardText(await sources.text(), sources.platform, { manual }) : undefined;
+  const file = text?.type === 'path' && textPathKind(text.path, { manual, settings, owns, platform: sources.platform }) && await sources.isFile(text.path) ? text.path : undefined;
+  let pathHash = '';
+  if (!manual && !bytes.length) {
+    // Anything else on the clipboard, such as text between two copies of one image, lets that image be optimised again.
+    if (!file) { memory.fingerprint = ''; memory.own = ''; return none; }
+    pathHash = await sources.fingerprint([file]);
+    if (pathHash === memory.fingerprint) return none;
+  }
+  // Reading a delayed image format can change the sequence, and a new copy may arrive while the clipboard is read.
+  if (!manual && sequence !== undefined) {
+    const now = await sources.read();
+    if (now && (now.owned || now.transient)) return none;
+    if (now && now.sequence !== sequence) return { type: 'retry', change: now };
+  }
+  if (bytes.length) {
+    const hash = sources.hash(bytes);
+    if (!manual && (hash === memory.fingerprint || hash === memory.own || !takesFile('image', 'clipboard.png', settings, { bitmap: true }))) return none;
+    memory.fingerprint = hash;
+    return { type: 'image', bytes, ext: 'png', sequence };
+  }
+  if (file) {
+    if (!manual) { memory.fingerprint = pathHash; memory.own = ''; }
+    return { type: 'files', files: [file], sequence, text: true };
+  }
+  if (text?.type === 'image') return { type: 'image', bytes: text.bytes, ext: text.ext, sequence };
+  if (text?.type === 'url') return { type: 'url', url: text.url };
+  return manual ? { type: 'none', notice: 'Copy an image, a video, a PDF or an audio file, or its path or link, then try again.' } : none;
+}
+
+/**
+ * Reads the clipboard one change at a time and never drops a change. The import a read starts runs on its own, so a
+ * long video encode never holds up the next copy; each kind's queue in the engine orders the work.
+ */
+export class ClipboardIntake {
+  private chain: Promise<void> = Promise.resolve();
+  private running = new Set<Promise<void>>();
+  constructor(private report: (error: unknown) => void) {}
+  /** Queues `read`, which returns the import to start, if any. Resolves once the read is done. */
+  submit(read: () => Promise<(() => Promise<unknown>) | void>): Promise<void> {
+    const step = this.chain.then(async () => {
+      const work = await read();
+      if (!work) return;
+      const job: Promise<void> = work().then(() => {}, this.report).finally(() => this.running.delete(job));
+      this.running.add(job);
+    }).catch(this.report);
+    return this.chain = step;
+  }
+  /** Resolves when every queued read and the imports they started have finished. */
+  async idle() { while (true) { const pending = [this.chain, ...this.running]; await Promise.all(pending); if (!this.running.size && pending[0] === this.chain) return; } }
 }
