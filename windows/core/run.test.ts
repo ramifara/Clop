@@ -35,6 +35,13 @@ test('reports stderr progress line by line, including carriage-return updates sp
   assert.deepEqual(lines, ['frame=1', 'frame=2', 'frame=3', 'Done']);
 });
 
+test('reports stdout progress line by line while still returning all stdout bytes', async () => {
+  const lines: string[] = [];
+  const result = await run(node, ['-e', 'process.stdout.write("Frame 1 / 2\\rFra"); setTimeout(() => process.stdout.write("me 2 / 2\\rdone"), 50)'], { onStdoutLine: line => lines.push(line) });
+  assert.deepEqual(lines, ['Frame 1 / 2', 'Frame 2 / 2', 'done']);
+  assert.equal(result.stdout.toString(), 'Frame 1 / 2\rFrame 2 / 2\rdone');
+});
+
 test('a progress callback that throws stops the tool and fails the run with its error', async () => {
   const started = Date.now();
   await assert.rejects(run(node, ['-e', 'console.error("frame=1"); setInterval(() => {}, 1000)'], { onStderrLine: () => { throw new Error('bad progress line'); } }), /bad progress line/);

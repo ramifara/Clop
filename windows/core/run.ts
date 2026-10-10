@@ -1,9 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as delay } from 'node:timers/promises';
 import { TOOL_NAMES, toolPath, type ToolName } from './tools';
 
-export interface RunOptions { signal?: AbortSignal; cwd?: string; input?: Buffer; timeoutMs?: number; onStderrLine?: (line: string) => void; env?: NodeJS.ProcessEnv }
+export interface RunOptions { signal?: AbortSignal; cwd?: string; input?: Buffer; timeoutMs?: number; onStderrLine?: (line: string) => void; onStdoutLine?: (line: string) => void; env?: NodeJS.ProcessEnv }
 export interface RunResult { code: number; stdout: Buffer; stderr: string }
 export class ToolError extends Error {
   constructor(message: string, readonly exitCode: number | null, readonly stderr: string) { super(message); this.name = 'ToolError'; }
@@ -25,8 +26,21 @@ function killTree(child: ChildProcess) {
   try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
 }
 
+/** Splits streamed text into lines. Progress output such as ffmpeg's and gifski's ends lines with a bare carriage return. */
+function lineSplitter(emit: (line: string) => void) {
+  let pending = '';
+  return {
+    push(chunk: string) {
+      const lines = (pending + chunk).split(/\r\n|\r|\n/);
+      pending = lines.pop()!;
+      for (const line of lines) if (line) emit(line);
+    },
+    flush() { if (pending) emit(pending); pending = ''; },
+  };
+}
+
 export function run(tool: ToolName | string, args: string[], opts: RunOptions = {}): Promise<RunResult> {
-  const { signal, timeoutMs, onStderrLine } = opts;
+  const { signal, timeoutMs, onStderrLine, onStdoutLine } = opts;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(abortError(signal));
     const command = isToolName(tool) ? toolPath(tool) : tool;
@@ -34,28 +48,25 @@ export function run(tool: ToolName | string, args: string[], opts: RunOptions = 
     // A detached child leads its own process group on POSIX, so the whole tree can be killed at once.
     const child = spawn(command, args, { cwd: opts.cwd, env: opts.env, windowsHide: true, detached: process.platform !== 'win32', stdio: [opts.input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     const stdout: Buffer[] = [];
-    let stderr = '', pending = '', failure: Error | undefined, timer: NodeJS.Timeout | undefined;
+    let stderr = '', failure: Error | undefined, timer: NodeJS.Timeout | undefined;
     const stop = (error: Error) => { failure ??= error; killTree(child); };
     const onAbort = () => stop(abortError(signal!));
     signal?.addEventListener('abort', onAbort, { once: true });
     // A throwing progress callback fails the run instead of escaping as an uncaught exception from the stream.
-    const emit = (line: string) => { if (failure) return; try { onStderrLine?.(line); } catch (error) { stop(error instanceof Error ? error : new Error(String(error))); } };
+    const emitter = (callback?: (line: string) => void) => (line: string) => { if (failure) return; try { callback?.(line); } catch (error) { stop(error instanceof Error ? error : new Error(String(error))); } };
+    const stderrLines = lineSplitter(emitter(onStderrLine)), stdoutLines = lineSplitter(emitter(onStdoutLine)), stdoutText = new StringDecoder('utf8');
     if (timeoutMs) timer = setTimeout(() => stop(new ToolError(`${name} took too long and was stopped.`, null, lastLines(stderr, 5))), timeoutMs);
-    child.stdout!.on('data', (chunk: Buffer) => stdout.push(chunk));
+    child.stdout!.on('data', (chunk: Buffer) => { stdout.push(chunk); if (onStdoutLine) stdoutLines.push(stdoutText.write(chunk)); });
     child.stderr!.setEncoding('utf8').on('data', (chunk: string) => {
       stderr = (stderr + chunk).slice(-STDERR_LIMIT);
-      if (!onStderrLine) return;
-      // Progress output such as ffmpeg's ends lines with a bare carriage return.
-      const lines = (pending + chunk).split(/\r\n|\r|\n/);
-      pending = lines.pop()!;
-      for (const line of lines) if (line) emit(line);
+      if (onStderrLine) stderrLines.push(chunk);
     });
     child.stdin?.on('error', () => {}).end(opts.input);
     child.on('error', error => { failure ??= error; });
     child.on('close', (code, killedBy) => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
-      if (pending) emit(pending);
+      stderrLines.flush(); stdoutLines.flush();
       if (failure) return reject(failure);
       if (code === 0) return resolve({ code, stdout: Buffer.concat(stdout), stderr });
       const detail = lastLines(stderr, 5);
