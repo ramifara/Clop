@@ -252,3 +252,24 @@ test('names downloads without a matching extension by their content', async t =>
   await engine.restore(pdf);
   assert.equal(path.extname(engine.output(pdf)), '.pdf');
 });
+test('dismissing is immediate, safe to repeat and stops a running job', async t => {
+  const f = await media(t, 'jpegoptim', 'pngquant', 'gifsicle', 'exiftool'); if (!f) return;
+  const { dir } = f;
+  const engine = new ItemEngine(path.join(dir, 'session'), () => ({ ...defaultSettings(), videoCompression: { tier: 'smaller', factor: 90 } }));
+  const short = await engine.importPath(await clip(path.join(dir, 'short.mp4'), { seconds: 0.5 }), 'drop', balanced);
+  const started = new Promise<void>(resolve => engine.on('change', () => { if (engine.list().some(item => item.name === 'long.mp4' && item.status === 'processing')) resolve(); }));
+  const long = engine.importPath(await clip(path.join(dir, 'long.mp4'), { width: 1280, height: 720, seconds: 6 }), 'drop', { ...balanced, mode: 'aggressive' });
+  await started;
+  // A finished video leaves at once, although the video queue is busy, and dismissing it twice is harmless.
+  const before = Date.now();
+  await Promise.all([engine.dismiss(short), engine.dismiss(short)]);
+  assert.ok(Date.now() - before < 1000);
+  assert.ok(engine.list().every(item => item.id !== short));
+  // The running encode stops when its card is dismissed, and its import ends without an error.
+  const running = engine.list().find(item => item.name === 'long.mp4')!.id;
+  await engine.dismiss(running);
+  assert.equal(await long, running);
+  assert.ok(Date.now() - before < 5000);
+  assert.deepEqual(engine.list(), []);
+  await engine.dismiss(running);
+});

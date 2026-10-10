@@ -26,7 +26,8 @@ const LIMIT = 128 * 1024 * 1024;
 const PIXELS = 60_000_000;
 /** Ordinary read failures; anything else on Windows may be a OneDrive placeholder that could not download. */
 const LOCAL_ERRORS = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY', 'EISDIR']);
-interface Entry { result: ItemResult; originalPath: string; outputPath: string; directory: string; inputFormat: string; revision: number }
+/** `cancel` stops this item's running job when it is dismissed. */
+interface Entry { result: ItemResult; originalPath: string; outputPath: string; directory: string; inputFormat: string; revision: number; cancel: AbortController }
 export type ItemSettings = Pick<ClopSettings, 'imageCompression' | 'stripMetadata' | 'preserveColorMetadata' | 'gifFrameDropBehaviour' | 'videoCompression' | 'videoEncoder' | 'capVideoFPS' | 'targetVideoFPS'
   | 'minVideoFPS' | 'removeAudioFromVideos' | 'convertAudioToAAC' | 'adaptiveVideoSize' | 'pdfDPI' | 'audioCompression' | 'formatsToConvertToAAC' | 'formatsToConvertToMP3' | 'audioCoverArt' | 'preserveDates'>;
 /**
@@ -94,7 +95,7 @@ export class ItemEngine extends EventEmitter {
     await rename(staged, originalPath);
     const preview = await imageThumbnail(originalPath, DECODED.has(format) || info.deep), bytes = (await stat(originalPath)).size;
     const result: ItemResult = { ...base, originalBytes: bytes, outputBytes: bytes, originalWidth: width, originalHeight: height, width, height, format, originalPreview: preview, preview, animated: pages > 1 };
-    return { result, originalPath, outputPath: originalPath, directory, inputFormat: format, revision: 0 };
+    return { result, originalPath, outputPath: originalPath, directory, inputFormat: format, revision: 0, cancel: new AbortController() };
   }
   private async stageMedia(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'> & { kind: Exclude<MediaKind, 'image'> }): Promise<Entry> {
     const signal = this.controller.signal;
@@ -110,7 +111,7 @@ export class ItemEngine extends EventEmitter {
       ...base, originalBytes: bytes, outputBytes: bytes, originalWidth: video?.width ?? 0, originalHeight: video?.height ?? 0, width: video?.width ?? 0, height: video?.height ?? 0,
       format, originalPreview: preview, preview, durationMs: info?.durationMs,
     };
-    return { result, originalPath: staged, outputPath: staged, directory, inputFormat: format, revision: 0 };
+    return { result, originalPath: staged, outputPath: staged, directory, inputFormat: format, revision: 0, cancel: new AbortController() };
   }
   apply(id: string, options: ImageOptions) {
     options = parseOptions(options);
@@ -118,7 +119,10 @@ export class ItemEngine extends EventEmitter {
     return this.schedule('image', () => this.process(id, options));
   }
   private async process(id: string, options: ImageOptions) {
-    const e = this.get(id), r = e.result, signal = this.controller.signal;
+    // An item dismissed while its job waited has nothing left to do.
+    const e = this.entries.get(id);
+    if (!e) return;
+    const r = e.result, signal = AbortSignal.any([this.controller.signal, e.cancel.signal]);
     r.status = 'processing'; r.error = undefined; r.progress = undefined; this.changed();
     try {
       // Each result gets a folder of its own and keeps the original's name, so a pasted or dragged file is named like its source.
@@ -141,7 +145,8 @@ export class ItemEngine extends EventEmitter {
       const preview = r.kind !== 'image' || output.unchanged ? r.originalPreview : await imageThumbnail(output.path, DECODED.has(output.format));
       Object.assign(r, { status: 'ready', options, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes, preview,
         durationMs: output.durationMs ?? r.durationMs, pages: output.pages ?? r.pages, progress: undefined, unchanged: !!output.unchanged, restored: false });
-      this.changed(); this.emit('ready', id);
+      this.changed();
+      if (this.entries.get(id) === e) this.emit('ready', id);
     } catch (error) { Object.assign(r, { status: 'error', error: message(error), progress: undefined }); this.changed(); }
   }
   private optimiseMedia(kind: Exclude<MediaKind, 'image'>, file: string, outputDir: string, job: MediaJobOptions & { name: string }): Promise<MediaOutput> {
@@ -162,7 +167,17 @@ export class ItemEngine extends EventEmitter {
       format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, maxEdge: undefined, format: 'auto' }, restored: true, unchanged: true, error: undefined });
     this.changed(); this.emit('ready', id);
   }); }
-  dismiss(id: string) { return this.schedule(this.kindOf(id), async () => { this.get(id); this.entries.delete(id); this.changed(); }); }
+  /**
+   * Removes an item at once, without waiting behind other jobs of its kind, and stops its job if one is running.
+   * Dismissing an item that is already gone does nothing, so overlapping dismissals are safe.
+   */
+  async dismiss(id: string) {
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    this.entries.delete(id);
+    entry.cancel.abort();
+    this.changed();
+  }
   async idle() { await Promise.all(this.queues.values()); }
   /** Stops every running and queued job, for quitting. Later imports are refused. */
   abort() { this.controller.abort(); }
