@@ -302,3 +302,5 @@ export const newPipelineId = () => globalThis.crypto.randomUUID().toUpperCase();
 export const referenceTo = (saved: Pipeline): Pipeline => ({ id: newPipelineId(), steps: [], skipOptimisation: false, hideResult: false, libraryID: saved.id });
 /** `Pipeline.resolved`: the saved pipeline a reference points to, or the pipeline itself when it is not a reference or the saved one was deleted. */
 export const resolvePipeline = (pipeline: Pipeline, saved: readonly Pipeline[]) => pipeline.libraryID === undefined ? pipeline : saved.find(entry => entry.id === pipeline.libraryID) ?? pipeline;
+/** The pipeline to run for an entry: a reference whose saved pipeline is gone (or unreadable, so not in `saved`) runs nothing, rather than its empty self. */
+export const resolveRunnable = (pipeline: Pipeline, saved: readonly Pipeline[]): Pipeline | undefined => pipeline.libraryID === undefined ? pipeline : saved.find(entry => entry.id === pipeline.libraryID);

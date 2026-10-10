@@ -27,6 +27,8 @@ test('pipelinesFor finds the pipelines attached to a folder or the clipboard, re
   const newer = decodePipelines([JSON.stringify({ id: 'NEWER-SAVED', steps: [{ teleport: {} }] })])!;
   const withNewer = { ...settings, savedPipelines: [saved, ...newer], pipelinesToRunOnImage: { clipboard: [referenceTo({ ...saved, id: 'NEWER-SAVED' }), referenceTo(saved)] } };
   assert.deepEqual(pipelinesFor('image', 'clipboard', withNewer), [saved]);
+  const gone = { ...settings, pipelinesToRunOnImage: { clipboard: [referenceTo({ ...saved, id: 'DELETED' }), clipboard] } };
+  assert.deepEqual(pipelinesFor('image', 'clipboard', gone), [clipboard], 'a reference to a deleted saved pipeline runs nothing');
 });
 
 test('on Windows a folder matches ignoring case and slash direction', () => {

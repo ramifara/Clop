@@ -1,8 +1,8 @@
 import path from 'node:path';
 import type { ClopSettings } from '../settings/schema';
 import { resolveHome } from '../template';
-import { isReadable, storedId } from './codec';
-import { resolvePipeline, type ClopFileType, type Pipeline } from './model';
+import { isReadable } from './codec';
+import { resolveRunnable, type ClopFileType, type Pipeline } from './model';
 
 // `pipelinesFor` (Clop/Pipeline.swift): the pipelines attached to a source, a watched folder's path or `clipboard`.
 
@@ -18,14 +18,12 @@ function sourceKey(source: string, home?: string, platform: NodeJS.Platform = pr
 
 /**
  * The pipelines to run on a `type` file from `source`, each reference resolved to the saved pipeline it names. A folder
- * attached as `~/Downloads` matches its full path. Entries this version cannot read, and references to saved pipelines it
- * cannot read, are left out; they stay in settings.
+ * attached as `~/Downloads` matches its full path. Entries this version cannot read, and references to saved pipelines that
+ * are gone or that it cannot read, are left out; they stay in settings.
  */
 export function pipelinesFor(type: ClopFileType, source: string, settings: Pick<ClopSettings, (typeof PIPELINE_SOURCE_KEYS)[ClopFileType] | 'savedPipelines'>, { home, platform }: { home?: string; platform?: NodeJS.Platform } = {}): Pipeline[] {
   const attached = settings[PIPELINE_SOURCE_KEYS[type]] ?? {}, wanted = sourceKey(source, home, platform);
   const entries = attached[source] ?? Object.entries(attached).find(([key]) => sourceKey(key, home, platform) === wanted)?.[1] ?? [];
   const saved = settings.savedPipelines.filter(isReadable);
-  // A reference to a saved pipeline this version cannot read is skipped; resolving it would run the empty reference instead.
-  const unreadable = new Set(settings.savedPipelines.filter(entry => !isReadable(entry)).map(storedId));
-  return entries.filter(isReadable).filter(pipeline => pipeline.libraryID === undefined || !unreadable.has(pipeline.libraryID)).map(pipeline => resolvePipeline(pipeline, saved));
+  return entries.filter(isReadable).flatMap(pipeline => resolveRunnable(pipeline, saved) ?? []);
 }
