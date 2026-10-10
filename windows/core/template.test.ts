@@ -150,6 +150,20 @@ test('%n recognises month names that contain digits or marks, so a template is n
   assert.match(expandTemplate('%n', { now, locale: 'ja-JP' }), /3/);
 });
 
+test('%n recognises every month name of every locale and calendar, so a template is never stacked', () => {
+  const letters = 'abcdefghijklmnopqrstuvwxyz';
+  const codes = [...letters].flatMap((a) => [...letters].flatMap((b) => [a + b, ...[...letters].map((c) => a + b + c)]));
+  const variants = ['sr-Latn', 'uz-Cyrl', 'pa-Arab', 'ks-Deva', 'bs-Cyrl', 'zh-Hant', 'ff-Adlm', 'mni-Mtei', 'ar-SA', 'fa-IR', 'he-u-ca-hebrew', 'zh-u-ca-chinese', 'ja-u-ca-japanese', 'ar-u-ca-islamic', 'am-u-ca-ethiopic', 'hi-u-ca-indian', 'ko-u-ca-dangi'];
+  const locales = [...Intl.DateTimeFormat.supportedLocalesOf(codes), ...variants];
+  assert.ok(locales.length > 200, `only ${locales.length} locales`);
+  for (const locale of locales) for (let month = 0; month < 12; month++) for (const day of [1, 28]) {
+    const name = expandTemplate('%f-%n', { path: posix, now: new Date(2024, month, day), locale }, { extension: false });
+    for (const platform of ['linux', 'win32'] as const) assert.equal(nameMatchesTemplate(name, '%f-%n', { platform }), true, `${locale} ${platform}: ${name}`);
+  }
+  assert.equal(nameMatchesTemplate('Tháng 3', '%n', { platform: 'linux' }), true);
+  assert.equal(nameMatchesTemplate('a/b', '%n', { platform: 'linux' }), false);
+});
+
 test('%i in a path template reads and moves the counter once however many components use it', () => {
   const counter: Counter = { value: 7 };
   assert.equal(expandPathTemplate('out-%i/%f-%i', { path: posix, platform: 'linux', counter }), '/Users/rami/Pictures/out-8/shot-8.png');
