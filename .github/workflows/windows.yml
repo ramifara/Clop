@@ -45,6 +45,7 @@ jobs:
       - name: Compile Windows helper
         shell: powershell
         run: powershell.exe -NoProfile -Sta -File native/bridge.ps1 -Check
+      # Also compiles native/clop.cs into clop.exe with the .NET Framework's csc.exe.
       - name: Build application
         run: npm run build
       - name: Check native clipboard integration
@@ -57,6 +58,9 @@ jobs:
       - name: Exercise packaged Windows app
         timeout-minutes: 5
         run: node scripts/desktop-smoke.mjs
+      - name: Exercise packaged clop command
+        timeout-minutes: 5
+        run: node scripts/cli-smoke.mjs
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
