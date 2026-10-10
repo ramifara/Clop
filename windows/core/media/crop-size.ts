@@ -7,6 +7,16 @@ export interface Rect { left: number; top: number; width: number; height: number
 /** What a crop does to a `width` × `height` image: cut `crop` out, or fill `width` × `height` around the `fill` region. */
 export interface Geometry { width: number; height: number; crop?: Rect; fill?: 'attention' | 'centre' }
 
+/** The centred region of a `width` × `height` source with the aspect ratio of `target` (gifsicle's and ffmpeg's crops in Images.swift). */
+export function centreRect(width: number, height: number, target: { width: number; height: number }): Rect {
+  if (width / target.width > height / target.height) {
+    const w = Math.max(1, Math.round((target.width / target.height) * height));
+    return { left: Math.floor((width - w) / 2), top: 0, width: w, height };
+  }
+  const h = Math.max(1, Math.round((target.height / target.width) * width));
+  return { left: 0, top: Math.floor((height - h) / 2), width, height: h };
+}
+
 /** Swift's `evenInt`: rounded, then odd values up to the next even one. */
 const even = (value: number) => { const x = Math.round(value); return x + (x % 2); };
 

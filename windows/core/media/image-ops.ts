@@ -4,9 +4,10 @@ import { retryBusy } from '../run';
 import { COMPRESSION_FACTOR_AGGRESSIVE } from './compression';
 import type { CropSpec } from './crop-size';
 import { stripExif } from './exif';
-import { optimiseImage, type ImageFormat, type ImageOptimiseOptions, type Watermark } from './image';
+import { optimiseImage, type ImageFormat, type ImageOptimiseOptions } from './image';
 import { sniffImage } from './image-codecs';
 import type { MediaJobOptions, MediaOutput } from './types';
+import type { Watermark } from './watermark';
 
 type Options = ImageOptimiseOptions & MediaJobOptions;
 

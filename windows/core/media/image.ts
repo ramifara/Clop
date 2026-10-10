@@ -1,4 +1,4 @@
-import sharp, { type Metadata, type OverlayOptions } from 'sharp';
+import sharp, { type Metadata } from 'sharp';
 import { availableParallelism } from 'node:os';
 import { copyFile, mkdir, mkdtemp, open, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -6,10 +6,11 @@ import { queue, retryBusy, run } from '../run';
 import type { ToolName } from '../tools';
 import type { CompressionQuality } from '../settings/schema';
 import * as cq from './compression';
-import { cropGeometry, type CropSpec, type Rect } from './crop-size';
+import { centreRect, cropGeometry, type CropSpec, type Rect } from './crop-size';
 import { copyMetadata } from './exif';
 import { encodeHEIC, encodeJXL, readableImage, sniffImage } from './image-codecs';
 import type { MediaJobOptions, MediaOutput } from './types';
+import { watermarkFilters, watermarkOverlay, type Watermark } from './watermark';
 
 // Windows cannot delete or rename a file that sharp's file cache still holds open.
 sharp.cache({ files: 0 });
@@ -18,8 +19,6 @@ const decode = (file: string, animated = false) => sharp(file, { failOn: 'error'
 
 export type ImageFormat = 'png' | 'jpeg' | 'webp' | 'avif' | 'gif' | 'heic' | 'jxl';
 export const IMAGE_FORMATS: readonly ImageFormat[] = ['png', 'jpeg', 'webp', 'avif', 'gif', 'heic', 'jxl'];
-export type WatermarkPosition = 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight' | 'center';
-export interface Watermark { file: string; position?: WatermarkPosition; opacity?: number; scale?: number }
 export interface ImageOptimiseOptions {
   /** The `imageCompression` setting. The Windows-only `lossless` tier optimises without changing pixels. */
   compression: CompressionQuality;
@@ -57,7 +56,6 @@ interface Encoded { file: string; format: ImageFormat; quantized?: string; store
 const SOURCES = new Set<string>([...IMAGE_FORMATS, 'tiff', 'bmp', 'svg']);
 // Above this many bytes saved, the adaptive tier keeps the other format (optimisePNG and optimiseJPEG in Images.swift).
 const ADAPTIVE_GAIN = 100_000;
-const WATERMARK_PADDING = 20;
 const threads = () => `--threads=${availableParallelism()}`;
 /**
  * Runs a tool in the job's temporary folder on bare file names. The Windows builds of jpegoptim,
@@ -76,16 +74,6 @@ const size = async (file: string) => (await stat(file)).size;
 function displaySize(meta: Metadata): [number, number] {
   const width = meta.width ?? 0, height = meta.pageHeight ?? meta.height ?? 0;
   return (meta.orientation ?? 1) >= 5 ? [height, width] : [width, height];
-}
-
-/** The centred region of a `width` × `height` source with the aspect ratio of `target` (gifsicle's and ffmpeg's crops in Images.swift). */
-export function centreRect(width: number, height: number, target: { width: number; height: number }): Rect {
-  if (width / target.width > height / target.height) {
-    const w = Math.max(1, Math.round((target.width / target.height) * height));
-    return { left: Math.floor((width - w) / 2), top: 0, width: w, height };
-  }
-  const h = Math.max(1, Math.round((target.height / target.width) * width));
-  return { left: 0, top: Math.floor((height - h) / 2), width, height: h };
 }
 
 /**
@@ -195,10 +183,12 @@ async function optimiseAnimation(job: Job, format: ImageFormat): Promise<Encoded
     ...(job.crop ? [`crop=${job.crop.width}:${job.crop.height}:${job.crop.left}:${job.crop.top}`] : []),
     ...(job.resized ? [`scale=${job.width}:${job.height}:flags=lanczos`] : []),
   ];
-  const inputs = ['-i', local(job.input), ...(watermark ? ['-i', local(await copyWatermark(job, watermark))] : [])];
-  // watermarkWithFFmpeg in PipelineExecution.swift.
-  const graph = (tail: string[]) => watermark
-    ? ['-filter_complex', [`[0:v]${[...geometry, 'null'].join(',')}[base]`, `[1:v]${watermarkFilter(job, watermark)}[wm]`, `[base][wm]overlay=${overlayPosition(watermark.position)}${tail.length ? `,${tail.join(',')}` : ''}`].join(';')]
+  const mark = watermark && path.join(job.tmp, `watermark${path.extname(watermark.file).toLowerCase()}`);
+  if (mark) await copyFile(watermark.file, mark);
+  const inputs = ['-i', local(job.input), ...(mark ? ['-i', local(mark)] : [])];
+  const filters = watermark && watermarkFilters(job.width, watermark);
+  const graph = (tail: string[]) => filters
+    ? ['-filter_complex', [`[0:v]${[...geometry, 'null'].join(',')}[base]`, `[1:v]${filters.scale}[wm]`, `[base][wm]${[filters.overlay, ...tail].join(',')}`].join(';')]
     : (geometry.length || tail.length ? ['-vf', [...geometry, ...tail].join(',')] : []);
   if (format === 'webp' && job.lossless && !watermark) {
     // ffmpeg's libwebp_anim has no exact mode, so it would change the colour under transparent pixels; sharp keeps it, with the timing and loop count.
@@ -221,46 +211,6 @@ async function optimiseAnimation(job: Job, format: ImageFormat): Promise<Encoded
   return format === 'gif' ? optimiseGIF(job, out, false) : { file: out, format };
 }
 
-async function copyWatermark(job: Job, watermark: Watermark) {
-  const copy = path.join(job.tmp, `watermark${path.extname(watermark.file).toLowerCase()}`);
-  await copyFile(watermark.file, copy);
-  return copy;
-}
-/** The watermark's width as a fraction of the image's, at least 16 pixels, with the requested opacity. */
-const watermarkWidth = (job: Job, { scale = 0.15 }: Watermark) => Math.min(job.width, Math.max(16, Math.round(job.width * scale)));
-const watermarkFilter = (job: Job, watermark: Watermark) => `scale=${watermarkWidth(job, watermark)}:-1,format=rgba,colorchannelmixer=aa=${watermark.opacity ?? 1}`;
-function overlayPosition(position: WatermarkPosition = 'bottomRight') {
-  const pad = WATERMARK_PADDING;
-  switch (position) {
-    case 'topLeft': return `${pad}:${pad}`;
-    case 'topRight': return `W-w-${pad}:${pad}`;
-    case 'bottomLeft': return `${pad}:H-h-${pad}`;
-    case 'center': return '(W-w)/2:(H-h)/2';
-    default: return `W-w-${pad}:H-h-${pad}`;
-  }
-}
-
-/** The watermark scaled to the image and placed in its corner, as `watermarked` in Images.swift draws it. */
-async function watermarkOverlay(job: Job, width: number, height: number): Promise<OverlayOptions> {
-  const watermark = job.opts.watermark!, pad = WATERMARK_PADDING;
-  const source = await sharp(watermark.file).metadata();
-  let w = watermarkWidth(job, watermark), h = Math.max(1, Math.round((w * (source.height ?? 1)) / (source.width ?? 1)));
-  if (h > height) { w = Math.max(1, Math.round((w * height) / h)); h = height; }
-  w = Math.min(w, width);
-  const at = (value: number, room: number) => Math.max(0, Math.min(room, Math.round(value)));
-  const [left, top] = (() => {
-    switch (watermark.position ?? 'bottomRight') {
-      case 'topLeft': return [pad, pad];
-      case 'topRight': return [width - w - pad, pad];
-      case 'bottomLeft': return [pad, height - h - pad];
-      case 'center': return [(width - w) / 2, (height - h) / 2];
-      default: return [width - w - pad, height - h - pad];
-    }
-  })();
-  const input = await sharp(watermark.file).resize(w, h, { fit: 'fill' }).ensureAlpha().linear([1, 1, 1, watermark.opacity ?? 1], [0, 0, 0, 0]).png().toBuffer();
-  return { input, left: at(left, width - w), top: at(top, height - h) };
-}
-
 /** Decodes, orients, crops, scales, watermarks and encodes with sharp: an intermediate for the optimisers, or the result for WebP and AVIF. */
 async function encode(job: Job, format: Exclude<ImageFormat, 'heic' | 'jxl'>, file = path.join(job.tmp, `encoded.${format}`)) {
   // The metadata is copied from the original with exiftool afterwards (copyMetadata); only the colour profile has to travel with the pixels.
@@ -270,7 +220,7 @@ async function encode(job: Job, format: Exclude<ImageFormat, 'heic' | 'jxl'>, fi
   if (job.opts.watermark) {
     // The overlay is placed on the final size, which a proportional scale can round by a pixel.
     const { data, info } = await image.png({ compressionLevel: 0 }).toBuffer({ resolveWithObject: true });
-    image = sharp(data).keepIccProfile().composite([await watermarkOverlay(job, info.width, info.height)]);
+    image = sharp(data).keepIccProfile().composite([await watermarkOverlay(job.opts.watermark, info.width, info.height)]);
   }
   const quality = cq.conversionQuality(job.compression), lossless = job.lossless;
   // sharp writes 8-bit PNG unless the pipeline is 16-bit.
