@@ -1,25 +1,33 @@
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { lstat, mkdir, readdir, rm, rmdir, stat } from 'node:fs/promises';
-import { copyTo, exists, moveTo } from './fileops';
+import { lstat, mkdir, readdir, rm, rmdir, stat, unlink } from 'node:fs/promises';
+import { copyTo, exists, moveTo, samePath } from './fileops';
 import { expandHome } from './settings/paths';
 
-/** Removes files in `dir` that have not changed for longer than `maxAgeMs` (a negative value removes every file, whatever its timestamps), then the folders that are left empty (never `dir` itself). Anything inside a `keep` folder stays. Returns the number of files removed. */
+/** Whether `child` is `parent` or inside it. */
+const within = (parent: string, child: string, platform: NodeJS.Platform = process.platform) => {
+  const relative = path.relative(parent, child);
+  return samePath(parent, child, platform) || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+};
+
+/** Removes files in `dir` that have not changed for longer than `maxAgeMs` (a negative value removes every file, whatever its timestamps), then the folders that are left empty (never `dir` itself). Anything inside a `keep` folder stays. Links (symlinks, junctions) are removed as links when they age out and never followed, and a `dir` that is itself a link is left alone. Returns the number of files removed. */
 export async function sweep(dir: string, maxAgeMs: number, now: number, keep: ReadonlySet<string> = new Set()): Promise<number> {
   let removed = 0;
+  if ((await lstat(dir).catch(() => undefined))?.isSymbolicLink()) return 0;
   const inside = async (folder: string): Promise<boolean> => {
     let empty = true;
     for (const entry of await readdir(folder, { withFileTypes: true }).catch(() => [])) {
       const file = path.join(folder, entry.name);
       if (keep.has(file)) { empty = false; continue; }
-      if (entry.isDirectory()) {
+      const info = await lstat(file).catch(() => undefined);
+      if (info?.isDirectory()) {
         if (await inside(file) && await rmdir(file).then(() => true, () => false)) continue;
         empty = false; continue;
       }
       // Copies keep the original's modification time, so the change and creation times say when the file arrived.
-      const info = await lstat(file).catch(() => undefined);
-      if (info && (maxAgeMs < 0 || now - Math.max(info.mtimeMs, info.ctimeMs, info.birthtimeMs) > maxAgeMs) && await rm(file).then(() => true, () => false)) removed++;
+      const gone = () => info!.isSymbolicLink() ? unlink(file).catch(() => rmdir(file)).then(() => true, () => false) : rm(file).then(() => true, () => false);
+      if (info && (maxAgeMs < 0 || now - Math.max(info.mtimeMs, info.ctimeMs, info.birthtimeMs) > maxAgeMs) && await gone()) removed++;
       else empty = false;
     }
     return empty;
@@ -41,8 +49,9 @@ export class Workdir {
   readonly temp: string;
   private readonly protectedDirs = new Set<string>();
   private readonly latest = new Map<string, string>();
-  /** `legacy` lists folders from earlier versions. They are aged out like `temp` and removed once empty. */
-  constructor(root: string, private readonly options: { home?: string; legacy?: string[] } = {}) {
+  private readonly legacy: string[];
+  /** `legacy` lists folders from earlier versions. They are aged out like `temp` and removed once empty. One that contains the working directory, or overlaps `batch-backups`, is ignored, so the cleaner can never reach a file it promises to keep. */
+  constructor(root: string, options: { home?: string; legacy?: string[] } = {}) {
     const expanded = expandHome(root.trim(), options.home ?? os.homedir());
     // A relative folder would land wherever the process happens to run.
     if (!path.isAbsolute(expanded)) throw new Error(root.trim() ? `The working directory must be an absolute path, not "${root}".` : 'The working directory is empty. Choose a folder.');
@@ -50,9 +59,17 @@ export class Workdir {
     this.backups = path.join(this.root, 'backups');
     this.batchBackups = path.join(this.root, 'batch-backups');
     this.temp = path.join(this.root, 'temp');
+    this.legacy = (options.legacy ?? []).map(dir => path.resolve(dir)).filter(dir => !within(dir, this.root) && !within(dir, this.batchBackups) && !within(this.batchBackups, dir));
+  }
+
+  /** Whether `file` is inside one of the folders Clop writes its own files to, as opposed to the rest of a root the user may have pointed at an ordinary folder. */
+  owns(file: string): boolean {
+    return [this.backups, this.batchBackups, this.temp].some(dir => within(dir, path.resolve(file)));
   }
 
   async ensure(): Promise<this> {
+    // The cleaner deletes inside these two, so they must be real folders: a link could point it at someone else's files.
+    for (const dir of [this.backups, this.temp]) if ((await lstat(dir).catch(() => undefined))?.isSymbolicLink()) throw new Error(`${dir} is a link. Remove it so Clop can use its own folder.`);
     await Promise.all([this.backups, this.batchBackups, this.temp].map(dir => mkdir(dir, { recursive: true })));
     return this;
   }
@@ -109,7 +126,7 @@ export class Workdir {
   private async sweepAll(maxAgeMs: number, now: number) {
     let removed = 0;
     for (const dir of [this.backups, this.temp]) removed += await sweep(dir, maxAgeMs, now, this.protectedDirs);
-    for (const dir of this.options.legacy ?? []) {
+    for (const dir of this.legacy) {
       removed += await sweep(dir, maxAgeMs, now, this.protectedDirs);
       await rmdir(dir).catch(() => {});
     }

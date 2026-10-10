@@ -162,7 +162,7 @@ async function optimiseClipboard(sequence?: number, paths: string[] = [], manual
     }
     if (!manual && sequence !== undefined && sequence === lastClipboardSequence) return;
     if (sequence !== undefined) lastClipboardSequence = sequence;
-    if (!manual && paths.length && paths.every(file => path.resolve(file).toLowerCase().startsWith(path.resolve(workdir.root).toLowerCase() + path.sep))) return;
+    if (!manual && paths.length && paths.every(file => workdir.owns(file))) return;
     if (paths.length) {
       if (!manual) {
         const hashes: string[] = [];

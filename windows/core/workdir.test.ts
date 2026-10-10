@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -139,4 +139,48 @@ test('the cleaner sweeps right away, reads the interval on every pass and stops 
   const next = await put(path.join(workdir.temp, 'b.png'));
   await delay(80);
   assert.equal(await exists(next), true, 'a stopped cleaner does nothing');
+});
+
+test('a legacy folder that holds the working directory or batch backups is never swept', async t => {
+  const dir = await folder(t), legacy = path.join(dir, 'images');
+  // The working directory was pointed inside the old images folder.
+  const nested = await new Workdir(path.join(legacy, 'work'), { legacy: [legacy] }).ensure();
+  const batch = await put(path.join(nested.batchBackups, 'batch-1', 'c.png'));
+  const other = await put(path.join(legacy, 'session-1', 'o.png'));
+  await nested.cleanup(DAY, later(30));
+  await nested.forceClean();
+  assert.equal(await exists(batch), true);
+  assert.equal(await exists(other), true, 'a folder that contains the working directory is not a legacy folder');
+  // A legacy folder inside batch-backups is also left alone.
+  const inside = new Workdir(path.join(dir, 'w2'), { legacy: [path.join(dir, 'w2', 'batch-backups', 'old'), path.join(dir, 'w2', 'old-images')] });
+  const kept = await put(path.join(dir, 'w2', 'batch-backups', 'old', 'k.png'));
+  const swept = await put(path.join(dir, 'w2', 'old-images', 's.png'));
+  await inside.ensure();
+  await inside.cleanup(DAY, later(30));
+  assert.deepEqual([await exists(kept), await exists(swept)], [true, false]);
+});
+
+test('owns tells Clop-written folders apart from the rest of the root', async t => {
+  const dir = await folder(t), workdir = new Workdir(dir);
+  for (const inside of [path.join(workdir.temp, 'session-1', 'a.png'), path.join(workdir.backups, 'b.png'), path.join(workdir.batchBackups, 'x', 'c.png')]) assert.equal(workdir.owns(inside), true, inside);
+  for (const outside of [path.join(dir, 'Pictures', 'a.png'), path.join(dir, 'temp-notes', 'a.png'), path.join(workdir.root, 'a.png'), path.join(dir, '..', 'temp', 'a.png')]) assert.equal(workdir.owns(outside), false, outside);
+});
+
+test('the cleaner refuses linked roots and never follows links inside them', { skip: process.platform === 'win32' ? 'creating links needs privileges on Windows' : false }, async t => {
+  const dir = await folder(t), victim = path.join(dir, 'victim');
+  const precious = await put(path.join(victim, 'precious.png'));
+  const workdir = new Workdir(path.join(dir, 'work'));
+  await mkdir(workdir.root, { recursive: true });
+  await symlink(victim, workdir.backups, 'dir');
+  await assert.rejects(workdir.ensure(), /is a link/);
+  assert.equal(await workdir.cleanup(DAY, later(30)), 0);
+  assert.equal(await workdir.forceClean().catch(() => 0), 0);
+  assert.equal(await exists(precious), true);
+  // A link planted inside a real folder is removed as a link; its target survives.
+  await rm(workdir.backups);
+  await workdir.ensure();
+  await symlink(victim, path.join(workdir.temp, 'junction'), 'dir');
+  assert.equal(await workdir.cleanup(DAY, later(30)), 1);
+  assert.equal(await exists(precious), true);
+  assert.deepEqual(await readdir(workdir.temp), []);
 });
