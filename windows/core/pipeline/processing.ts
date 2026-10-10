@@ -17,7 +17,7 @@ import type { WatermarkPosition } from '../media/watermark';
 import { effectiveBehaviour } from '../placement';
 import type { CompressionQuality } from '../settings/schema';
 import { applyLocation } from './files';
-import { effectiveCompression, parseAspectRatio, stepEntry, stepKind, WATERMARK_POSITIONS, type EncoderQuality, type PipelineStep, type StepKind, type StepParamMap } from './model';
+import { effectiveCompression, parseAspectRatio, stepEntry, stepKind, WATERMARK_POSITIONS, type ClopFileType, type EncoderQuality, type PipelineStep, type StepKind, type StepParamMap } from './model';
 import type { RunState } from './run-state';
 
 // The processing and media steps (PipelineExecution.swift). Consecutive steps the executor batches run as one pass where
@@ -58,6 +58,10 @@ export function cropChangesSize(crop: CropSpec, width: number, height: number) {
 /** `pdfDPIForEncoder`: each encoder preset fixes a DPI; an explicit `dpi:` wins. */
 const pdfDPIForEncoder = (encoder?: EncoderQuality) => encoder === 'lossless' ? PDF_DPI_NO_DOWNSAMPLE : encoder === 'medium' ? PDF_DPI_ADAPTIVE : encoder === 'aggressive' ? 100 : undefined;
 
+/** PDFs have no conversions, so no template of their own. */
+const CONVERTED_FOLDER_TEMPLATE: Partial<Record<ClopFileType, 'convertedSpecificFolderNameTemplateImage' | 'convertedSpecificFolderNameTemplateVideo' | 'convertedSpecificFolderNameTemplateAudio'>> = {
+  image: 'convertedSpecificFolderNameTemplateImage', video: 'convertedSpecificFolderNameTemplateVideo', audio: 'convertedSpecificFolderNameTemplateAudio',
+};
 /** Where a convert step's result goes: an unset (`sameFolder`) location follows the manual conversion setting or the request's override. */
 export function convertLocation(run: RunState, location: string): string {
   if (location !== 'sameFolder') return location;
@@ -66,8 +70,8 @@ export function convertLocation(run: RunState, location: string): string {
     case 'inPlace': return 'inPlace';
     case 'temporary': return 'temporaryFolder';
     case 'specificFolder': {
-      const key = `convertedSpecificFolderNameTemplate${({ image: 'Image', video: 'Video', audio: 'Audio' } as Record<string, string>)[run.fileType] ?? ''}`;
-      return placementOverride?.specificFolderTemplate ?? (run.settings as unknown as Record<string, string | undefined>)[key] ?? location;
+      const key = CONVERTED_FOLDER_TEMPLATE[run.fileType];
+      return placementOverride?.specificFolderTemplate ?? (key ? run.settings[key] : location);
     }
     default: return location;
   }
