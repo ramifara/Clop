@@ -57,10 +57,17 @@ export function icuRegex(pattern: string, flags = ''): RegExp {
       } else if (!inClass && next === 'A') { out += '^'; i++; }
       else if (!inClass && (next === 'z' || next === 'Z')) { out += '$'; i++; }
       else if (next !== undefined && Object.hasOwn(ICU_ONLY_ESCAPES, next)) unreadable(ICU_ONLY_ESCAPES[next]);
+      else if (next === 'x' && source[i + 2] === '{') unreadable('a \\x{…} code point');
       else { out += c + (next ?? ''); i++; }
       continue;
     }
-    if (inClass) { if (c === ']') inClass = false; out += c; continue; }
+    if (inClass) {
+      // JavaScript (without the v flag) reads these as literal characters, so they would match something else.
+      if (c === '[') unreadable('a nested or POSIX character class such as [[:alpha:]]');
+      if (c === '&' && next === '&') unreadable('a class intersection (&&)');
+      if (c === ']') inClass = false;
+      out += c; continue;
+    }
     if (c === '[') {
       inClass = true; out += c;
       if (next === '^') { out += next; i++; }
@@ -72,7 +79,8 @@ export function icuRegex(pattern: string, flags = ''): RegExp {
     const quantifier = '*+?'.includes(c) && !afterGroupOpen;
     groupOpened = c === '(';
     out += c;
-    // A `+` after a quantifier makes it possessive in ICU; JavaScript has no such thing, and greedy matches the same names.
+    // A `+` after a quantifier makes it possessive in ICU. JavaScript has none; greedy finds the same matches for the patterns
+    // filenames need, but can backtrack where possessive would not, so a pathological pattern can be slower.
     if ((quantifier || (c === '}' && /\{\d+(,\d*)?\}$/.test(out))) && next === '+') i++;
   }
   try { return new RegExp(out, flags + (/\\[pP]\{/.test(out) ? 'u' : '')); } catch (error) {

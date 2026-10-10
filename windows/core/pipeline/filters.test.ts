@@ -23,7 +23,7 @@ test('ICU patterns from macOS are read as JavaScript ones', () => {
     ['^\\p{Lu}', 'Écran.png', true],
   ];
   for (const [pattern, text, expected] of cases) assert.equal(icuRegex(pattern).test(text), expected, pattern);
-  for (const pattern of ['(?>a)b', '(?x) a', '\\h+', 'a(?i)b', '[unclosed']) assert.throws(() => icuRegex(pattern), /cannot read/, pattern);
+  for (const pattern of ['(?>a)b', '(?x) a', '\\h+', 'a(?i)b', '[unclosed', '[[:alpha:]]', '[a-z&&[^aeiou]]', '\\x{41}']) assert.throws(() => icuRegex(pattern), /cannot read/, pattern);
 });
 
 test('regex is smart case', () => {
