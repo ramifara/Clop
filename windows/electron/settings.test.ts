@@ -1,13 +1,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultSettings, migrateLegacy } from '../core/settings/schema';
-import { RENDERER_SETTINGS, imageDefaults, imageMode, parseOptions, rendererSettings } from './settings';
+import { RENDERER_SETTINGS, imageCompression, imageDefaults, imageMode, parseOptions, rendererSettings } from './settings';
 test('new images use the compression and format settings', () => {
   assert.deepEqual(imageDefaults(defaultSettings()), { mode: 'balanced', format: 'auto', scale: 1 });
   for (const mode of ['balanced', 'aggressive', 'lossless'] as const) assert.equal(imageDefaults(migrateLegacy({ defaultMode: mode, defaultFormat: 'webp' })).mode, mode);
   assert.equal(imageDefaults(migrateLegacy({ defaultFormat: 'webp' })).format, 'webp');
   assert.equal(imageMode({ tier: 'adaptive', factor: 80 }), 'balanced');
   assert.equal(imageMode({ tier: 'custom', factor: 50 }), 'aggressive');
+});
+test('card modes map onto the compression setting the way the macOS aggressive button does', () => {
+  const normal = { tier: 'custom', factor: 30 } as const, adaptive = { tier: 'adaptive', factor: 30 } as const, strong = { tier: 'custom', factor: 80 } as const;
+  assert.deepEqual(imageCompression('balanced', normal), { compression: normal });
+  assert.deepEqual(imageCompression('balanced', adaptive), { compression: adaptive });
+  assert.deepEqual(imageCompression('aggressive', normal), { compression: normal, aggressive: true });
+  assert.deepEqual(imageCompression('aggressive', strong), { compression: strong });
+  assert.deepEqual(imageCompression('balanced', strong), { compression: strong, aggressive: false });
+  assert.deepEqual(imageCompression('lossless', normal), { compression: { tier: 'lossless', factor: 30 } });
+  assert.deepEqual(imageCompression('balanced', { tier: 'lossless', factor: 30 }), { compression: { tier: 'lossless', factor: 30 }, aggressive: false });
 });
 test('rejects invalid dimensions, formats and non-finite scales', () => {
   for (const bad of [0, -1, NaN, Infinity, 1.01]) assert.throws(() => parseOptions({ mode: 'balanced', format: 'auto', scale: bad }));
