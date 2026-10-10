@@ -1,9 +1,18 @@
 import { build } from 'esbuild';
+import { execFileSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import sharp from 'sharp';
 await mkdir('dist-electron', { recursive: true });
 await build({ entryPoints: ['electron/main.ts'], bundle: true, platform: 'node', format: 'esm', target: 'node22', external: ['electron', 'sharp'], outdir: 'dist-electron' });
 await build({ entryPoints: ['electron/native.ts'], bundle: true, platform: 'node', format: 'esm', target: 'node22', outfile: 'dist-electron/native-test.js' });
+// The CLI ships beside app.asar in resources; cli/sharp.ts finds sharp inside the archive.
+await build({ entryPoints: ['cli/index.ts'], bundle: true, platform: 'node', format: 'esm', target: 'node22', alias: { sharp: './cli/sharp.ts' }, outfile: 'dist-electron/cli.mjs' });
+// clop.exe launches it with the installed Electron. The .NET Framework's compiler is part of every Windows install.
+if (process.platform === 'win32') {
+  const csc = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
+  execFileSync(csc, ['/nologo', '/target:exe', '/optimize+', '/langversion:5', '/out:dist-electron/clop.exe', 'native/clop.cs'], { stdio: 'inherit' });
+}
 await build({ entryPoints: ['electron/preload.ts'], bundle: true, platform: 'node', format: 'cjs', target: 'node22', external: ['electron'], outfile: 'dist-electron/preload.cjs' });
 await mkdir('assets', { recursive: true });
 const png = await sharp('../Clop/Assets.xcassets/clop.imageset/clop_256.png').resize(256, 256).png().toBuffer();

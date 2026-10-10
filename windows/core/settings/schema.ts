@@ -262,6 +262,7 @@ export const settingsSchema = {
   floatingResultsAlwaysOnTop: bool(true, 'Keep floating results above other windows. Legacy Windows key: `alwaysOnTop`.', { windowsOnly: true }),
   launchAtLogin: bool(false, 'Start Clop when signing in to Windows. macOS keeps this as a login item, not a setting.', { windowsOnly: true }),
   defaultImageFormat: oneOf(['auto', 'png', 'jpeg', 'webp', 'avif', 'gif'], 'auto', 'Format for new image results; `auto` keeps the original format. Legacy Windows key: `defaultFormat`.', { windowsOnly: true }),
+  persistDebugLogs: bool(false, 'Keep the app\'s debug log in `logs\\clop.log` in the app data folder. macOS keeps its logs in the system log instead; `clop logs persist` switches this.', { windowsOnly: true }),
 } satisfies Record<string, SettingSpec<any>>;
 
 export type SettingKey = keyof typeof settingsSchema;
