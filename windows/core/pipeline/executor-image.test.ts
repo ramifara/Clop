@@ -52,6 +52,15 @@ test('a location template names a new file, and a convert follows the manual con
   assert.ok(w.workdir.owns(temporary.file), 'a request override wins over the setting');
 });
 
+test('steps that ran as one pass fail together, named as a range', async t => {
+  const w = await pipelineWorkspace(t); if (!w) return;
+  const input = w.file('photo.png');
+  await graphic(200, 100).png().toFile(input);
+  await assert.rejects(w.run('optimise -> crop(width: 100) -> convert(to: bmp) -> optimise', input), (error: PipelineStepError) =>
+    error instanceof PipelineStepError && error.step === 0 && error.lastStep === 2
+    && error.message.startsWith('Steps 1–3, optimise -> crop(width: 100) -> convert(to: bmp), failed: Clop cannot convert images to bmp'));
+});
+
 test('a crop the image already fits leaves it as it is', async t => {
   const w = await pipelineWorkspace(t); if (!w) return;
   const input = w.file('small.png');

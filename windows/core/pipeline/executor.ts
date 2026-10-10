@@ -1,8 +1,8 @@
 import { copyToClipboard, fork } from './actions';
 import { copyStep, deleteStep, moveStep, renameStep } from './files';
 import { evaluateFilter } from './filters';
-import { stepEntry, textName, type Pipeline, type PipelineStep } from './model';
-import { formatStep } from './parser';
+import { blockingProblems, stepEntry, textName, type Pipeline, type PipelineStep } from './model';
+import { formatStep, formatSteps } from './parser';
 import { isCompilable, isProcessing, runBatch, runSolo, stepLocation } from './processing';
 import { RunState, type PipelineRunOptions } from './run-state';
 import { runScript, runShortcut } from './scripts';
@@ -27,10 +27,13 @@ export interface PipelineResult {
   pages: string[];
 }
 
-/** A step failed. `step` is its index in the pipeline, `text` the step as pipeline text. */
+/**
+ * A step failed. `step` is its index in the pipeline and `text` the step as pipeline text. Steps that ran as one pass fail
+ * together: `step` is the first, `lastStep` the last, and `text` all of them.
+ */
 export class PipelineStepError extends Error {
-  constructor(readonly step: number, readonly text: string, readonly cause: unknown) {
-    super(`Step ${step + 1}, ${text}, failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+  constructor(readonly step: number, readonly text: string, readonly cause: unknown, readonly lastStep = step) {
+    super(`${lastStep > step ? `Steps ${step + 1}–${lastStep + 1}` : `Step ${step + 1}`}, ${text}, failed: ${cause instanceof Error ? cause.message : String(cause)}`);
     this.name = 'PipelineStepError';
   }
 }
@@ -68,6 +71,12 @@ async function runStep(run: RunState, step: PipelineStep, following: PipelineSte
 export async function runPipeline(pipeline: Pipeline, input: string, opts: PipelineRunOptions): Promise<PipelineResult> {
   const run = new RunState(input, opts), { steps } = pipeline, { fileType, signal } = opts;
   let didWork = false, stopped = false;
+  // A stored step with a value out of range or empty would do damage (a 1-pixel image in place, a file renamed to ".png"),
+  // so the whole pipeline is checked before anything runs.
+  for (const [index, step] of steps.entries()) {
+    const problems = applies(step, fileType) ? blockingProblems(step) : [];
+    if (problems.length) throw new PipelineStepError(index, formatStep(step), new Error(problems.map(problem => problem.message).join('; ')));
+  }
   try {
     for (let i = 0; i < steps.length;) {
       signal?.throwIfAborted();
@@ -75,10 +84,10 @@ export async function runPipeline(pipeline: Pipeline, input: string, opts: Pipel
       if (!applies(step, fileType)) { i++; continue; }
       const progress = (fraction: number) => opts.onProgress?.({ step: index, steps: steps.length, text: formatStep(step), fraction });
       // Consecutive processing steps run as one pass; a step with a location other than inPlace ends the pass.
-      const batch = [step], compiled = isCompilable(step, fileType);
+      const batch = [step], indices = [index], compiled = isCompilable(step, fileType);
       i++;
       while (compiled && i < steps.length && (stepLocation(batch.at(-1)!) ?? 'inPlace') === 'inPlace') {
-        if (applies(steps[i], fileType)) { if (!isCompilable(steps[i], fileType)) break; batch.push(steps[i]); }
+        if (applies(steps[i], fileType)) { if (!isCompilable(steps[i], fileType)) break; batch.push(steps[i]); indices.push(i); }
         i++;
       }
       progress(0);
@@ -87,7 +96,7 @@ export async function runPipeline(pipeline: Pipeline, input: string, opts: Pipel
         if (outcome === 'stop') { stopped = true; break; }
       } catch (error) {
         if (signal?.aborted) throw signal.reason ?? error;
-        throw new PipelineStepError(index, formatStep(step), error);
+        throw new PipelineStepError(index, formatSteps(batch), error, indices.at(-1));
       }
       progress(1);
       if (!('filterIf' in step) && !('filterIfNot' in step)) didWork = true;

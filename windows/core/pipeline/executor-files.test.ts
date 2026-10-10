@@ -4,6 +4,8 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { graphic } from '../media/image.fixtures';
 import { pipelineWorkspace, quoted } from './executor.fixtures';
+import { PipelineStepError } from './executor';
+import { makeStep } from './model';
 
 const year = String(new Date().getFullYear());
 
@@ -60,4 +62,21 @@ test('filters stop the pipeline quietly when they do not match', async t => {
   const copiedBy = await w.run('if(copiedBy: "paint") -> copy(to: "x/")', input, { sourceApp: { name: 'Paint' } });
   assert.deepEqual([copiedBy.stopped, copiedBy.didWork], [false, true]);
   assert.deepEqual(w.effects.trashed, []);
+});
+
+test('a stored step with a value out of range or empty is refused before it runs', async t => {
+  const w = await pipelineWorkspace(t); if (!w) return;
+  const input = w.file('keep.png');
+  await graphic(80, 60).png().toFile(input);
+  const original = await readFile(input);
+  const refused = async (steps: Parameters<typeof w.run>[0], step: number, message: RegExp) => assert.rejects(w.run(steps, input), (error: PipelineStepError) =>
+    error instanceof PipelineStepError && error.step === step && message.test(error.message));
+  await refused([makeStep('downscale', { factor: 0 })], 0, /^Step 1, downscale\(factor: 0\.0\), failed: factor must be a number above 0/);
+  await refused([makeStep('copy', { to: '%P/a/' }), makeStep('rename', { to: '' })], 1, /Step 2, .*to needs a value/);
+  await refused([makeStep('crop', { width: 0 })], 0, /width must be a whole number above 0/);
+  await refused([makeStep('filterIf', { _0: {} }), makeStep('delete', { path: 'sourceFile' })], 0, /if needs at least one condition/);
+  assert.deepEqual(await readFile(input), original);
+  assert.deepEqual(await readdir(w.files), ['keep.png'], 'nothing ran, not even the steps before the bad one');
+  assert.deepEqual(w.effects.trashed, []);
+  assert.equal((await w.run([makeStep('optimise', { dpi: 0 })], input)).didWork, true, 'a stored dpi of 0 means adaptive');
 });
