@@ -53,9 +53,11 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
  * `max<Kind>FileCount` files appear at once, none of them is optimised. Missing folders are polled for.
  */
 export class FolderWatcher {
-  private subscriptions: (() => void)[] = [];
-  private key = '';
-  private generation = 0;
+  /** The folders being watched, by id. */
+  private subscriptions = new Map<string, () => void>();
+  /** Updates run one after another, so overlapping settings changes cannot undo each other. */
+  private updating: Promise<void> = Promise.resolve();
+  private closed = false;
   private poll?: NodeJS.Timeout;
   /** Swift's `startedWatchingAt`: when this watcher was made, not when it last restarted. */
   private readonly startedAt = Date.now();
@@ -65,8 +67,8 @@ export class FolderWatcher {
   private running = new Set<string>();
   /** Files waiting for their writes to finish: when they were first reported, and whether they appeared then (rather than changed). */
   private settling = new Map<string, { timer?: NodeJS.Timeout; created: boolean; at: number }>();
-  /** Failures in a row to watch each folder; a folder's first reported change resets it. */
-  private failures = new Map<string, number>();
+  /** Failures in a row to watch each folder, and when to try it next; a folder's first reported change resets it. */
+  private failures = new Map<string, { count: number; next: number }>();
   private pollAt = Infinity;
   private protectedFiles = new Map<string, NodeJS.Timeout>();
   private cleaner?: NodeJS.Timeout;
@@ -74,27 +76,38 @@ export class FolderWatcher {
   constructor(readonly kind: MediaKind, private host: WatcherHost, private timing = TIMING) {}
 
   private id(file: string) { const resolved = path.resolve(file); return process.platform === 'win32' ? resolved.toLowerCase() : resolved; }
-  get watching() { return this.subscriptions.length > 0; }
+  get watching() { return this.subscriptions.size > 0; }
 
-  /** Starts, restarts or stops watching to match the settings. Call it after every settings change. */
-  async update(): Promise<void> {
-    const generation = ++this.generation, s = this.host.settings(), w = watchSettings(this.kind, s);
+  /** Starts, adjusts or stops watching to match the settings. Call it after every settings change; calls run in turn. */
+  update(): Promise<void> {
+    const run = this.updating.then(() => this.apply());
+    this.updating = run.catch(() => {});
+    return run;
+  }
+
+  private async apply() {
+    if (this.closed) return;
+    const s = this.host.settings(), w = watchSettings(this.kind, s);
     const dirs = w.enabled && !s.pauseAutomaticOptimisations ? [...new Set(w.dirs.map(dir => path.resolve(expandHome(dir, this.host.home))))] : [];
     const existing = (await Promise.all(dirs.map(async dir => (await stat(dir).catch(() => undefined))?.isDirectory() ? dir : undefined))).filter(dir => dir !== undefined);
-    if (generation !== this.generation) return;
     // A folder on a drive that is not connected yet is watched once it appears.
     clearTimeout(this.poll); this.poll = undefined; this.pollAt = Infinity;
     if (existing.length < dirs.length) this.retry(this.timing.pollMs);
-    const key = JSON.stringify(existing);
-    if (key === this.key) return;
-    this.stop();
-    this.key = key;
-    for (const root of existing) {
+    const wanted = new Map(existing.map(root => [this.id(root), root]));
+    // A folder taken out of the settings starts afresh when it is put back.
+    const configured = new Set(dirs.map(dir => this.id(dir)));
+    for (const id of this.failures.keys()) if (!configured.has(id)) this.failures.delete(id);
+    for (const [id, unsubscribe] of this.subscriptions) if (!wanted.has(id)) { unsubscribe(); this.subscriptions.delete(id); }
+    if (!this.subscriptions.size) this.reset();
+    // Each folder on its own: one that cannot be watched is retried later while the others are watched.
+    for (const [id, root] of wanted) {
+      if (this.subscriptions.has(id)) continue;
+      const failing = this.failures.get(id);
+      if (failing && failing.next > Date.now()) { this.retry(failing.next - Date.now()); continue; }
       try {
-        const unsubscribe = await watchTree(root, { file: (file, created) => this.changed(root, file, created), lost: () => this.failed(root), skip: dir => this.host.owns(dir) }, { checkMs: this.timing.pollMs });
-        // A newer update has taken over.
-        if (generation !== this.generation || this.key !== key) { unsubscribe(); return; }
-        this.subscriptions.push(unsubscribe);
+        const unsubscribe = await watchTree(root, { file: (file, created) => this.changed(root, file, created), lost: () => this.lost(id, root), skip: dir => this.host.owns(dir) }, { checkMs: this.timing.pollMs });
+        if (this.closed) { unsubscribe(); return; }
+        this.subscriptions.set(id, unsubscribe);
       } catch (error) { this.failed(root, error); }
     }
   }
@@ -108,13 +121,22 @@ export class FolderWatcher {
     this.poll.unref();
   }
 
-  /** A folder could not be watched, or its watch was lost (deleted, renamed, its drive gone): it is tried again later, less often each time it fails again. */
+  /** A folder's watch was lost (deleted, renamed, its drive gone): it is looked for again. */
+  private lost(id: string, root: string) {
+    this.subscriptions.get(id)?.();
+    this.subscriptions.delete(id);
+    if (!this.subscriptions.size) this.reset();
+    this.failed(root);
+  }
+
+  /** A folder could not be watched, or its watch was lost: it is tried again later, less often each time it fails again. */
   private failed(root: string, error?: unknown) {
-    const id = this.id(root), count = (this.failures.get(id) ?? 0) + 1;
-    this.failures.set(id, count);
-    this.key = '';
+    const id = this.id(root), count = (this.failures.get(id)?.count ?? 0) + 1;
+    // A first loss is looked at again at once: the folder may just have been replaced.
+    const delay = count === 1 && !error ? 0 : backoff(count, this.timing.pollMs);
+    this.failures.set(id, { count, next: Date.now() + delay });
     if (count === 3) this.host.notice(`Clop keeps failing to watch ${root}${error instanceof Error ? ` (${error.message})` : ''}. It keeps trying, less often each time.`);
-    this.retry(count === 1 && !error ? 0 : backoff(count, this.timing.pollMs));
+    this.retry(delay);
   }
 
   /** Hidden files and folders (Clop's `.clop-*.tmp` copies among them), Clop's working directory and other kinds of file are never looked at. */
@@ -128,14 +150,15 @@ export class FolderWatcher {
    */
   private changed(root: string, file: string, created: boolean) {
     if (this.ignored(root, file)) return;
-    this.failures.delete(this.id(root));
+    const rootId = this.id(root);
+    this.failures.delete(rootId);
     const id = this.id(file), waiting = this.settling.get(id);
     if (waiting) { waiting.created ||= created; return; }
     const entry: { timer?: NodeJS.Timeout; created: boolean; at: number } = { created, at: Date.now() };
     let last = '', since = Date.now();
     const check = async () => {
       const info = await stat(file).catch(() => undefined);
-      if (!info?.isFile() || !this.watching || this.settling.get(id) !== entry) { if (this.settling.get(id) === entry) this.settling.delete(id); return; }
+      if (!info?.isFile() || !this.subscriptions.has(rootId) || this.settling.get(id) !== entry) { if (this.settling.get(id) === entry) this.settling.delete(id); return; }
       const now = `${info.size}:${info.mtimeMs}`;
       if (now !== last) { last = now; since = Date.now(); }
       if (Date.now() - since < this.timing.stabilityMs) { entry.timer = setTimeout(check, this.timing.checkMs); return; }
@@ -148,15 +171,20 @@ export class FolderWatcher {
   }
 
   private stop() {
-    for (const unsubscribe of this.subscriptions) unsubscribe();
-    this.subscriptions = []; this.key = '';
+    for (const unsubscribe of this.subscriptions.values()) unsubscribe();
+    this.subscriptions.clear();
+    this.reset();
+  }
+
+  /** Forgets files waiting or counted, once nothing is watched. */
+  private reset() {
     for (const { timer } of this.settling.values()) clearTimeout(timer);
     for (const { timer } of this.recent.values()) clearTimeout(timer);
     this.settling.clear(); this.recent.clear(); this.cancelled.clear(); clearTimeout(this.held); clearTimeout(this.cleaner);
   }
 
   /** Stops watching for good. */
-  async close() { this.generation++; clearTimeout(this.poll); this.poll = undefined; for (const timer of this.protectedFiles.values()) clearTimeout(timer); this.protectedFiles.clear(); this.stop(); }
+  async close() { this.closed = true; clearTimeout(this.poll); this.poll = undefined; for (const timer of this.protectedFiles.values()) clearTimeout(timer); this.protectedFiles.clear(); this.stop(); }
 
   /** Leaves `file` alone for `optimisedFileProtectionMs`, so Clop's own write is not optimised again. */
   protect(file: string) {

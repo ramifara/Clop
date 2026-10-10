@@ -190,3 +190,31 @@ test('a folder that cannot be watched is retried less and less often, with one n
   } finally { await chmod(dir, 0o755); }
   await until(() => watcher.watching, 'the folder was not watched once it could be', 10000);
 });
+test('a folder that refuses a watch does not stop the others from being watched', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+  const { root, dir, state, watcher } = await setup(t);
+  const locked = path.join(root, 'Locked');
+  await mkdir(locked); await chmod(locked, 0o000);
+  try {
+    state.settings = { ...state.settings, imageDirs: [locked, dir] };
+    await watcher.update();
+    assert.equal(watcher.watching, true);
+    await image(path.join(dir, 'good.png'));
+    await until(() => state.handled.length === 1, 'the watchable folder was not watched');
+    // Retrying the refusing folder leaves the other watched.
+    await pause(500);
+    await image(path.join(dir, 'later.png'));
+    await until(() => state.handled.length === 2, 'retrying the refusing folder stopped the other');
+  } finally { await chmod(locked, 0o755); }
+});
+test('overlapping updates still end up watching', async t => {
+  // A settings change can call update while an earlier one is still subscribing; whichever way they interleave, the folder is watched.
+  for (const ticks of [0, 1, 2, 3, 5, 8]) {
+    const { dir, state, watcher } = await setup(t);
+    const first = watcher.update();
+    for (let i = 0; i < ticks; i++) await new Promise(resolve => setImmediate(resolve));
+    await Promise.all([first, watcher.update()]);
+    assert.equal(watcher.watching, true, `after ${ticks} ticks`);
+    await image(path.join(dir, 'shot.png'));
+    await until(() => state.handled.length === 1, `nothing was watched after overlapping updates ${ticks} ticks apart`);
+  }
+});
