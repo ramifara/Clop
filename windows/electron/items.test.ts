@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -252,6 +252,22 @@ test('names downloads without a matching extension by their content', async t =>
   assert.deepEqual([engine.get(pdf).result.kind, engine.get(pdf).result.format, path.basename(engine.output(pdf))], ['pdf', 'pdf', 'view.pdf']);
   await engine.restore(pdf);
   assert.equal(path.extname(engine.output(pdf)), '.pdf');
+  // A name too long for the card loses the end of its stem, not its extension.
+  const long = await engine.importBuffer(song, `${'interview '.repeat(30)}final.mp3`, 'drop', balanced), { result } = engine.get(long);
+  assert.ok(result.name.length <= 160 && result.name.endsWith('.mp3'), result.name);
+  assert.deepEqual([result.format, path.extname(engine.output(long))], ['mp3', '.mp3']);
+});
+test('optimised PDFs and audio keep their source file dates', async t => {
+  const f = await media(t, 'gs'); if (!f) return;
+  const { engine, dir } = f, past = new Date('2020-05-04T03:02:01Z');
+  const pdf = path.join(dir, 'scan.pdf'); await writeFile(pdf, await photoPDF());
+  const song = await tone(path.join(dir, 'song.mp3'), { codec: ['-c:a', 'libmp3lame', '-b:a', '320k'] });
+  for (const file of [pdf, song]) {
+    await utimes(file, past, past);
+    const id = await engine.importPath(file, 'drop', balanced), { result } = engine.get(id);
+    assert.ok(result.status === 'ready' && !result.unchanged, `${file}: ${result.error}`);
+    assert.equal((await stat(engine.output(id))).mtime.getTime(), past.getTime(), file);
+  }
 });
 test('overlapping clipboard images each finish and go back on the clipboard before the next replaces its card', async t => {
   const f = await fixture(t); if (!f) return;

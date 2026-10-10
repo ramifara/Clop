@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { copyFile, mkdir, rename, writeFile, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, rename, writeFile, rm, stat, utimes } from 'node:fs/promises';
 import path from 'node:path';
 import type { ImageOptions, ItemResult } from '../src/types';
 import { defaultSettings, type ClopSettings } from '../core/settings/schema';
@@ -57,7 +57,8 @@ export class ItemEngine extends EventEmitter {
     if (!info.isFile()) throw new Error(`${path.basename(file)} is not a file.`);
     if (info.size > LIMIT && await detectKind(file).catch(() => undefined) === 'image') throw new Error('Choose an image file smaller than 128 MB.');
     // Copying reads the file, which makes OneDrive download a files-on-demand placeholder. One that cannot download fails here.
-    return this.add(name, source, options, staged => copyFile(file, staged).catch(error => { throw unreadable(file, error); }));
+    // The copy keeps the source's dates, which results take with `preserveDates`.
+    return this.add(name, source, options, staged => copyFile(file, staged).then(() => utimes(staged, info.atime, info.mtime)).catch(error => { throw unreadable(file, error); }));
   }
   async importBuffer(buffer: Buffer, name: string, source: ItemResult['source'], options: ImageOptions): Promise<string> {
     if (!buffer.length || buffer.length > LIMIT) throw new Error('Choose a file smaller than 128 MB.');
@@ -67,7 +68,9 @@ export class ItemEngine extends EventEmitter {
     options = parseOptions(options);
     const signal = this.controller.signal;
     signal.throwIfAborted();
-    const id = randomUUID(), directory = path.join(this.root, id), display = path.basename(name).slice(0, 160) || 'Clipboard';
+    // A long name loses the end of its stem, never its extension, which says what the file is.
+    const base = path.basename(name), { name: stemPart, ext: extPart } = path.parse(base);
+    const id = randomUUID(), directory = path.join(this.root, id), display = (base.length > 160 ? stemPart.slice(0, 160 - extPart.slice(0, 12).length) + extPart.slice(0, 12) : base) || 'Clipboard';
     await mkdir(path.join(directory, 'original'), { recursive: true });
     let entry: Entry;
     try {
@@ -138,6 +141,8 @@ export class ItemEngine extends EventEmitter {
         });
       } else output = await this.optimiseMedia(r.kind, e.originalPath, outputDir, { aggressive: options.mode === 'aggressive', name, signal, onProgress: this.progress(r) });
       if (!output.unchanged) e.revision++;
+      // PDF.swift gives an optimised PDF its source's dates; the audio optimiser does it itself, and macOS leaves video dates alone.
+      if (r.kind === 'pdf' && !output.unchanged && this.settings().preserveDates) { const { atime, mtime } = await stat(e.originalPath); await utimes(output.path, atime, mtime); }
       // Keep earlier results until the session ends: other apps may still be pasting or dragging them.
       e.outputPath = output.path;
       for (const warning of output.warnings ?? []) console.warn(warning);
