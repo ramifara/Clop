@@ -103,6 +103,15 @@ test('protected folders survive cleanup and force clean; force clean empties the
   assert.deepEqual((await readdir(workdir.root)).sort(), ['backups', 'batch-backups', 'temp'], 'the layout is recreated');
 });
 
+test('force clean removes files whatever their timestamps say, including ones dated after now', async t => {
+  // File times come from a coarse clock and can run ahead of Date.now(), and a file can carry any mtime.
+  const dir = await folder(t), workdir = await new Workdir(path.join(dir, 'work')).ensure();
+  const future = new Date(Date.now() + 3600_000), files = [await put(path.join(workdir.temp, 'a.png')), await put(path.join(workdir.backups, 'b.png'))];
+  for (const file of files) await utimes(file, future, future);
+  assert.equal(await workdir.forceClean(), 2);
+  for (const file of files) assert.equal(await exists(file), false);
+});
+
 test('legacy folders age out with the cleanup interval and disappear once empty', async t => {
   const dir = await folder(t), legacy = path.join(dir, 'images');
   const workdir = await new Workdir(path.join(dir, 'work'), { legacy: [legacy] }).ensure();

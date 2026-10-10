@@ -5,7 +5,7 @@ import { lstat, mkdir, readdir, rm, rmdir, stat } from 'node:fs/promises';
 import { copyTo, exists, moveTo } from './fileops';
 import { expandHome } from './settings/paths';
 
-/** Removes files in `dir` that have not changed for longer than `maxAgeMs`, then the folders that are left empty (never `dir` itself). Anything inside a `keep` folder stays. Returns the number of files removed. */
+/** Removes files in `dir` that have not changed for longer than `maxAgeMs` (a negative value removes every file, whatever its timestamps), then the folders that are left empty (never `dir` itself). Anything inside a `keep` folder stays. Returns the number of files removed. */
 export async function sweep(dir: string, maxAgeMs: number, now: number, keep: ReadonlySet<string> = new Set()): Promise<number> {
   let removed = 0;
   const inside = async (folder: string): Promise<boolean> => {
@@ -19,7 +19,7 @@ export async function sweep(dir: string, maxAgeMs: number, now: number, keep: Re
       }
       // Copies keep the original's modification time, so the change and creation times say when the file arrived.
       const info = await lstat(file).catch(() => undefined);
-      if (info && now - Math.max(info.mtimeMs, info.ctimeMs, info.birthtimeMs) > maxAgeMs && await rm(file).then(() => true, () => false)) removed++;
+      if (info && (maxAgeMs < 0 || now - Math.max(info.mtimeMs, info.ctimeMs, info.birthtimeMs) > maxAgeMs) && await rm(file).then(() => true, () => false)) removed++;
       else empty = false;
     }
     return empty;
