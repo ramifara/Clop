@@ -251,7 +251,7 @@ async function optimiseInChunks(pages: number, tmp: string, result: string, args
   const chunks: { first: number; last: number; file: string }[] = [];
   for (let first = 1; first <= pages; first += PARALLEL_CHUNK_SIZE) chunks.push({ first, last: Math.min(first + PARALLEL_CHUNK_SIZE - 1, pages), file: path.join(tmp, `chunk-${chunks.length}.pdf`) });
   await inParallel(chunks, PARALLEL_CONCURRENCY, signal, (chunk, signal) => gs([`-dFirstPage=${chunk.first}`, `-dLastPage=${chunk.last}`, ...args(chunk.file)], { signal, cwd: tmp, onPage, tries: 2 }).then(() => {}));
-  // Like PDFKit's page-by-page merge on macOS, this keeps the pages and drops document-level outlines.
+  // Like PDFKit's page-by-page merge on macOS, this keeps the pages and drops document-level outlines and links into other chunks.
   const merged = await PDFDocument.create({ updateMetadata: false });
   for (const chunk of chunks) {
     const part = await loadPDF(chunk.file);
