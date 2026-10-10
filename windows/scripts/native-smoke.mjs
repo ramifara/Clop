@@ -62,9 +62,9 @@ try {
   await fixture.stop(); fixture = await explorerFixture(png);
   await bridge.request({ type: 'settings', explorerDrag: true });
   const paths = []; bridge.on('drag-start', event => paths.push(event.paths));
-  // Explorer's first Shell/accessibility lookup can take several seconds on a cold CI runner.
-  // Keep the real drag active long enough to verify detection before release cancels it.
-  events.length = 0; await fixture.gesture('image', { hold: 8000 }); await pause(250);
+  // Let a cold runner finish Explorer's Shell/accessibility lookup at the original press.
+  // Explorer can defer COM selection queries once it enters its OLE drag loop.
+  events.length = 0; await fixture.gesture('image', { pressDelay: 4000, hold: 2500 }); await pause(250);
   assert.deepEqual(events, ['drag-start', 'drag-end'], 'A real Explorer image drag must still announce and finish');
   assert.deepEqual(paths, [[png]], 'Explorer must identify the actual supported image file');
   for (const kind of ['title', 'resize', 'blank']) {
