@@ -65,7 +65,7 @@ async function runStep(run: RunState, step: PipelineStep, following: PipelineSte
 }
 
 /**
- * Runs `pipeline` on `input`. Pass a resolved pipeline (`resolvePipeline`), not a reference. Rejects with a
+ * Runs `pipeline` on `input`. Pass a resolved pipeline (`resolveRunnable`), not a reference. Rejects with a
  * `PipelineStepError`, or with the abort reason when `signal` fires; files made before that stay where they were placed.
  */
 export async function runPipeline(pipeline: Pipeline, input: string, opts: PipelineRunOptions): Promise<PipelineResult> {
