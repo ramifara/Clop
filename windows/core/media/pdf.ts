@@ -229,9 +229,9 @@ async function optimise(input: string, outputDir: string, opts: PDFOptimiseOptio
   const pages = doc.getPageCount();
   const { chosen: dpi, maxSourceDPI: sourceDPI } = resolvePDFDPI(imageDPIs(doc), { dpi: opts.dpi, setting: opts.dpiSetting, aggressive: opts.aggressive });
   const args = (output: string) => gsArgs(input, output, { lossy: dpi < PDF_DPI_NO_DOWNSAMPLE, dpi });
-  let done = 0;
-  // A retried run takes back its pages, so progress only reports when it moves forward.
-  const onPage = (delta: number) => { done += delta; if (delta > 0) opts.onProgress?.(Math.min(done, pages) / pages); };
+  let done = 0, reported = 0;
+  // A retried run takes back its pages and counts them again, so progress only reports when it passes its last value.
+  const onPage = (delta: number) => { done += delta; const fraction = Math.min(done, pages) / pages; if (fraction > reported) opts.onProgress?.(reported = fraction); };
 
   await mkdir(outputDir, { recursive: true });
   const tmp = await mkdtemp(path.join(outputDir, '.clop-'));

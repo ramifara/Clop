@@ -43,7 +43,7 @@ export const leftovers = async (dir: string) => (await readdir(dir)).filter(name
 
 /**
  * Puts a logging `gs` in front of the real one through CLOP_TOOLS_DIR, so a test can see how many Ghostscript processes ran
- * and overlapped. Its first `fail` runs exit with an error. POSIX shell only; the caller skips it on Windows.
+ * and overlapped. Its first `fail` runs report two pages, then exit with an error. POSIX shell only; the caller skips it on Windows.
  */
 // Resolved before any wrapper takes over CLOP_TOOLS_DIR, so wrappers never call each other.
 let realGs: string | undefined;
@@ -55,7 +55,7 @@ export async function wrapGhostscript(t: TestContext, dir: string, fail = 0) {
     '#!/bin/sh',
     `echo start >> '${log}'`,
     `n=$(cat '${count}' 2>/dev/null || echo 0); echo $((n + 1)) > '${count}'`,
-    `if [ "$n" -lt ${fail} ]; then echo 'simulated Ghostscript failure' >&2; echo end >> '${log}'; exit 1; fi`,
+    `if [ "$n" -lt ${fail} ]; then printf 'Page 1\\nPage 2\\nsimulated Ghostscript failure\\n' >&2; echo end >> '${log}'; exit 1; fi`,
     `'${realGs}' "$@"; code=$?`,
     `echo end >> '${log}'`,
     'exit $code',
