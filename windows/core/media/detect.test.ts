@@ -58,6 +58,6 @@ test('probes audio and images; ffprobe rejects what it cannot read', async t => 
   await sharp({ create: { width: 12, height: 7, channels: 4, background: '#ff000080' } }).png().toFile(file('pixel.png'));
   assert.deepEqual(await probe(file('pixel.png')), { kind: 'image', format: 'png', width: 12, height: 7, pages: undefined });
   await writeFile(file('broken.mp4'), 'not a video');
-  await assert.rejects(ffprobe(file('broken.mp4')), /ffprobe exited/);
-  await assert.rejects(probe(file('broken.mp4')), /ffprobe exited/);
+  await assert.rejects(ffprobe(file('broken.mp4')), /ffprobe(\.exe)? exited/);
+  await assert.rejects(probe(file('broken.mp4')), /ffprobe(\.exe)? exited/);
 });
