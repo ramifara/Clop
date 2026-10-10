@@ -4,7 +4,7 @@ import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ImageEngine, message } from './engine';
-import { toPNG } from '../core/media/image-codecs';
+import { clipboardPNG } from '../core/media/image-codecs';
 import { imageDefaults, rendererSettings } from './settings';
 import { defaultSettings } from '../core/settings/schema';
 import { SettingsStore } from '../core/settings/store';
@@ -118,8 +118,7 @@ async function copy(id: string, expectedSequence?: number, files?: string[]) {
       if (!bridgeReady) throw new Error('The Windows clipboard helper is unavailable. Save or drag the result instead.');
       const png = path.join(directory, `clipboard-${randomUUID()}.png`);
       try {
-        if (format === 'png') await copyFile(file, png);
-        else await toPNG(file, png, { limitInputPixels: 60_000_000 });
+        await clipboardPNG(file, png, { limitInputPixels: 60_000_000 });
         const reply = await bridge.request({ type: 'copy', file, files, png, ...(expectedSequence === undefined ? {} : { expectedSequence }) });
         if (!reply.skipped) { lastClipboardSequence = Number(reply.sequence); lastOwnFingerprint = fingerprint(await readFile(png)); }
       } finally { await rm(png, { force: true }); }

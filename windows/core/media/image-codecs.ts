@@ -122,6 +122,14 @@ export async function encodeJXL(png: string, out: string, compression: Compressi
   return out;
 }
 
+/** The PNG for the clipboard bitmap: an 8-bit PNG as it is, anything else (other formats, 16-bit and HDR PNGs) through `toPNG`. */
+export async function clipboardPNG(input: string, output: string, opts: { signal?: AbortSignal; limitInputPixels?: number } = {}) {
+  const info = await probeImage(input, opts.signal);
+  if (info.format === 'png' && !info.deep) await copyFile(input, output);
+  else await toPNG(input, output, opts);
+  return output;
+}
+
 /** Writes any image Clop accepts as an oriented SDR PNG, for previews and the clipboard. */
 export async function toPNG(input: string, output: string, { signal, limitInputPixels }: { signal?: AbortSignal; limitInputPixels?: number } = {}) {
   const { format } = await sniffImage(input);

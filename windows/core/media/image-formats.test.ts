@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp, { type Sharp } from 'sharp';
@@ -8,7 +8,7 @@ import { run } from '../run';
 import { needTools } from '../testing';
 import { optimiseImage } from './image';
 import { toneMapToSDR } from './hdr';
-import { probeImage, sniffImage, toPNG } from './image-codecs';
+import { clipboardPNG, probeImage, sniffImage, toPNG } from './image-codecs';
 import { stripImageMetadata } from './image-ops';
 import { graphic, photo } from './image.fixtures';
 
@@ -219,6 +219,22 @@ test('stripping metadata reports the size of JPEG XL and BMP images too', async 
     const stripped = await stripImageMetadata(file, w.out);
     assert.deepEqual([stripped.format, stripped.width, stripped.height], [path.extname(file).slice(1), 120, 80]);
   }
+});
+
+test('the clipboard bitmap of an HDR PNG is tone-mapped, and an ordinary PNG is copied as it is', async t => {
+  const w = await workspace(t); if (!w) return;
+  const pqSource = await w.file('pq-source.png', patches([pq(100), pq(1000)]));
+  const jxl = path.join(w.dir, 'pq.jxl'), hdr = path.join(w.dir, 'pq.png');
+  // djxl writes the PQ transfer into the PNG's cICP chunk.
+  await run('cjxl', [pqSource, jxl, '-d', '0', '-x', 'color_space=RGB_D65_202_Rel_PeQ', '--quiet']);
+  await run('djxl', [jxl, hdr, '--quiet']);
+  const bitmap = await clipboardPNG(hdr, path.join(w.dir, 'clipboard-hdr.png'));
+  assert.equal((await sharp(bitmap).metadata()).depth, 'uchar');
+  const [hundred] = await patchValues(bitmap, 1);
+  assert.ok(Math.abs(hundred - 186) <= 3, `100 nits became ${hundred}`);
+  const plain = await w.file('plain.png', graphic(64, 48).png());
+  const copied = await clipboardPNG(plain, path.join(w.dir, 'clipboard-plain.png'));
+  assert.ok((await readFile(copied)).equals(await readFile(plain)));
 });
 
 test('aborting while the image is probed reports the abort, not an unreadable image', async t => {
