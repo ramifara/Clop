@@ -1,19 +1,21 @@
 import { app, BrowserWindow, clipboard, ClipboardItem, dialog, globalShortcut, ipcMain, Menu, nativeImage, screen, shell, Tray } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFile, mkdir, readFile, writeFile, readdir, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { ImageEngine, message } from './engine';
-import { defaultSettings, parseSettings } from './settings';
+import { imageDefaults, rendererSettings } from './settings';
+import { defaultSettings } from '../core/settings/schema';
+import { SettingsStore } from '../core/settings/store';
 import { WindowsBridge } from './native';
 import { ClipboardPickup } from './pickup';
-import type { AppState, ImageOptions, ImageResult, Settings } from '../src/types';
+import type { AppState, ImageOptions, ImageResult } from '../src/types';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let main: BrowserWindow, floating: BrowserWindow, tray: Tray, engine: ImageEngine;
-let settings = { ...defaultSettings }, notice: string | undefined, quitting = false, bridgeReady = false;
-let settingsPath: string, storage: string;
+let settings = defaultSettings(), notice: string | undefined, quitting = false, bridgeReady = false;
+let store: SettingsStore, storage: string;
 let dropActive = false, dragging = false, importsRunning = 0, hovered = false;
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
@@ -25,15 +27,15 @@ let clipboardWrites: Promise<void> = Promise.resolve();
 const bridge = new WindowsBridge();
 const devUrl = process.env.CLOP_DEV_URL;
 const fingerprint = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
-const defaults = (): ImageOptions => ({ mode: settings.defaultMode, format: settings.defaultFormat, scale: 1 });
+const defaults = (): ImageOptions => imageDefaults(settings);
 const state = (): AppState => ({ items: engine.list().filter(item => !hidden.has(item.id)), settings, native: true, platform: process.platform, dropActive, notice });
 function broadcast() { for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state()); }
 function inform(text: string) { notice = text; syncFloating(); broadcast(); }
 function positionFloating() {
   const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
   const [w, h] = floating.getSize();
-  floating.setPosition(settings.corner.endsWith('right') ? area.x + area.width - w : area.x,
-    settings.corner.startsWith('bottom') ? area.y + area.height - h : area.y);
+  floating.setPosition(settings.floatingResultsCorner.endsWith('Right') ? area.x + area.width - w : area.x,
+    settings.floatingResultsCorner.startsWith('bottom') ? area.y + area.height - h : area.y);
 }
 function showFloating(focus = false, reposition = false) {
   if (reposition && !floating.isVisible()) positionFloating();
@@ -41,7 +43,7 @@ function showFloating(focus = false, reposition = false) {
 }
 function syncFloating() {
   if (!floating || floating.isDestroyed()) return;
-  const target = dropActive || settings.pinned;
+  const target = dropActive || settings.keepDropZoneVisible;
   const count = Math.min(target ? 2 : 3, state().items.length);
   const height = count * 166 + Math.max(0, count - 1) * 4 + (target ? 160 : 0) + (count > 1 ? 28 : 0) + (notice ? 85 : 0) + 40;
   const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
@@ -84,7 +86,7 @@ async function importUrl(value: unknown, aggressive = false) {
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
     await makeRoom();
     const id = await engine.importBuffer(Buffer.concat(chunks), path.basename(url.pathname) || 'Image.png', 'drop', { ...defaults(), ...(aggressive ? { mode: 'aggressive' } : {}) });
-    if (settings.autoCopy && engine.get(id).result.status === 'ready') await copy(id, sequence);
+    if (settings.autoCopyToClipboard && engine.get(id).result.status === 'ready') await copy(id, sequence);
   } finally { importsRunning--; syncFloating(); broadcast(); }
 }
 function configure(window: BrowserWindow) {
@@ -95,13 +97,13 @@ function configure(window: BrowserWindow) {
 async function createWindows() {
   const webPreferences = { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true };
   main = new BrowserWindow({ width: 390, height: 500, resizable: false, show: false, backgroundColor: '#f3f1ef', title: 'Clop settings', autoHideMenuBar: true, webPreferences });
-  floating = new BrowserWindow({ width: 236, height: 206, frame: false, resizable: false, transparent: true, show: false, skipTaskbar: true, alwaysOnTop: settings.alwaysOnTop, backgroundColor: '#00000000', webPreferences });
+  floating = new BrowserWindow({ width: 236, height: 206, frame: false, resizable: false, transparent: true, show: false, skipTaskbar: true, alwaysOnTop: settings.floatingResultsAlwaysOnTop, backgroundColor: '#00000000', webPreferences });
   configure(main); configure(floating);
   if (devUrl) { await main.loadURL(`${devUrl}/?preferences=1`); await floating.loadURL(`${devUrl}/?floating=1`); }
   else { await main.loadFile(path.join(here, '../dist/index.html'), { query: { preferences: '1' } }); await floating.loadFile(path.join(here, '../dist/index.html'), { query: { floating: '1' } }); }
   positionFloating();
   floating.setIgnoreMouseEvents(true, { forward: true });
-  if (settings.pinned) { syncFloating(); floating.setIgnoreMouseEvents(false); }
+  if (settings.keepDropZoneVisible) { syncFloating(); floating.setIgnoreMouseEvents(false); }
 }
 async function copy(id: string, expectedSequence?: number, files?: string[]) {
   const file = engine.output(id);
@@ -144,12 +146,12 @@ async function importPaths(files: string[], source: ImageResult['source'] = 'dro
       if (engine.get(id).result.status === 'ready') completed.push(id);
     } catch (error) { inform(`${path.basename(file)}: ${message(error)}`); }
   }
-  if (settings.autoCopy && completed.length) await copy(completed[completed.length - 1], expectedSequence, completed.map(id => engine.output(id)));
+  if (settings.autoCopyToClipboard && completed.length) await copy(completed[completed.length - 1], expectedSequence, completed.map(id => engine.output(id)));
   } finally { importsRunning--; syncFloating(); broadcast(); }
 }
 async function optimiseClipboard(sequence?: number, paths: string[] = [], manual = false, aggressive = false) {
   if (clipboardBusy) { pendingClipboard = { sequence, paths, manual, aggressive }; return; }
-  if (!manual && !settings.clipboard) return;
+  if (!manual && !settings.enableClipboardOptimiser) return;
   clipboardBusy = true;
   try {
     if (sequence === undefined && bridgeReady) {
@@ -204,7 +206,7 @@ async function optimiseClipboard(sequence?: number, paths: string[] = [], manual
     lastFingerprint = hash;
     await makeRoom();
     const id = await engine.importBuffer(bytes, `Clipboard-${new Date().toISOString().replace(/[:.]/g, '-')}.png`, 'clipboard', { ...defaults(), ...(aggressive ? { mode: 'aggressive' } : {}) });
-    if (settings.autoCopy && engine.get(id).result.status === 'ready') await copy(id, sequence);
+    if (settings.autoCopyToClipboard && engine.get(id).result.status === 'ready') await copy(id, sequence);
   } catch (error) { inform(message(error)); }
   finally {
     clipboardBusy = false;
@@ -213,7 +215,7 @@ async function optimiseClipboard(sequence?: number, paths: string[] = [], manual
 }
 function startClipboardFallback() {
   if (clipboardTimer) return;
-  clipboardTimer = setInterval(() => { if (settings.clipboard) void optimiseClipboard(); }, 900);
+  clipboardTimer = setInterval(() => { if (settings.enableClipboardOptimiser) void optimiseClipboard(); }, 900);
   clipboardTimer.unref();
 }
 function updateTray() {
@@ -221,25 +223,26 @@ function updateTray() {
     { label: 'Show latest results', click: showLatest },
     { label: 'Optimise clipboard', accelerator: 'Control+Shift+C', click: () => { void optimiseClipboard(undefined, [], true); } },
     { type: 'separator' },
-    { label: 'Watch clipboard', type: 'checkbox', checked: settings.clipboard, click: item => { void updateSettings({ clipboard: item.checked }); } },
-    { label: 'Keep drop zone visible', type: 'checkbox', checked: settings.pinned, click: item => { void updateSettings({ pinned: item.checked }); } },
+    { label: 'Watch clipboard', type: 'checkbox', checked: settings.enableClipboardOptimiser, click: item => toggleSetting({ enableClipboardOptimiser: item.checked }) },
+    { label: 'Keep drop zone visible', type: 'checkbox', checked: settings.keepDropZoneVisible, click: item => toggleSetting({ keepDropZoneVisible: item.checked }) },
     { label: 'Settings…', click: () => main.show() },
     { label: 'Open originals and results', click: () => { void shell.openPath(storage); } },
     { type: 'separator' }, { label: 'Quit Clop', click: () => app.quit() },
   ]));
 }
-async function updateSettings(value: Partial<Settings>) {
-  settings = parseSettings(value, settings);
-  if (!settings.clipboard) pickup.cancel();
-  await writeFile(settingsPath, JSON.stringify(settings, null, 2));
-  floating.setAlwaysOnTop(settings.alwaysOnTop);
+// A failed tray toggle rebuilds the menu so its checkbox shows the setting that is actually in effect.
+function toggleSetting(value: unknown) { updateSettings(value).catch(error => { updateTray(); inform(message(error)); }); }
+async function updateSettings(value: unknown) {
+  settings = await store.set(value);
+  if (!settings.enableClipboardOptimiser) pickup.cancel();
+  floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop);
   syncFloating();
   if (process.platform === 'win32') app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin, path: process.execPath, args: ['--hidden'] });
   if (bridgeReady) await bridge.request(nativeSettings());
   updateTray(); broadcast();
 }
 function nativeSettings() {
-  return { type: 'settings', explorerDrag: settings.explorerDrag, ownWindows: [main, floating].map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
+  return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating].map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
 }
 function trusted(sender: Electron.WebContents) { return [main, floating].some(window => window && !window.isDestroyed() && window.webContents === sender); }
 ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) => {
@@ -250,8 +253,8 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'import': await importPaths(args[0] as string[], 'drop', undefined, args[1] === true); break;
     case 'import-url': await importUrl(args[0], args[1] === true); break;
     case 'clipboard': await optimiseClipboard(undefined, [], true); break;
-    case 'apply': await engine.apply(id, args[1] as ImageOptions); if (settings.autoCopy && engine.get(id).result.status === 'ready') await copy(id); break;
-    case 'restore': await engine.restore(id); if (settings.autoCopy) await copy(id); break;
+    case 'apply': await engine.apply(id, args[1] as ImageOptions); if (settings.autoCopyToClipboard && engine.get(id).result.status === 'ready') await copy(id); break;
+    case 'restore': await engine.restore(id); if (settings.autoCopyToClipboard) await copy(id); break;
     case 'copy': await copy(id); break;
     case 'save': {
       const entry = engine.get(id), file = engine.output(id);
@@ -261,7 +264,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     }
     case 'reveal': shell.showItemInFolder(engine.output(id)); break;
     case 'dismiss': { const timer = hideTimers.get(id); if (timer) clearTimeout(timer); hideTimers.delete(id); hidden.delete(id); await engine.dismiss(id); break; }
-    case 'settings': await updateSettings(args[0] as Partial<Settings>); break;
+    case 'settings': await updateSettings(rendererSettings(args[0])); break;
     case 'window':
       switch (args[0]) {
         case 'hide': BrowserWindow.fromWebContents(event.sender)?.hide(); break;
@@ -288,9 +291,11 @@ else {
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
     storage = path.join(app.getPath('userData'), 'images');
-    settingsPath = path.join(app.getPath('userData'), 'settings.json');
+    store = new SettingsStore(path.join(app.getPath('userData'), 'settings.json'), { home: app.getPath('home'), desktop: app.getPath('desktop'), userData: app.getPath('userData') });
     await mkdir(storage, { recursive: true });
-    try { settings = parseSettings(JSON.parse(await readFile(settingsPath, 'utf8'))); } catch {}
+    // An unreadable settings file is left alone; the defaults are used and the reason is shown once the windows exist.
+    let settingsError: unknown;
+    settings = await store.load().catch(error => { settingsError = error; return store.get(); });
     // Retain originals for seven days. Never touch the source files dropped into Clop.
     for (const dir of await readdir(storage, { withFileTypes: true })) if (dir.isDirectory()) {
       const file = path.join(storage, dir.name);
@@ -300,6 +305,7 @@ else {
     engine.on('change', () => { syncFloating(); broadcast(); });
     engine.on('ready', (id: string) => { hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
     await createWindows();
+    if (settingsError) inform(message(settingsError));
     const icon = nativeImage.createFromPath(path.join(here, 'icon.png'));
     tray = new Tray(icon); tray.setToolTip('Clop'); tray.on('double-click', showLatest); updateTray();
     for (const [key, callback] of [
@@ -308,10 +314,10 @@ else {
       ['Control+Shift+Space', showLatest],
     ] as const) if (!globalShortcut.register(key, callback)) inform(`${key} is already in use. Use the tray menu or floating shelf instead.`);
     if (process.platform === 'win32') {
-      bridge.on('ready', () => { bridgeReady = true; void bridge.request(nativeSettings()).then(() => { if (settings.clipboard) void optimiseClipboard(); }).catch(error => inform(message(error))); });
-      bridge.on('clipboard', event => { if (settings.clipboard) pickup.change(event); });
+      bridge.on('ready', () => { bridgeReady = true; void bridge.request(nativeSettings()).then(() => { if (settings.enableClipboardOptimiser) void optimiseClipboard(); }).catch(error => inform(message(error))); });
+      bridge.on('clipboard', event => { if (settings.enableClipboardOptimiser) pickup.change(event); });
       bridge.on('foreground', event => pickup.focus(Number(event.process)));
-      bridge.on('drag-start', () => { if (settings.explorerDrag) { dragging = true; dropActive = true; floating.setIgnoreMouseEvents(false); syncFloating(); broadcast(); } });
+      bridge.on('drag-start', () => { if (settings.enableDragAndDrop) { dragging = true; dropActive = true; floating.setIgnoreMouseEvents(false); syncFloating(); broadcast(); } });
       bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
       bridge.on('stopped', () => { bridgeReady = false; pickup.cancel(); startClipboardFallback(); });
