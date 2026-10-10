@@ -6,10 +6,11 @@ import path from 'node:path';
 import { run } from '../run';
 import { needTools } from '../testing';
 import type { ToolName } from '../tools';
-import { changeAudioSpeed, convertAudio, downscaleAudioCoverArt, extractAudioCoverArt, lowerAudioBitrate, optimiseAudio } from './audio';
+import { audioMetadata, changeAudioSpeed, convertAudio, downscaleAudioCoverArt, extractAudioCoverArt, lowerAudioBitrate, optimiseAudio } from './audio';
 import { coverImage, tone } from './audio.fixtures';
 import { probe, type AudioInfo } from './detect';
 import { ffprobe, probeNumber } from './ffprobe';
+import { atempoChain } from './video';
 
 async function workspace(t: TestContext, ...tools: ToolName[]) {
   if (!needTools(t, 'ffmpeg', 'ffprobe', ...tools)) return;
@@ -106,6 +107,31 @@ test('speed changes chain atempo filters and scale the duration', async t => {
   await assert.rejects(changeAudioSpeed(input, w.out, 0), /above 0/);
 });
 
+test('MP3 and Ogg Opus keep their codec through chained speed changes and report the bitrate they got', async t => {
+  const w = await workspace(t); if (!w) return;
+  const cases = [['song.mp3', mp3(192), 0.25, 'mp3', 8000], ['voice.ogg', ['-c:a', 'libopus', '-b:a', '96k'], 0.4, 'opus', 5000]] as const;
+  // Below 0.5 atempo needs a chain: 0.25 is two halvings, 0.4 a halving and 0.8.
+  assert.deepEqual(cases.map(([, , factor]) => atempoChain(factor)), ['atempo=0.5,atempo=0.5', 'atempo=0.5,atempo=0.8']);
+  for (const [name, codec, factor, expected, durationMs] of cases) {
+    const output = await changeAudioSpeed(await tone(w.file(name), { codec: [...codec] }), w.out, factor);
+    const info = await audio(output.path);
+    assert.equal(info.codec, expected, name);
+    near(output.durationMs, durationMs, 100, name);
+    assert.ok(output.bitrate && output.bitrate === Math.trunc((await audioMetadata(output.path)).bitrate! / 1000), `${name} reports its probed bitrate ${output.bitrate}`);
+  }
+});
+
+test('the audio bitrate leaves out embedded cover art when the stream states none', async t => {
+  const w = await workspace(t); if (!w) return;
+  const cover = await coverImage(w.file('big.jpg'), 1500, 1500);
+  const [bare, withArt] = [await tone(w.file('bare.flac')), await tone(w.file('art.flac'), { cover })];
+  const [plain, measured, container] = [(await audioMetadata(bare)).bitrate!, (await audioMetadata(withArt)).bitrate!, (await audio(withArt)).bitrate!];
+  near(measured, plain, plain * 0.05, 'FLAC with art');
+  assert.ok(container > plain * 2, `the container bitrate ${container} counts the art`);
+  const mp3WithArt = await tone(w.file('art.mp3'), { codec: mp3(320), cover });
+  assert.equal((await audioMetadata(mp3WithArt)).bitrate, 320000, 'MP3 states its own bitrate');
+});
+
 test('converts to every format with its encoder', async t => {
   const w = await workspace(t); if (!w) return;
   const input = await tone(w.file('source.wav'));
@@ -198,4 +224,15 @@ test('cover art extracts as it is and downscales from the original without re-en
   await assert.rejects(extractAudioCoverArt(bare, w.out), /no cover art/);
   await assert.rejects(downscaleAudioCoverArt(bare, w.out, 0.5), /no cover art/);
   await assert.rejects(downscaleAudioCoverArt(await tone(w.file('pcm.wav')), w.out, 0.5), /WAV files cannot hold cover art/);
+});
+
+test('cover art sharp cannot decode is re-embedded untouched', async t => {
+  const w = await workspace(t, 'jpegoptim', 'pngquant'); if (!w) return;
+  const bmp = w.file('cover.bmp');
+  await run('ffmpeg', ['-y', '-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=300x200', '-frames:v', '1', bmp]);
+  const input = await tone(w.file('song.mp3'), { codec: mp3(320), cover: bmp });
+  const output = await optimiseAudio(input, w.out, { coverArtSquaring: 'always', coverArtMaxLongEdge: 100 });
+  const picture = await art(output.path);
+  assert.deepEqual([picture?.codec_name, picture?.width, picture?.height], ['bmp', 300, 200]);
+  assert.ok((await readFile((await extractAudioCoverArt(output.path, w.out)).path)).equals(await readFile(bmp)));
 });

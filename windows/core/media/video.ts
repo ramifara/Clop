@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 import { queue, retryBusy, run, ToolError, type RunOptions } from '../run';
@@ -8,6 +8,7 @@ import { videoInfo, type VideoInfo } from './detect';
 import { ffprobe } from './ffprobe';
 import { CONVERSION_EXTENSIONS, encoderFamily, videoConversionArgs, videoEncoderArgs, type VideoCodecConversion, type VideoEncoderSetting } from './videoCompression';
 import { chooseEncoder, hevcHardware } from './videoEncoders';
+import { moveResult, withTemp } from './output';
 import type { MediaJobOptions, MediaOutput } from './types';
 
 /** A crop or resize target; `smartCrop` does not apply to video. */
@@ -155,19 +156,9 @@ const without = (args: string[], part: string[]) => {
 };
 
 async function finish(input: string, file: string, outputDir: string, name: string | undefined, ext: string, signal?: AbortSignal): Promise<MediaOutput> {
-  const stem = name ?? path.parse(input).name;
-  let output = path.join(outputDir, `${stem}.${ext}`);
-  if (path.resolve(output) === path.resolve(input)) output = path.join(outputDir, `${stem}-optimised.${ext}`);
-  await retryBusy(() => rename(file, output));
+  const output = await moveResult(input, file, outputDir, name ?? path.parse(input).name, ext);
   const info = videoInfo(await ffprobe(output, { signal }));
   return { path: output, bytes: (await stat(output)).size, format: ext, width: info.width, height: info.height, durationMs: info.durationMs };
-}
-
-/** Runs `task` with a temporary folder inside `outputDir`, removed afterwards, so results can be renamed into place. */
-export async function withTemp<T>(outputDir: string, task: (tmp: string) => Promise<T>) {
-  await mkdir(outputDir, { recursive: true });
-  const tmp = await mkdtemp(path.join(outputDir, '.clop-'));
-  try { return await task(tmp); } finally { await rm(tmp, { recursive: true, force: true }); }
 }
 
 /**

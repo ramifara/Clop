@@ -72,12 +72,14 @@ export async function extractCoverArt(input: string, dir: string, stem: string, 
 
 /**
  * `resizeCoverArt`: centre-crops to a square as `squaring` asks, then scales down to `maxLongEdge`.
- * JPEG stays JPEG (at quality 100, before recompression); anything else becomes PNG. Returns the resulting file.
+ * JPEG stays JPEG (at quality 100, before recompression); anything else becomes PNG. Returns the resulting
+ * file. Art sharp cannot decode is returned untouched, so it is re-embedded as it was.
  */
 export async function resizeCoverArt(file: string, maxLongEdge: number | undefined, squaring: CoverArtSquaring = 'never') {
   if (!(maxLongEdge && maxLongEdge > 0) && squaring === 'never') return file;
-  const meta = await sharp(file).metadata();
-  const width = meta.width ?? 0, height = meta.height ?? 0;
+  const meta = await sharp(file).metadata().catch(() => undefined);
+  const width = meta?.width ?? 0, height = meta?.height ?? 0;
+  if (!width || !height) return file;
   const square = squaring === 'landscapeOnly' ? width > height : squaring === 'always' ? width !== height : false;
   let image = sharp(file), w = width, h = height;
   if (square) {
@@ -95,7 +97,10 @@ export async function resizeCoverArt(file: string, maxLongEdge: number | undefin
   if (targetW !== w || targetH !== h) image = image.resize(targetW, targetH, { fit: 'fill' });
   const jpeg = (await sniff(file)) === 'jpg';
   const out = path.join(path.dirname(file), `${path.parse(file).name}-resized.${jpeg ? 'jpg' : 'png'}`);
-  await (jpeg ? image.jpeg({ quality: 100 }) : image.png()).toFile(out);
+  try { await (jpeg ? image.jpeg({ quality: 100 }) : image.png()).toFile(out); } catch {
+    await rm(out, { force: true });
+    return file;
+  }
   await rm(file, { force: true });
   return out;
 }
@@ -108,7 +113,7 @@ export async function optimiseCoverArt(file: string, signal?: AbortSignal) {
   const type = await sniff(file);
   if (type === 'jpg') { await optimiseCoverJPEG(file, signal); return file; }
   if (type !== 'png') return file;
-  const photo = (await sharp(file).stats()).isOpaque && (await imageEntropy(file)) >= COVER_JPEG_ENTROPY;
+  const photo = await sharp(file).stats().then(async stats => stats.isOpaque && (await imageEntropy(file)) >= COVER_JPEG_ENTROPY, () => false);
   // The JPEG trial starts from the original PNG, not the quantized one.
   const jpeg = photo ? path.join(path.dirname(file), `${path.parse(file).name}-photo.jpg`) : undefined;
   if (jpeg) await sharp(file).jpeg({ quality: 100 }).toFile(jpeg);
