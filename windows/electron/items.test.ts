@@ -338,3 +338,30 @@ test('a dismissed result can be brought back as the newest', async t => {
   assert.equal(engine.bringBack(), undefined);
   assert.equal(engine.bringBack('unknown'), undefined);
 });
+test('a result dismissed while it is placed is placed in full and can still be brought back and restored', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine, dir } = f;
+  const file = path.join(dir, 'source.png'); await writeFile(file, await sampleImage());
+  let release!: () => void, placing!: () => void;
+  const started = new Promise<void>(resolve => { placing = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const calls: string[] = [];
+  const placement = {
+    place: async () => { calls.push('place'); placing(); await gate; return file; },
+    restore: async () => { calls.push('restore'); return file; },
+  };
+  let id = '';
+  const done = engine.importPath(file, 'folder', balanced, undefined, { placement, staged: staged => { id = staged; } });
+  await started;
+  await engine.dismiss(id);
+  release();
+  await done;
+  assert.equal(engine.has(id), false);
+  assert.equal(engine.bringBack(id), id, 'a placed result stays restorable');
+  await engine.restore(id);
+  assert.deepEqual(calls, ['place', 'restore']);
+  // A placement that fails while dismissed leaves nothing to bring back.
+  const failing = { place: async () => { await engine.dismiss(other); throw new Error('disk full'); }, restore: async () => undefined };
+  let other = '';
+  await engine.importPath(file, 'folder', balanced, undefined, { placement: failing, staged: staged => { other = staged; } });
+  assert.equal(engine.bringBack(other), undefined);
+});

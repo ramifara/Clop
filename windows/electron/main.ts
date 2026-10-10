@@ -109,7 +109,8 @@ function bringBackLast() {
 }
 /** "Revert last optimisations": the latest batch of results gets its originals back, over the files of watched folders too. */
 async function revertLast() {
-  const ids = lastBatch.take().filter(id => engine.has(id));
+  // A result dismissed since, such as one cancelled while it was being placed, comes back to be restored.
+  const ids = lastBatch.take().filter(id => engine.has(id) || engine.bringBack(id));
   if (!ids.length) { inform('There are no recent optimisations to revert.'); return; }
   // Each result on its own: one the user edited, moved or deleted since stays as it is, and the rest are still restored.
   const { restored, failures } = await restoreAll(engine, ids);

@@ -40,6 +40,8 @@ export interface ItemPlacement {
 interface Entry {
   result: ItemResult; originalPath: string; outputPath: string; directory: string; inputFormat: string; revision: number; cancel: AbortController; running?: boolean; shown?: boolean;
   placement?: ItemPlacement; placedPath?: string; jobs: Set<AbortController>;
+  /** A result is being placed outside the shelf: dismissing it now must keep what is needed to restore it. */
+  placing?: boolean;
 }
 /** Dismissed results kept for `bringBack`. */
 const REMOVED = 40;
@@ -172,7 +174,11 @@ export class ItemEngine extends EventEmitter {
       // PDF.swift gives an optimised PDF its source's dates; the audio optimiser does it itself, and macOS leaves video dates alone.
       // Before placing, so a placed copy keeps them too.
       if (r.kind === 'pdf' && !output.unchanged && this.settings().preserveDates) { const { atime, mtime } = await stat(e.originalPath); await utimes(output.path, atime, mtime); }
-      if (e.placement) e.placedPath = await e.placement.place(output);
+      if (e.placement) {
+        // Once placing starts it finishes, even if the item is dismissed meanwhile, and the item stays restorable.
+        e.placing = true;
+        try { e.placedPath = await e.placement.place(output); e.shown = true; } finally { e.placing = false; }
+      }
       if (!output.unchanged) e.revision++;
       // Keep earlier results until the session ends: other apps may still be pasting or dragging them.
       e.outputPath = output.path;
@@ -186,7 +192,12 @@ export class ItemEngine extends EventEmitter {
     } catch (error) { Object.assign(r, { status: 'error', error: signal.aborted ? 'Stopped.' : message(error), progress: undefined }); this.changed(); }
     finally {
       e.running = false; e.jobs.delete(job);
-      if (this.entries.get(id) !== e && !e.shown) await discard(e);
+      if (this.entries.get(id) !== e && !e.shown) {
+        // A placement that failed left nothing to restore.
+        const kept = this.removed.indexOf(e);
+        if (kept >= 0) this.removed.splice(kept, 1);
+        await discard(e);
+      }
     }
   }
   private optimiseMedia(kind: Exclude<MediaKind, 'image'>, file: string, outputDir: string, job: MediaJobOptions & { name: string }): Promise<MediaOutput> {
@@ -219,7 +230,7 @@ export class ItemEngine extends EventEmitter {
     entry.cancel.abort();
     this.changed();
     // A result that was ready can be brought back; nothing can be pasting one that never was, so its folder goes, or a running job removes it once it stops.
-    if (entry.shown) { this.removed.push(entry); this.removed.splice(0, this.removed.length - REMOVED); }
+    if (entry.shown || entry.placing) { this.removed.push(entry); this.removed.splice(0, this.removed.length - REMOVED); }
     else if (!entry.running) await discard(entry);
   }
   /** Puts a dismissed result (the latest by default) back in the shelf as its newest. Returns its id, or undefined when there is none. */
