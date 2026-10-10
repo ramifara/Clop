@@ -74,11 +74,11 @@ export function computedSize(size: CropSpec, width: number, height: number): { w
 }
 
 /** `NSSize.cropToPortrait(aspectRatio:)`: the largest centred region whose width over height is `ratio`. */
-function cutPortrait(width: number, height: number, ratio: number) {
+export function cutPortrait(width: number, height: number, ratio: number) {
   return width / height > ratio ? { width: height * ratio, height } : { width, height: width / ratio };
 }
 
 /** `NSSize.cropToLandscape(aspectRatio:)`: the largest centred region whose height over width is `ratio`. */
-function cutLandscape(width: number, height: number, ratio: number) {
+export function cutLandscape(width: number, height: number, ratio: number) {
   return height / width > ratio ? { width, height: width * ratio } : { width: height / ratio, height };
 }
