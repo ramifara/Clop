@@ -1,13 +1,13 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { defaultSettings } from '../core/settings/schema';
 import { needTools } from '../core/testing';
 import { clip } from '../core/media/video.fixtures';
-import { clopIgnored, hidesResult, ignoredBy, matchingWatchedDir, placeholderReply, qualifies, watchSettings } from './watch-rules';
+import { clopIgnored, hidesResult, ignoredBy, matchingWatchedDir, placeholderReply, qualifies, recentFiles, watchSettings, writable } from './watch-rules';
 
 async function folder(t: TestContext) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-rules-'));
@@ -87,4 +87,24 @@ test('a cloud placeholder is skipped before anything reads it, and the helper\'s
   assert.equal(await qualifies('image', image, s, { ...host, isLocal: async () => true }), true);
   assert.deepEqual(placeholderReply({ cloud: [true, false] }, 2), [true, false]);
   for (const bad of [null, {}, { cloud: [true] }, { cloud: ['yes', false] }]) assert.throws(() => placeholderReply(bad, 2), /unreadable/);
+});
+test('a file that cannot be opened for writing is waited for, then left alone', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+  const dir = await folder(t), file = path.join(dir, 'held.png');
+  await writeFile(file, 'png');
+  assert.equal(await writable(file), true);
+  await chmod(file, 0o444);
+  const started = Date.now();
+  assert.equal(await writable(file, { tries: 3, delayMs: 50 }), false);
+  assert.ok(Date.now() - started >= 100, 'it tried again before giving up');
+  assert.equal(await writable(path.join(dir, 'gone.png'), { tries: 3, delayMs: 1000 }), false, 'a missing file is not waited for');
+});
+test('the rescan after lost changes finds recently changed files, skipping hidden and excluded folders', async t => {
+  const dir = await folder(t), old = new Date(Date.now() - 3_600_000);
+  for (const sub of ['a/b', '.git', 'work']) await mkdir(path.join(dir, sub), { recursive: true });
+  for (const file of ['new.png', 'a/b/deep.png', '.git/hidden.png', 'work/own.png', 'old.png']) await writeFile(path.join(dir, file), 'x');
+  await utimes(path.join(dir, 'old.png'), old, old);
+  const found = await recentFiles(dir, Date.now() - 60_000, { skip: folder => folder.endsWith(`${path.sep}work`) });
+  // A file's creation time can be older than its modification time but never newer, so the old file only counts where creation times are kept.
+  assert.deepEqual(found.map(file => path.relative(dir, file).split(path.sep).join('/')).filter(file => file !== 'old.png').sort(), ['a/b/deep.png', 'new.png']);
+  assert.equal((await recentFiles(dir, Date.now() - 60_000, { limit: 2 })).length <= 2, true);
 });

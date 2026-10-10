@@ -1,11 +1,11 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, mkdtemp, rename, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { defaultSettings, type ClopSettings } from '../core/settings/schema';
-import { FolderWatcher, type WatcherHost } from './watcher';
+import { FolderWatcher, backoff, type WatcherHost } from './watcher';
 import { watchedTrees } from './folder-events';
 
 const timing = { stabilityMs: 100, checkMs: 25, pollMs: 150, settleMs: 20, windowMs: 400, safeMs: 1500, safeDelayMs: 300 };
@@ -151,4 +151,42 @@ test('one watch covers a whole tree, shared by every kind watching it; hidden fo
   await until(() => images.state.handled.length === 2, 'the image watcher stopped with the video watcher');
   await images.watcher.close();
   assert.equal(watchedTrees(), before);
+});
+test('a file whose attributes or last access change is left alone; new content is optimised', async t => {
+  const { dir, state, watcher } = await setup(t);
+  const old = path.join(dir, 'old.png'), hour = new Date(Date.now() - 3_600_000);
+  await image(old); await utimes(old, hour, hour);
+  await watcher.update();
+  await chmod(old, 0o600); await chmod(old, 0o644);
+  await utimes(old, new Date(), hour);
+  await pause(600);
+  assert.deepEqual(state.handled, [], 'attribute and last-access changes are not new content');
+  await appendFile(old, Buffer.alloc(16));
+  await until(() => state.handled.length === 1, 'new content was not optimised');
+});
+test('a watched folder that is renamed away or replaced is watched again where it is', async t => {
+  const { root, dir, state, watcher } = await setup(t);
+  await watcher.update();
+  await rename(dir, path.join(root, 'Old'));
+  await until(() => !watcher.watching, 'the renamed folder was still watched');
+  await mkdir(dir);
+  await until(() => watcher.watching, 'the new folder of the same name was not watched');
+  await image(path.join(dir, 'new.png'));
+  await until(() => state.handled.length === 1, 'an image in the new folder was not optimised');
+  await image(path.join(root, 'Old', 'moved.png')); await pause(400);
+  assert.deepEqual(state.handled.map(([name]) => name), ['new.png'], 'the folder that moved away is no longer watched');
+});
+test('a folder that cannot be watched is retried less and less often, with one notice', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+  assert.deepEqual([1, 2, 3, 10].map(count => backoff(count, 5000)), [5000, 10000, 20000, 300000]);
+  const { dir, state, watcher } = await setup(t);
+  await chmod(dir, 0o000);
+  try {
+    await watcher.update();
+    assert.equal(watcher.watching, false);
+    await until(() => state.notices.length === 1, 'no notice for a folder that keeps failing');
+    assert.match(state.notices[0], /keeps failing to watch .*Shots/);
+    await pause(1000);
+    assert.equal(state.notices.length, 1, 'one notice while it keeps failing');
+  } finally { await chmod(dir, 0o755); }
+  await until(() => watcher.watching, 'the folder was not watched once it could be', 10000);
 });

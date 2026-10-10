@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { open, readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { ClopSettings } from '../core/settings/schema';
 import type { MediaKind } from '../core/media/types';
@@ -110,4 +110,39 @@ export function placeholderReply(reply: unknown, count: number): boolean[] {
   const cloud = (reply as Record<string, unknown> | null)?.cloud;
   if (!Array.isArray(cloud) || cloud.length !== count || !cloud.every(value => typeof value === 'boolean')) throw new Error('The Windows helper sent unreadable file attributes.');
   return cloud;
+}
+
+/**
+ * Whether `file` can be opened for writing, so it can be replaced in place: a writer still holding it (EBUSY, or EPERM and
+ * EACCES on Windows while it is open) is waited for, `tries` times `delayMs` apart, as macOS checks a settled file is valid.
+ */
+export async function writable(file: string, { tries = 5, delayMs = 300 } = {}): Promise<boolean> {
+  for (let attempt = 1; ; attempt++) {
+    try { await (await open(file, 'r+')).close(); return true; } catch (error) {
+      if (!['EBUSY', 'EPERM', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '') || attempt >= tries) return false;
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
+/**
+ * Files under `root` changed since `since` (by modification or creation time), for the rescan after a watch lost changes. Hidden
+ * folders, links and folders `skip` names are not entered, and at most `limit` entries are looked at.
+ */
+export async function recentFiles(root: string, since: number, { limit = 20_000, skip }: { limit?: number; skip?: (dir: string) => boolean } = {}): Promise<string[]> {
+  const found: string[] = [], folders = [root];
+  let seen = 0;
+  while (folders.length && seen < limit) {
+    const folder = folders.shift()!;
+    for (const entry of await readdir(folder, { withFileTypes: true }).catch(() => [])) {
+      if (++seen > limit) break;
+      const file = path.join(folder, entry.name);
+      if (entry.name.startsWith('.')) continue;
+      if (entry.isDirectory()) { if (!skip?.(file)) folders.push(file); continue; }
+      if (!entry.isFile()) continue;
+      const info = await stat(file).catch(() => undefined);
+      if (info && Math.max(info.mtimeMs, info.birthtimeMs) >= since) found.push(file);
+    }
+  }
+  return found;
 }
