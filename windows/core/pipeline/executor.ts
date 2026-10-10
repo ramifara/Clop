@@ -25,6 +25,8 @@ export interface PipelineResult {
   forks: string[];
   /** Images `extractPagesAsImages` wrote. */
   pages: string[];
+  /** Problems that did not stop the run, such as a script printing a path that does not exist. */
+  warnings: string[];
 }
 
 /**
@@ -102,5 +104,5 @@ export async function runPipeline(pipeline: Pipeline, input: string, opts: Pipel
       if (!('filterIf' in step) && !('filterIfNot' in step)) didWork = true;
     }
   } finally { await run.cleanup(); }
-  return { file: run.current, didWork, stopped, forks: [...run.forks], pages: [...run.pages] };
+  return { file: run.current, didWork, stopped, forks: [...run.forks], pages: [...run.pages], warnings: [...run.warnings] };
 }

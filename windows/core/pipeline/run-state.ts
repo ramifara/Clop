@@ -52,6 +52,8 @@ export class RunState {
   captures: string[] = [];
   readonly forks: string[] = [];
   readonly pages: string[] = [];
+  /** Things that went wrong without stopping the run, for the app to show. */
+  readonly warnings: string[] = [];
   private root?: string;
   private unprotect?: () => void;
   private scratchCount = 0;
