@@ -6,7 +6,13 @@
 !macro clopPath ACTION
   InitPluginsDir
   File "/oname=$PLUGINSDIR\clop-path.ps1" "${PROJECT_DIR}\native\path.ps1"
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\clop-path.ps1" -Action ${ACTION} -Dir "$INSTDIR\cli" -InstallDir "$INSTDIR"'
+  ; A trailing backslash before the closing quote would escape it, so the folder goes in without one.
+  StrCpy $R9 "$INSTDIR"
+  StrCpy $R8 $R9 1 -1
+  ${if} $R8 == "\"
+    StrCpy $R9 $R9 -1
+  ${endif}
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\clop-path.ps1" -Action ${ACTION} -Dir "$R9\cli" -InstallDir "$R9"'
   Pop $0
   ${if} $0 != 0
     DetailPrint "Could not change PATH for the clop command ($0)."

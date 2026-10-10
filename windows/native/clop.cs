@@ -60,9 +60,12 @@ static class ClopStub {
   static readonly ConsoleCtrlHandler OnCtrl = HandleCtrl;
 
   static int Main(string[] args) {
-    string dir = InstallDir();
+    bool portable;
+    string dir = InstallDir(out portable);
     if (dir == null) {
-      Console.Error.WriteLine("Clop for Windows is not installed, or was moved. Reinstall it, or run clop.exe from its install folder.");
+      Console.Error.WriteLine(portable
+        ? "The portable Clop for Windows is not running. Start it, then run clop again: the portable app unpacks to a new folder each time it starts."
+        : "Clop for Windows is not installed, or was moved. Reinstall it, or run clop.exe from its install folder.");
       return 1;
     }
     string exe = Path.Combine(dir, AppExe), cli = Path.Combine(Path.Combine(dir, "resources"), "cli.mjs");
@@ -83,10 +86,13 @@ static class ClopStub {
     }
     child = info.hProcess;
     // A job that ends with this process, so closing the terminal or killing clop.exe also ends the CLI and its tools.
-    IntPtr job = CreateJobObject(IntPtr.Zero, null);
-    var limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
-    limits.BasicLimitInformation.LimitFlags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    if (job != IntPtr.Zero && SetInformationJobObject(job, 9, ref limits, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)))) AssignProcessToJobObject(job, info.hProcess);
+    // Not for --async: without the app, the CLI carries on in a detached copy of itself, which must outlive clop.exe.
+    if (!IsAsync(args)) {
+      IntPtr job = CreateJobObject(IntPtr.Zero, null);
+      var limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+      limits.BasicLimitInformation.LimitFlags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+      if (job != IntPtr.Zero && SetInformationJobObject(job, 9, ref limits, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)))) AssignProcessToJobObject(job, info.hProcess);
+    }
     SetConsoleCtrlHandler(OnCtrl, true);
     ResumeThread(info.hThread);
     CloseHandle(info.hThread);
@@ -111,12 +117,24 @@ static class ClopStub {
     return handle == IntPtr.Zero || handle == new IntPtr(-1) || (GetFileType(handle) == FILE_TYPE_CHAR && GetConsoleMode(handle, out mode));
   }
 
-  /** The folder holding the app: this program's folder or its parent (an install has it in `cli\`), else where the installer recorded it. */
-  static string InstallDir() {
+  static bool IsAsync(string[] args) {
+    foreach (string arg in args) { if (arg == "--") return false; if (arg == "--async") return true; }
+    return false;
+  }
+
+  /**
+   * The folder holding the app: this program's folder or its parent (an install has it in `cli\`), else where the
+   * installer or the running portable app recorded it. `portable` says the record came from a portable app.
+   */
+  static string InstallDir(out bool portable) {
+    portable = false;
     string own = Path.GetDirectoryName(System.Reflection.Assembly.GetEntryAssembly().Location);
     foreach (string candidate in new[] { own, Path.GetDirectoryName(own) }) if (IsInstall(candidate)) return candidate;
     using (RegistryKey key = Registry.CurrentUser.OpenSubKey("Software\\Clop for Windows")) {
-      string recorded = key == null ? null : key.GetValue("InstallDir") as string;
+      if (key == null) return null;
+      object flag = key.GetValue("Portable");
+      portable = flag is int && (int)flag == 1;
+      string recorded = key.GetValue("InstallDir") as string;
       return IsInstall(recorded) ? recorded : null;
     }
   }

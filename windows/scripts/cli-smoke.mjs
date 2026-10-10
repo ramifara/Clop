@@ -35,6 +35,14 @@ try {
   assert.equal(failed.code, 64, 'a usage error exits 64 through clop.exe');
   console.log('clop.exe optimised a file with the app closed');
 
+  // --async without the app hands the work to a detached copy of the CLI, which must outlive clop.exe.
+  const queued = await image('queued.png'), queuedSize = (await stat(queued)).size;
+  await run(['optimise', '--async', queued]);
+  const asyncDeadline = Date.now() + 60_000;
+  while ((await stat(queued)).size === queuedSize && Date.now() < asyncDeadline) await pause(500);
+  assert.ok((await stat(queued)).size < queuedSize, 'the detached CLI finished the file after clop.exe exited');
+  console.log('clop.exe --async finished in the background with the app closed');
+
   // The app publishes its pipe in this profile; the debug log records the request it served.
   await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ persistDebugLogs: true }));
   app = spawn(path.join(unpacked, 'Clop for Windows.exe'), [`--user-data-dir=${profile}`], { stdio: 'ignore' });
