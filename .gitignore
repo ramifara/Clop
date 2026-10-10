@@ -26,3 +26,4 @@ windows/dist/
 windows/dist-electron/
 windows/release/
 windows/.preview-data/
+windows/.tools/
