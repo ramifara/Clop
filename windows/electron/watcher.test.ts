@@ -6,8 +6,9 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { FolderWatcher, type WatcherHost } from './watcher';
+import { watchedTrees } from './folder-events';
 
-const timing = { stabilityMs: 100, pollMs: 150, settleMs: 20, windowMs: 400, safeMs: 1500, safeDelayMs: 300 };
+const timing = { stabilityMs: 100, checkMs: 25, pollMs: 150, settleMs: 20, windowMs: 400, safeMs: 1500, safeDelayMs: 300 };
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check: () => boolean, what: string, ms = 5000) {
   for (const deadline = Date.now() + ms; Date.now() < deadline; await pause(25)) if (check()) return;
@@ -121,4 +122,33 @@ test('at first launch, files changing right away are held, and a burst turns the
   await pause(500);
   assert.deepEqual(busy.state.handled, []);
   assert.match(busy.state.notices[0], /Automatic image optimisation is now off/);
+});
+test('one watch covers a whole tree, shared by every kind watching it; hidden folders and cloud placeholders are left alone', async t => {
+  const placeholders = new Set<string>();
+  const images = await setup(t, {}, { isLocal: async file => !placeholders.has(path.basename(file)) });
+  const handledVideos: string[] = [];
+  const videos = new FolderWatcher('video', {
+    settings: () => ({ ...images.state.settings, videoDirs: [images.dir], minVideoSizeKB: 0 }), owns: () => false, isOptimised: async () => false,
+    handle: async file => { handledVideos.push(path.basename(file)); return undefined; }, cancel: () => {}, notice: () => {}, disable: () => {},
+  }, timing);
+  t.after(() => videos.close());
+  const before = watchedTrees();
+  await images.watcher.update(); await videos.update();
+  assert.equal(watchedTrees(), before + 1, 'both kinds share one watch of the folder');
+  const deep = path.join(images.dir, 'a', 'b', 'c', 'd'), hidden = path.join(images.dir, '.git', 'objects');
+  await mkdir(deep, { recursive: true }); await mkdir(hidden, { recursive: true });
+  await image(path.join(deep, 'deep.png')); await image(path.join(hidden, 'blob.png'));
+  placeholders.add('cloud.png'); await image(path.join(images.dir, 'cloud.png'));
+  await writeFile(path.join(deep, 'clip.mp4'), 'video');
+  await until(() => images.state.handled.length === 1 && handledVideos.length === 1, 'files deep in the tree were not optimised');
+  await pause(300);
+  assert.deepEqual(images.names(), ['deep.png']);
+  assert.deepEqual(handledVideos, ['clip.mp4']);
+  // Closing one kind leaves the other watching.
+  await videos.close();
+  assert.equal(watchedTrees(), before + 1);
+  await image(path.join(images.dir, 'after.png'));
+  await until(() => images.state.handled.length === 2, 'the image watcher stopped with the video watcher');
+  await images.watcher.close();
+  assert.equal(watchedTrees(), before);
 });

@@ -7,7 +7,7 @@ import sharp from 'sharp';
 import { defaultSettings } from '../core/settings/schema';
 import { needTools } from '../core/testing';
 import { clip } from '../core/media/video.fixtures';
-import { clopIgnored, hidesResult, ignoredBy, matchingWatchedDir, qualifies, watchSettings } from './watch-rules';
+import { clopIgnored, hidesResult, ignoredBy, matchingWatchedDir, placeholderReply, qualifies, watchSettings } from './watch-rules';
 
 async function folder(t: TestContext) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-rules-'));
@@ -77,4 +77,14 @@ test('a watched video qualifies by its resolution when a limit is set, and anywa
   assert.equal(await qualifies('video', path.join(dir, 'clip.mkv'), s, host), false, 'skipped format, and missing');
   const unreadable = path.join(dir, 'odd.mp4'); await writeFile(unreadable, 'not a video');
   assert.equal(await qualifies('video', unreadable, s, host), true);
+});
+test('a cloud placeholder is skipped before anything reads it, and the helper\'s attribute reply is checked', async t => {
+  const dir = await folder(t), s = defaultSettings(), image = path.join(dir, 'cloud.png');
+  await noise(400, 300).toFile(image);
+  let checkedMarker = false;
+  assert.equal(await qualifies('image', image, s, { ...host, isLocal: async () => false, isOptimised: async () => { checkedMarker = true; return false; } }), false);
+  assert.equal(checkedMarker, false);
+  assert.equal(await qualifies('image', image, s, { ...host, isLocal: async () => true }), true);
+  assert.deepEqual(placeholderReply({ cloud: [true, false] }, 2), [true, false]);
+  for (const bad of [null, {}, { cloud: [true] }, { cloud: ['yes', false] }]) assert.throws(() => placeholderReply(bad, 2), /unreadable/);
 });

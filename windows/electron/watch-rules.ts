@@ -54,15 +54,17 @@ async function resolution(kind: MediaKind, file: string): Promise<{ width: numbe
 
 /**
  * Whether a file that appeared in a watched folder is optimised: a visible file of `kind` in a format not skipped, not one of
- * Clop's own files, within the size limits, not already optimised, and within the resolution limits. An image whose size
- * cannot be read is skipped; a video is optimised anyway, as macOS does.
+ * Clop's own files, within the size limits, on this computer rather than a cloud placeholder (`isLocalFile` in
+ * FileOptimisationWatcher.swift; checked before anything reads the file, since reading downloads it), not already
+ * optimised, and within the resolution limits. An image whose size cannot be read is skipped; a video is optimised
+ * anyway, as macOS does.
  */
-export async function qualifies(kind: MediaKind, file: string, s: ClopSettings, { owns, isOptimised }: { owns: (file: string) => boolean; isOptimised: (file: string) => Promise<boolean> }): Promise<boolean> {
+export async function qualifies(kind: MediaKind, file: string, s: ClopSettings, { owns, isOptimised, isLocal }: { owns: (file: string) => boolean; isOptimised: (file: string) => Promise<boolean>; isLocal?: (file: string) => Promise<boolean> }): Promise<boolean> {
   const w = watchSettings(kind, s);
   if (path.basename(file).startsWith('.') || mediaKind(file) !== kind || skipsFormat(w.skip, file) || owns(file)) return false;
   const info = await stat(file).catch(() => undefined);
   if (!info?.isFile() || !info.size || (w.maxMB && info.size >= w.maxMB * 1_000_000) || (w.minKB && info.size < w.minKB * 1000)) return false;
-  if (await isOptimised(file)) return false;
+  if ((isLocal && !await isLocal(file)) || await isOptimised(file)) return false;
   if (!w.minResolution && !w.maxResolution) return true;
   const size = await resolution(kind, file);
   if (!size) return kind !== 'image';
@@ -98,4 +100,14 @@ export function ignoredBy(rules: string, relative: string, platform: NodeJS.Plat
 export async function clopIgnored(kind: MediaKind, root: string, file: string) {
   const rules = await readFile(path.join(root, `.clopignore-${kind}`), 'utf8').catch(() => '');
   return !!rules && ignoredBy(rules, path.relative(root, file).split(path.sep).join('/'));
+}
+
+/**
+ * The `attributes` reply from the Windows helper: for each path asked about, whether it is a cloud placeholder whose content
+ * is not on this computer (OneDrive files-on-demand: recall on data access, recall on open or offline).
+ */
+export function placeholderReply(reply: unknown, count: number): boolean[] {
+  const cloud = (reply as Record<string, unknown> | null)?.cloud;
+  if (!Array.isArray(cloud) || cloud.length !== count || !cloud.every(value => typeof value === 'boolean')) throw new Error('The Windows helper sent unreadable file attributes.');
+  return cloud;
 }
