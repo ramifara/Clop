@@ -14,7 +14,7 @@
     "build": "tsc --noEmit && vite build && node scripts/build.mjs",
     "test": "tsx --test \"core/**/*.test.ts\" \"electron/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "dist:win": "npm run build && electron-builder --win nsis portable --x64 --publish never"
+    "dist:win": "npm run build && node scripts/fetch-tools.mjs --platform win32 --arch x64 && electron-builder --win nsis portable --x64 --publish never"
   },
   "dependencies": {
     "react": "19.3.0",
@@ -26,6 +26,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.0",
+    "7z-wasm": "1.2.0",
     "electron": "44.7.0",
     "electron-builder": "26.15.3",
     "esbuild": "^0.28.0",
@@ -37,7 +38,7 @@
     "appId": "com.clop.windows",
     "directories": { "output": "release" },
     "files": ["dist/**/*", "dist-electron/**/*", "package.json"],
-    "extraResources": [{ "from": "native", "to": "native" }, { "from": "../LICENSE", "to": "LICENSE" }, { "from": "README.md", "to": "README.md" }],
+    "extraResources": [{ "from": "native", "to": "native" }, { "from": "../LICENSE", "to": "LICENSE" }, { "from": "README.md", "to": "README.md" }, { "from": ".tools/win32-x64/bin", "to": "bin" }],
     "asarUnpack": ["node_modules/sharp/**/*", "node_modules/@img/**/*"],
     "win": { "target": ["nsis", "portable"], "icon": "assets/icon.ico" },
     "nsis": { "artifactName": "Clop-Windows-${version}-${arch}-Setup.${ext}", "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true },
