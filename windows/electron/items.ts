@@ -26,8 +26,23 @@ const LIMIT = 128 * 1024 * 1024;
 const PIXELS = 60_000_000;
 /** Ordinary read failures; anything else on Windows may be a OneDrive placeholder that could not download. */
 const LOCAL_ERRORS = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY', 'EISDIR']);
-/** `cancel` stops this item's running job when it is dismissed; `running` says a job is under way, `shown` that a result was ever ready to paste. */
-interface Entry { result: ItemResult; originalPath: string; outputPath: string; directory: string; inputFormat: string; revision: number; cancel: AbortController; running?: boolean; shown?: boolean }
+/** Where a result goes besides the shelf: a watched file's result goes back in its folder. */
+export interface ItemPlacement {
+  /** Places a finished result; resolves with where it now is. */
+  place(output: MediaOutput): Promise<string>;
+  /** Puts the original back; resolves with where it now is, or undefined when the shelf's own copy is the original. */
+  restore(): Promise<string | undefined>;
+}
+/**
+ * `cancel` stops this item's running job when it is dismissed; `running` says a job is under way, `shown` that a result was ever ready to paste.
+ * `jobs` holds one controller per scheduled job, so stopping also stops jobs still waiting in the queue.
+ */
+interface Entry {
+  result: ItemResult; originalPath: string; outputPath: string; directory: string; inputFormat: string; revision: number; cancel: AbortController; running?: boolean; shown?: boolean;
+  placement?: ItemPlacement; placedPath?: string; jobs: Set<AbortController>;
+}
+/** Dismissed results kept for `bringBack`. */
+const REMOVED = 40;
 export type ItemSettings = Pick<ClopSettings, 'imageCompression' | 'stripMetadata' | 'preserveColorMetadata' | 'gifFrameDropBehaviour' | 'videoCompression' | 'videoEncoder' | 'capVideoFPS' | 'targetVideoFPS'
   | 'minVideoFPS' | 'removeAudioFromVideos' | 'convertAudioToAAC' | 'adaptiveVideoSize' | 'pdfDPI' | 'audioCompression' | 'formatsToConvertToAAC' | 'formatsToConvertToMP3' | 'audioCoverArt' | 'preserveDates'>;
 /**
@@ -38,11 +53,14 @@ export class ItemEngine extends EventEmitter {
   private entries = new Map<string, Entry>();
   private queues = new Map<MediaKind, Promise<unknown>>();
   private controller = new AbortController();
+  private removed: Entry[] = [];
   /** `settings` is read for every job, so a changed compression setting applies to the next one. */
   constructor(private root: string, private settings: () => ItemSettings = defaultSettings) { super(); }
   list() { return [...this.entries.values()].map(e => structuredClone(e.result)).reverse(); }
   get(id: string) { const entry = this.entries.get(id); if (!entry) throw new Error('This result is no longer in the shelf.'); return entry; }
-  output(id: string) { const entry = this.get(id); if (entry.result.status !== 'ready') throw new Error('Wait for this result to finish first.'); return entry.outputPath; }
+  has(id: string) { return this.entries.has(id); }
+  /** The result's file: where its placement put it, or the shelf's copy. */
+  output(id: string) { const entry = this.get(id); if (entry.result.status !== 'ready') throw new Error('Wait for this result to finish first.'); return entry.placedPath ?? entry.outputPath; }
   private changed() { this.emit('change'); }
   /** Jobs of one kind run in order; a long video never holds up a copied image. */
   private schedule<T>(kind: MediaKind, task: () => Promise<T>): Promise<T> {
@@ -51,20 +69,24 @@ export class ItemEngine extends EventEmitter {
     return run;
   }
   private kindOf(id: string): MediaKind { return this.entries.get(id)?.result.kind ?? 'image'; }
-  /** Imports a local file under `name` (its own by default). */
-  async importPath(file: string, source: ItemResult['source'], options: ImageOptions, name = path.basename(file)) {
+  private job(e: Entry) { const job = new AbortController(); e.jobs.add(job); return job; }
+  /**
+   * Imports a local file under `name` (its own by default). `placement` puts each result back where the file came from;
+   * `staged` hears the result's id as soon as it is in the shelf, before it is optimised.
+   */
+  async importPath(file: string, source: ItemResult['source'], options: ImageOptions, name = path.basename(file), extra: { placement?: ItemPlacement; staged?: (id: string) => void } = {}) {
     const info = await stat(file).catch(error => { throw unreadable(file, error); });
     if (!info.isFile()) throw new Error(`${path.basename(file)} is not a file.`);
     if (info.size > LIMIT && await detectKind(file).catch(() => undefined) === 'image') throw new Error('Choose an image file smaller than 128 MB.');
     // Copying reads the file, which makes OneDrive download a files-on-demand placeholder. One that cannot download fails here.
     // The copy keeps the source's dates, which results take with `preserveDates`.
-    return this.add(name, source, options, staged => copyFile(file, staged).then(() => utimes(staged, info.atime, info.mtime)).catch(error => { throw unreadable(file, error); }));
+    return this.add(name, source, options, staged => copyFile(file, staged).then(() => utimes(staged, info.atime, info.mtime)).catch(error => { throw unreadable(file, error); }), extra);
   }
   async importBuffer(buffer: Buffer, name: string, source: ItemResult['source'], options: ImageOptions): Promise<string> {
     if (!buffer.length || buffer.length > LIMIT) throw new Error('Choose a file smaller than 128 MB.');
     return this.add(name, source, options, staged => writeFile(staged, buffer));
   }
-  private async add(name: string, source: ItemResult['source'], options: ImageOptions, write: (staged: string) => Promise<unknown>) {
+  private async add(name: string, source: ItemResult['source'], options: ImageOptions, write: (staged: string) => Promise<unknown>, extra: { placement?: ItemPlacement; staged?: (id: string) => void } = {}) {
     options = parseOptions(options);
     const signal = this.controller.signal;
     signal.throwIfAborted();
@@ -81,10 +103,13 @@ export class ItemEngine extends EventEmitter {
       if (!kind) throw new Error('Use an image, a video, a PDF or an audio file.');
       const result = { id, kind, name: display, source, status: 'processing', options, animated: false, createdAt: Date.now() } as const;
       entry = kind === 'image' ? await this.stageImage(staged, directory, result) : await this.stageMedia(staged, directory, { ...result, kind });
+      entry.placement = extra.placement;
       this.entries.set(id, entry);
+      this.emit('add', id); extra.staged?.(id);
       this.changed();
     } catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
-    await this.schedule(entry.result.kind, () => this.process(id, options));
+    const job = this.job(entry);
+    await this.schedule(entry.result.kind, () => this.process(id, options, job));
     return id;
   }
   private async stageImage(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'kind' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'>): Promise<Entry> {
@@ -98,7 +123,7 @@ export class ItemEngine extends EventEmitter {
     await rename(staged, originalPath);
     const preview = await imageThumbnail(originalPath, DECODED.has(format) || info.deep), bytes = (await stat(originalPath)).size;
     const result: ItemResult = { ...base, originalBytes: bytes, outputBytes: bytes, originalWidth: width, originalHeight: height, width, height, format, originalPreview: preview, preview, animated: pages > 1 };
-    return { result, originalPath, outputPath: originalPath, directory, inputFormat: format, revision: 0, cancel: new AbortController() };
+    return { result, originalPath, outputPath: originalPath, directory, inputFormat: format, revision: 0, cancel: new AbortController(), jobs: new Set() };
   }
   private async stageMedia(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'> & { kind: Exclude<MediaKind, 'image'> }): Promise<Entry> {
     const signal = this.controller.signal;
@@ -114,20 +139,23 @@ export class ItemEngine extends EventEmitter {
       ...base, originalBytes: bytes, outputBytes: bytes, originalWidth: video?.width ?? 0, originalHeight: video?.height ?? 0, width: video?.width ?? 0, height: video?.height ?? 0,
       format, originalPreview: preview, preview, durationMs: info?.durationMs,
     };
-    return { result, originalPath: staged, outputPath: staged, directory, inputFormat: format, revision: 0, cancel: new AbortController() };
+    return { result, originalPath: staged, outputPath: staged, directory, inputFormat: format, revision: 0, cancel: new AbortController(), jobs: new Set() };
   }
   apply(id: string, options: ImageOptions) {
     options = parseOptions(options);
-    if (this.get(id).result.kind !== 'image') throw new Error('Only images can be resized or converted from the card.');
-    return this.schedule('image', () => this.process(id, options));
+    const e = this.get(id);
+    if (e.result.kind !== 'image') throw new Error('Only images can be resized or converted from the card.');
+    const job = this.job(e);
+    return this.schedule('image', () => this.process(id, options, job));
   }
-  private async process(id: string, options: ImageOptions) {
+  private async process(id: string, options: ImageOptions, job: AbortController) {
     // An item dismissed while its job waited has nothing left to do.
     const e = this.entries.get(id);
     if (!e) return;
-    const r = e.result, signal = AbortSignal.any([this.controller.signal, e.cancel.signal]);
+    const r = e.result, signal = AbortSignal.any([this.controller.signal, e.cancel.signal, job.signal]);
     r.status = 'processing'; r.error = undefined; r.progress = undefined; e.running = true; this.changed();
     try {
+      signal.throwIfAborted();
       // Each result gets a folder of its own and keeps the original's name, so a pasted or dragged file is named like its source.
       const outputDir = path.join(e.directory, String(e.revision + 1)), name = path.parse(e.originalPath).name;
       let output: MediaOutput, width = r.originalWidth, height = r.originalHeight;
@@ -140,6 +168,8 @@ export class ItemEngine extends EventEmitter {
           stripMetadata: settings.stripMetadata, preserveColorMetadata: settings.preserveColorMetadata, gifFrameDropBehaviour: settings.gifFrameDropBehaviour, name, signal,
         });
       } else output = await this.optimiseMedia(r.kind, e.originalPath, outputDir, { aggressive: options.mode === 'aggressive', name, signal, onProgress: this.progress(r) });
+      signal.throwIfAborted();
+      if (e.placement) e.placedPath = await e.placement.place(output);
       if (!output.unchanged) e.revision++;
       // PDF.swift gives an optimised PDF its source's dates; the audio optimiser does it itself, and macOS leaves video dates alone.
       if (r.kind === 'pdf' && !output.unchanged && this.settings().preserveDates) { const { atime, mtime } = await stat(e.originalPath); await utimes(output.path, atime, mtime); }
@@ -152,9 +182,9 @@ export class ItemEngine extends EventEmitter {
         durationMs: output.durationMs ?? r.durationMs, pages: output.pages ?? r.pages, progress: undefined, unchanged: !!output.unchanged, restored: false });
       e.shown = true; this.changed();
       if (this.entries.get(id) === e) this.emit('ready', id);
-    } catch (error) { Object.assign(r, { status: 'error', error: message(error), progress: undefined }); this.changed(); }
+    } catch (error) { Object.assign(r, { status: 'error', error: signal.aborted ? 'Stopped.' : message(error), progress: undefined }); this.changed(); }
     finally {
-      e.running = false;
+      e.running = false; e.jobs.delete(job);
       if (this.entries.get(id) !== e && !e.shown) await discard(e);
     }
   }
@@ -171,6 +201,7 @@ export class ItemEngine extends EventEmitter {
   }
   restore(id: string) { return this.schedule(this.kindOf(id), async () => {
     const e = this.get(id);
+    if (e.placement) e.placedPath = await e.placement.restore();
     e.outputPath = e.originalPath;
     Object.assign(e.result, { status: 'ready', width: e.result.originalWidth, height: e.result.originalHeight, outputBytes: e.result.originalBytes,
       format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, maxEdge: undefined, format: 'auto' }, restored: true, unchanged: true, error: undefined });
@@ -186,9 +217,22 @@ export class ItemEngine extends EventEmitter {
     this.entries.delete(id);
     entry.cancel.abort();
     this.changed();
-    // Nothing can be pasting a result that was never ready, so its folder goes; a running job removes it once it stops.
-    if (!entry.shown && !entry.running) await discard(entry);
+    // A result that was ready can be brought back; nothing can be pasting one that never was, so its folder goes, or a running job removes it once it stops.
+    if (entry.shown) { this.removed.push(entry); this.removed.splice(0, this.removed.length - REMOVED); }
+    else if (!entry.running) await discard(entry);
   }
+  /** Puts a dismissed result (the latest by default) back in the shelf as its newest. Returns its id, or undefined when there is none. */
+  bringBack(id?: string) {
+    const index = id === undefined ? this.removed.length - 1 : this.removed.findIndex(e => e.result.id === id);
+    if (index < 0) return;
+    const [e] = this.removed.splice(index, 1);
+    // Dismissing cancelled the entry for good; a brought-back result can run jobs again.
+    e.cancel = new AbortController();
+    this.entries.set(e.result.id, e); this.changed();
+    return e.result.id;
+  }
+  /** Stops the running and queued jobs of `ids` (every result by default). Each ends with a "Stopped." error; sources stay as they are. */
+  stop(ids?: readonly string[]) { for (const [id, e] of this.entries) if (!ids || ids.includes(id)) for (const job of e.jobs) job.abort(); }
   async idle() { await Promise.all(this.queues.values()); }
   /** Stops every running and queued job, for quitting. Later imports are refused. */
   abort() { this.controller.abort(); }

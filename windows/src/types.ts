@@ -5,9 +5,10 @@ export interface ImageOptions { mode: 'balanced' | 'aggressive' | 'lossless'; sc
 /**
  * A result card's item. Video, PDF and audio items have no pixel size of their own (0 for PDF and audio), keep their
  * original's preview and report `durationMs` or `pages`; `options` only matters for images. `progress` runs 0 to 1 while processing, when known.
+ * A `folder` result is a file from a watched folder, optimised where it is.
  */
 export interface ItemResult {
-  id: string; kind: MediaKind; name: string; source: 'clipboard' | 'drop' | 'file' | 'sample'; status: 'processing' | 'ready' | 'error';
+  id: string; kind: MediaKind; name: string; source: 'clipboard' | 'drop' | 'file' | 'folder' | 'sample'; status: 'processing' | 'ready' | 'error';
   originalBytes: number; outputBytes: number; originalWidth: number; originalHeight: number;
   width: number; height: number; format: string; originalPreview: string; preview: string;
   options: ImageOptions; error?: string; unchanged?: boolean; restored?: boolean; animated: boolean; createdAt: number;
