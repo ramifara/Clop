@@ -597,9 +597,6 @@ else {
     engine.on('ready', (id: string) => { if (quiet.has(id)) return; hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
     engine.on('add', (id: string) => lastBatch.add(id));
     await createWindows();
-    await serveCLI(userData).catch(error => inform(`The clop command cannot reach Clop: ${message(error)}`));
-    if (app.isPackaged && process.platform === 'win32') app.setAsDefaultProtocolClient('clop', process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath);
-    if (isPortable() && (cliInstalled = await portableCLIInstalled())) void refreshPortableCLI(process.resourcesPath, path.dirname(process.execPath)).catch(error => inform(message(error)));
     if (settingsError) inform(message(settingsError));
     if (workdirProblem) inform(workdirProblem);
     marker = new OptimisedMarker(path.join(userData, 'optimised.json'));
@@ -640,6 +637,10 @@ else {
       bridge.on('stopped', () => { bridgeReady = false; pickup.cancel(); startClipboardFallback(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));
     } else startClipboardFallback();
+    // Requests can change settings, which updates the tray and the windows, so the pipe opens once they exist.
+    await serveCLI(userData).catch(error => inform(`The clop command cannot reach Clop: ${message(error)}`));
+    if (app.isPackaged && process.platform === 'win32') app.setAsDefaultProtocolClient('clop', process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath);
+    if (isPortable() && (cliInstalled = await portableCLIInstalled())) { updateTray(); void refreshPortableCLI(process.resourcesPath, path.dirname(process.execPath)).catch(error => inform(message(error))); }
     for (const link of clopURLs(process.argv.slice(1))) void openClopURL(link).catch(error => inform(message(error)));
     const files = process.argv.slice(1).filter(arg => path.isAbsolute(arg) && mediaKind(arg));
     if (files.length) await importFiles(files, 'file');
