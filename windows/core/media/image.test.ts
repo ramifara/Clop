@@ -156,6 +156,42 @@ test('the lossless tier keeps every pixel', async t => {
   assert.equal((await optimiseImage(jpeg, w.out, { compression: lossless, width: 160, height: 120, name: 'scaled' })).format, 'png');
 });
 
+test('the lossless tier keeps 16-bit samples, colour under transparent pixels, and never squeezes into GIF', async t => {
+  const w = await workspace(t); if (!w) return;
+  const width = 64, height = 48, deep = new Uint16Array(width * height * 3);
+  for (let i = 0; i < deep.length; i++) deep[i] = (i * 2731) % 65536;
+  const png16 = await w.file('deep.png', sharp(deep, { raw: { width, height, channels: 3 } }).toColourspace('rgb16').png());
+  const deepOut = await optimiseImage(png16, w.out, { compression: lossless, format: 'png', name: 'deep' });
+  if (!deepOut.unchanged) assert.equal((await sharp(deepOut.path).metadata()).depth, 'ushort');
+  assert.deepEqual(await sharp(deepOut.path).raw({ depth: 'ushort' }).toBuffer(), await sharp(png16).raw({ depth: 'ushort' }).toBuffer());
+
+  // Fully transparent pixels whose colour differs from pixel to pixel.
+  const rgba = Buffer.alloc(width * height * 4);
+  for (let i = 0; i < rgba.length; i += 4) rgba.set([i % 251, i % 241, i % 239, i % 8 ? 0 : 255], i);
+  const hidden = await w.file('hidden.png', sharp(rgba, { raw: { width, height, channels: 4 } }).png());
+  const webp = await optimiseImage(hidden, w.out, { compression: lossless, format: 'webp', name: 'hidden' });
+  assert.equal(webp.format, 'webp');
+  assert.deepEqual(await sharp(webp.path).raw().toBuffer(), rgba);
+
+  const colourful = await w.file('photo.png', photo(160, 120).png());
+  const still = await optimiseImage(colourful, w.out, { compression: lossless, format: 'gif', name: 'still' });
+  assert.equal(still.format, 'png');
+  assert.deepEqual(await pixels(still.path), await pixels(colourful));
+  const animatedWebP = await w.file('animation.webp', await animation('webp', { frames: 4 }));
+  const moving = await optimiseImage(animatedWebP, w.out, { compression: lossless, format: 'gif', name: 'moving' });
+  assert.deepEqual([moving.format, (await frames(moving.path)).pages], ['webp', 4]);
+});
+
+test('with stripping off, a converted image keeps its metadata', async t => {
+  const w = await workspace(t); if (!w) return;
+  const input = await w.file('tagged.jpg', photo(320, 240).withMetadata({ orientation: 6 }).withExif({ IFD0: { Artist: 'Someone' } }).jpeg({ quality: 95 }));
+  const kept = await optimiseImage(input, w.out, { compression: at(30), format: 'webp', stripMetadata: false, name: 'kept' });
+  // sharp applied the rotation, so the copied tags must not rotate the result again.
+  assert.deepEqual([await tags(kept.path, 'Artist', 'Orientation'), kept.width, kept.height], [{ Artist: 'Someone', Orientation: 1 }, 240, 320]);
+  const stripped = await optimiseImage(input, w.out, { compression: at(30), format: 'webp', name: 'stripped' });
+  assert.equal((await tags(stripped.path, 'Artist')).Artist, undefined);
+});
+
 test('a downscaled flat PNG is requantized toward its own colours, or the original is kept', async t => {
   const w = await workspace(t); if (!w) return;
   const palette = [[255, 255, 255], [20, 60, 200], [230, 120, 20]];

@@ -85,6 +85,8 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
   if (animated && format !== 'gif' && format !== 'webp') throw new Error('Choose GIF or WebP to keep all animation frames.');
   // A JPEG keeps its pixels only when jpegoptim works on it as it is; scaled or converted, it becomes PNG.
   if (lossless && format === 'jpeg' && (resized || source !== 'jpeg')) format = 'png';
+  // GIF's 256-colour palette only keeps the pixels of a GIF that is not scaled. Anything else stays in a format that can hold them.
+  if (lossless && format === 'gif' && (source !== 'gif' || (resized && !animated))) format = animated ? 'webp' : 'png';
   const converting = format !== source;
 
   await mkdir(outputDir, { recursive: true });
@@ -149,15 +151,20 @@ async function optimiseAnimation(job: Job, format: ImageFormat): Promise<Encoded
 
 /** Decodes, orients, scales and encodes with sharp: an intermediate for the optimisers, or the result for WebP and AVIF. */
 async function encode(job: Job, format: ImageFormat, file = path.join(job.tmp, `encoded.${format}`)) {
-  let image = decode(job.input).autoOrient().keepIccProfile();
+  // sharp drops metadata unless told otherwise; with stripping off, EXIF and XMP travel along (sharp resets the orientation it applied).
+  let image = decode(job.input).autoOrient();
+  image = job.opts.stripMetadata === false ? image.keepMetadata() : image.keepIccProfile();
   if (job.resized) image = image.resize(job.width, job.height, { fit: 'inside', withoutEnlargement: true });
   const quality = cq.conversionQuality(job.compression), lossless = job.lossless;
+  // sharp writes 8-bit PNG unless the pipeline is 16-bit.
+  if (format === 'png' && lossless && job.meta.depth === 'ushort') image = image.toColourspace((job.meta.channels ?? 3) <= 2 ? 'grey16' : 'rgb16');
   switch (format) {
     // The intermediates are as close to lossless as the format allows, like vipsthumbnail's Q=100.
     case 'jpeg': image = image.flatten({ background: '#ffffff' }).jpeg({ quality: 100, chromaSubsampling: '4:4:4' }); break;
     case 'png': image = image.png({ compressionLevel: lossless ? 9 : 1 }); break;
     case 'gif': image = image.gif({ effort: 7 }); break;
-    case 'webp': image = image.webp({ quality, lossless, smartSubsample: true, effort: 4 }); break;
+    // exact keeps the colour under fully transparent pixels, which lossless must not drop.
+    case 'webp': image = image.webp({ quality, lossless, exact: lossless, smartSubsample: true, effort: 4 }); break;
     case 'avif': image = image.avif({ quality, lossless, effort: 4 }); break;
   }
   await image.toFile(file);
