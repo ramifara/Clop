@@ -15,6 +15,7 @@ import type { MediaJobOptions, MediaKind, MediaOutput } from '../core/media/type
 import { safeFileName } from '../core/template';
 import { imageThumbnail, mediaThumbnail } from './thumbnails';
 import { imageCompression, parseOptions } from './settings';
+import { mediaKind } from './clipboard';
 
 sharp.concurrency(2);
 sharp.cache({ memory: 32, files: 0, items: 32 });
@@ -51,7 +52,7 @@ export class ItemEngine extends EventEmitter {
   private kindOf(id: string): MediaKind { return this.entries.get(id)?.result.kind ?? 'image'; }
   /** Imports a local file under `name` (its own by default). */
   async importPath(file: string, source: ItemResult['source'], options: ImageOptions, name = path.basename(file)) {
-    const info = await stat(file);
+    const info = await stat(file).catch(error => { throw unreadable(file, error); });
     if (!info.isFile()) throw new Error(`${path.basename(file)} is not a file.`);
     if (info.size > LIMIT && await detectKind(file).catch(() => undefined) === 'image') throw new Error('Choose an image file smaller than 128 MB.');
     // Copying reads the file, which makes OneDrive download a files-on-demand placeholder. One that cannot download fails here.
@@ -98,7 +99,12 @@ export class ItemEngine extends EventEmitter {
   private async stageMedia(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'> & { kind: Exclude<MediaKind, 'image'> }): Promise<Entry> {
     const signal = this.controller.signal;
     const info = base.kind === 'pdf' ? undefined : await probe(staged, { signal }) as VideoInfo | AudioInfo;
-    const video = info?.kind === 'video' ? info : undefined, format = path.extname(staged).slice(1).toLowerCase() || base.kind;
+    // A download may have no extension, or the wrong one; the tools and the pasted file need one that matches the content.
+    if (mediaKind(staged) !== base.kind) {
+      const named = path.join(path.dirname(staged), `${path.parse(staged).name || 'file'}.${mediaExtension(info)}`);
+      await rename(staged, named); staged = named;
+    }
+    const video = info?.kind === 'video' ? info : undefined, format = path.extname(staged).slice(1).toLowerCase();
     const preview = await mediaThumbnail(base.kind, staged, { durationMs: info?.durationMs, signal }), bytes = (await stat(staged)).size;
     const result: ItemResult = {
       ...base, originalBytes: bytes, outputBytes: bytes, originalWidth: video?.width ?? 0, originalHeight: video?.height ?? 0, width: video?.width ?? 0, height: video?.height ?? 0,
@@ -160,6 +166,13 @@ export class ItemEngine extends EventEmitter {
   async idle() { await Promise.all(this.queues.values()); }
   /** Stops every running and queued job, for quitting. Later imports are refused. */
   abort() { this.controller.abort(); }
+}
+/** The usual extension for a video or audio container ffprobe names (`mov,mp4,m4a,…`, `matroska,webm`, `ogg`…); PDF without `info`. */
+export function mediaExtension(info: VideoInfo | AudioInfo | undefined) {
+  if (!info) return 'pdf';
+  const names = info.format.split(','), has = (name: string) => names.includes(name);
+  if (info.kind === 'video') return has('mp4') ? 'mp4' : has('webm') && /^(vp8|vp9|av1)$/.test(info.codec ?? '') ? 'webm' : has('matroska') ? 'mkv' : has('avi') ? 'avi' : has('mpeg') ? 'mpg' : 'mp4';
+  return has('mp4') ? 'm4a' : has('mp3') ? 'mp3' : has('ogg') ? (info.codec === 'opus' ? 'opus' : 'ogg') : has('flac') ? 'flac' : has('wav') ? 'wav' : has('aiff') ? 'aiff' : has('aac') ? 'aac' : 'm4a';
 }
 function unreadable(file: string, error: unknown) {
   const name = path.basename(file), code = (error as NodeJS.ErrnoException).code ?? '';

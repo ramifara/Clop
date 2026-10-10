@@ -234,9 +234,21 @@ test('names an imported file as asked and reports files it cannot read', async t
   const id = await engine.importPath(file, 'clipboard', balanced, 'clop_2026-10-10_7.png');
   assert.equal(engine.get(id).result.name, 'clop_2026-10-10_7.png');
   assert.match(path.basename(engine.output(id)), /^clop_2026-10-10_7\.png$/);
-  await assert.rejects(engine.importPath(path.join(dir, 'missing.mp4'), 'drop', balanced), { code: 'ENOENT' });
+  await assert.rejects(engine.importPath(path.join(dir, 'missing.mp4'), 'drop', balanced), /missing\.mp4 no longer exists/);
   if (process.platform !== 'win32' && process.getuid?.() !== 0) {
     await chmod(file, 0o000);
     await assert.rejects(engine.importPath(file, 'drop', balanced), /Could not read source\.png/);
   }
+});
+test('names downloads without a matching extension by their content', async t => {
+  const f = await media(t, 'gs'); if (!f) return;
+  const { engine, dir } = f;
+  const song = await readFile(await tone(path.join(dir, 'song.mp3'), { codec: ['-c:a', 'libmp3lame', '-b:a', '320k'] }));
+  const audio = await engine.importBuffer(song, 'download', 'drop', balanced);
+  assert.equal(engine.get(audio).result.status, 'ready', engine.get(audio).result.error);
+  assert.deepEqual([engine.get(audio).result.format, path.basename(engine.output(audio))], ['mp3', 'download.mp3']);
+  const pdf = await engine.importBuffer(Buffer.from(await photoPDF()), 'view.php', 'drop', balanced);
+  assert.deepEqual([engine.get(pdf).result.kind, engine.get(pdf).result.format, path.basename(engine.output(pdf))], ['pdf', 'pdf', 'view.pdf']);
+  await engine.restore(pdf);
+  assert.equal(path.extname(engine.output(pdf)), '.pdf');
 });
