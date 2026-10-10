@@ -25,6 +25,12 @@ test('settles quick successive writes into a single pickup', () => {
   advance(1);
   assert.deepEqual(picked, [2]);
 });
+test('a copy that changes the clipboard sequence twice is one pickup, not an editing session', () => {
+  const { pickup, picked, advance, image } = harness();
+  pickup.change(image(1, 40)); advance(50);
+  pickup.change(image(2, 40)); advance(300);
+  assert.deepEqual(picked, [2]);
+});
 test('a known auto-copy editor waits until the user leaves it, then picks only the last version', () => {
   const { pickup, picked, advance, image } = harness();
   pickup.change(image(1, 20, 'snippingtool')); advance(5000);
