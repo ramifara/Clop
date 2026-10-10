@@ -6,7 +6,7 @@ import { PDFDocument } from '@cantoo/pdf-lib';
 import sharp from 'sharp';
 import { run } from '../run';
 import { analysePDFDPI, cropPDF, dropLowDPIOutliers, gsArgs, imageDPIs, loadPDF, nextPDFDPIStepDown, optimisePDF, renderPDFPages, resolvePDFDPI } from './pdf';
-import { A4_RATIO, boxes, leftovers, photoPDF, textPDF, workspace } from './pdf.fixtures';
+import { A4_RATIO, boxes, leftovers, photoPDF, textPDF, workspace, wrapGhostscript } from './pdf.fixtures';
 
 test('Ghostscript arguments follow PDF.swift', () => {
   const lossy = gsArgs('in.pdf', 'out.pdf', { lossy: true, dpi: 150 });
@@ -112,6 +112,45 @@ test('aborting stops every Ghostscript chunk and cleans up', async t => {
   const controller = new AbortController();
   const job = optimisePDF(input, w.out, { signal: controller.signal, onProgress: () => controller.abort() });
   await assert.rejects(job, { name: 'AbortError' });
+  assert.deepEqual(await leftovers(w.out), []);
+});
+
+test('every Ghostscript process shares four slots, even across two chunked jobs', async t => {
+  if (process.platform === 'win32') return t.skip('the logging gs wrapper is a shell script');
+  const w = await workspace(t, 'gs'); if (!w) return;
+  const gs = await wrapGhostscript(t, w.dir);
+  const pdf = await textPDF(400);
+  const [a, b] = await Promise.all([optimisePDF(await w.file('a.pdf', pdf), w.out, { allowLarger: true }), optimisePDF(await w.file('b.pdf', pdf), w.out, { allowLarger: true })]);
+  assert.deepEqual([a.pages, b.pages], [400, 400]);
+  assert.equal(await gs.starts(), 8, 'each job ran four 100-page chunks');
+  const peak = await gs.peak();
+  t.diagnostic(`at most ${peak} Ghostscript processes at once`);
+  assert.ok(peak >= 2 && peak <= 4, `peak ${peak}`);
+});
+
+test('a failed Ghostscript pass is retried three times, a chunk twice, and nothing else is', async t => {
+  if (process.platform === 'win32') return t.skip('the failing gs wrapper is a shell script');
+  const w = await workspace(t, 'gs'); if (!w) return;
+  const twice = await wrapGhostscript(t, path.join(w.dir, 'twice'), 2);
+  const progress: number[] = [];
+  const output = await optimisePDF(await w.file('doc.pdf', await textPDF(3)), w.out, { allowLarger: true, onProgress: f => progress.push(f) });
+  assert.equal(output.pages, 3);
+  assert.equal(await twice.starts(), 3);
+  assert.deepEqual(progress, [1 / 3, 2 / 3, 1]);
+
+  const always = await wrapGhostscript(t, path.join(w.dir, 'always'), 99);
+  await assert.rejects(optimisePDF(await w.file('fails.pdf', await textPDF(3)), w.out), /simulated Ghostscript failure/);
+  assert.equal(await always.starts(), 3);
+  await assert.rejects(optimisePDF(await w.file('long.pdf', await textPDF(160)), w.out), /simulated Ghostscript failure/);
+  // Two chunks with two tries each, though the first chunk to give up stops the other one's retry.
+  const chunkStarts = await always.starts() - 3;
+  assert.ok(chunkStarts >= 2 && chunkStarts <= 4, `${chunkStarts} chunk runs`);
+  // An invalid PDF fails before Ghostscript, and an aborted pass is not retried.
+  await assert.rejects(optimisePDF(await w.file('broken.pdf', Buffer.from('not a pdf')), w.out), /not a valid PDF/);
+  const fresh = await wrapGhostscript(t, path.join(w.dir, 'abort'));
+  const controller = new AbortController();
+  await assert.rejects(optimisePDF(await w.file('abort.pdf', await textPDF(100)), w.out, { signal: controller.signal, onProgress: () => controller.abort() }), { name: 'AbortError' });
+  assert.equal(await fresh.starts(), 1);
   assert.deepEqual(await leftovers(w.out), []);
 });
 

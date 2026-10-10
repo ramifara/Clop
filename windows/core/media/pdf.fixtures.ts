@@ -1,9 +1,10 @@
 import type { TestContext } from 'node:test';
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { degrees, PDFDocument } from '@cantoo/pdf-lib';
 import { needTools } from '../testing';
+import { toolPath } from '../tools';
 import { findPaperSize } from '../data/paperSizes';
 import { photo } from './image.fixtures';
 
@@ -39,3 +40,34 @@ export async function textPDF(pages: number, { size = LETTER, width = (_: number
 export const boxes = async (file: string) => (await PDFDocument.load(await readFile(file))).getPages().map(p => ({ media: p.getMediaBox(), crop: p.getCropBox() }));
 export const round = (box: { x: number; y: number; width: number; height: number }) => Object.fromEntries(Object.entries(box).map(([k, v]) => [k, Math.round(v * 100) / 100]));
 export const leftovers = async (dir: string) => (await readdir(dir)).filter(name => name.startsWith('.clop-') || name.endsWith('.partial'));
+
+/**
+ * Puts a logging `gs` in front of the real one through CLOP_TOOLS_DIR, so a test can see how many Ghostscript processes ran
+ * and overlapped. Its first `fail` runs exit with an error. POSIX shell only; the caller skips it on Windows.
+ */
+// Resolved before any wrapper takes over CLOP_TOOLS_DIR, so wrappers never call each other.
+let realGs: string | undefined;
+export async function wrapGhostscript(t: TestContext, dir: string, fail = 0) {
+  realGs ??= toolPath('gs');
+  const bin = path.join(dir, 'gs-wrapper'), log = path.join(dir, 'gs.log'), count = path.join(dir, 'gs.count');
+  await mkdir(bin, { recursive: true });
+  await writeFile(path.join(bin, 'gs'), [
+    '#!/bin/sh',
+    `echo start >> '${log}'`,
+    `n=$(cat '${count}' 2>/dev/null || echo 0); echo $((n + 1)) > '${count}'`,
+    `if [ "$n" -lt ${fail} ]; then echo 'simulated Ghostscript failure' >&2; echo end >> '${log}'; exit 1; fi`,
+    `'${realGs}' "$@"; code=$?`,
+    `echo end >> '${log}'`,
+    'exit $code',
+  ].join('\n'));
+  await chmod(path.join(bin, 'gs'), 0o755);
+  const previous = process.env.CLOP_TOOLS_DIR;
+  process.env.CLOP_TOOLS_DIR = bin;
+  t.after(() => { if (previous === undefined) delete process.env.CLOP_TOOLS_DIR; else process.env.CLOP_TOOLS_DIR = previous; });
+  const events = async () => (await readFile(log, 'utf8').catch(() => '')).split('\n').filter(Boolean);
+  return {
+    starts: async () => (await events()).filter(e => e === 'start').length,
+    /** The most processes that were running at the same time. */
+    peak: async () => { let running = 0, peak = 0; for (const e of await events()) peak = Math.max(peak, running += e === 'start' ? 1 : -1); return peak; },
+  };
+}

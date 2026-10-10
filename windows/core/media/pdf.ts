@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { availableParallelism, homedir } from 'node:os';
 import { mkdir, mkdtemp, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { queue, retryBusy, run } from '../run';
+import { limiter, queue, retryBusy, run, ToolError } from '../run';
 import { toolPath } from '../tools';
 import type { CompressionQuality } from '../settings/schema';
 import { optimiseImage } from './image';
@@ -83,19 +83,32 @@ export function gsArgs(input: string, output: string, { lossy, dpi }: { lossy: b
   return [...GS_BASE_ARGS, ...gsResolutionArgs(clamped), ...(lossy ? gsLossyArgs(downsample) : gsLosslessArgs(downsample)), ...outArgs, ...qFactorArgs, ...GS_PRE_ARGS, input, ...GS_POST_ARGS];
 }
 
+// Every Ghostscript process in Clop shares these slots, so two queued PDF jobs with four chunks each still run four at once.
+const gsSlots = limiter(PARALLEL_CONCURRENCY);
+const isPageLine = (line: string) => /^Page \d+/.test(line);
+
 /**
- * Runs Ghostscript with its stdout (where page progress goes) sent to stderr, so progress arrives line by line.
+ * Runs Ghostscript with its stdout (where page progress goes) sent to stderr, so progress arrives line by line, and
+ * reports each finished page to `onPage`. A failed run is retried up to `tries` times, as tryProc does in PDF.swift,
+ * but not after an abort or a failure to start; a retry first takes back the pages the failed attempt reported.
  * The Windows build reads its init files from the bundled lib and Resource folders next to gswin64c.exe.
  */
-function gs(args: string[], { signal, cwd, onLine }: { signal?: AbortSignal; cwd?: string; onLine?: (line: string) => void }) {
+async function gs(args: string[], { signal, cwd, onPage, tries = 1 }: { signal?: AbortSignal; cwd?: string; onPage?: (delta: number) => void; tries?: number }) {
   const lib: string[] = [];
   if (process.platform === 'win32') {
     const dir = path.dirname(toolPath('gs'));
     lib.push(...[path.join(dir, 'Resource', 'Init'), path.join(dir, 'lib'), path.join(dir, 'Resource', 'Font')].filter(d => existsSync(d)));
   }
-  return run('gs', [...(lib.length ? [`-I${lib.join(';')}`] : []), '-sstdout=%stderr', ...args], { signal, cwd, onStderrLine: onLine });
+  const fullArgs = [...(lib.length ? [`-I${lib.join(';')}`] : []), '-sstdout=%stderr', ...args];
+  for (let attempt = 1; ; attempt++) {
+    let pages = 0;
+    const onStderrLine = (line: string) => { if (isPageLine(line)) { pages++; onPage?.(1); } };
+    try { return await gsSlots(() => run('gs', fullArgs, { signal, cwd, onStderrLine })); } catch (error) {
+      if (attempt >= tries || signal?.aborted || !(error instanceof ToolError)) throw error;
+      if (pages) onPage?.(-pages);
+    }
+  }
 }
-const isPageLine = (line: string) => /^Page \d+/.test(line);
 
 // DPI detection (PDF.swift): each image XObject's pixel size over its page's MediaBox in inches. This assumes
 // every image fills its page, as Clop on macOS does; partial-page images read low and the outlier filter drops them.
@@ -215,14 +228,15 @@ async function optimise(input: string, outputDir: string, opts: PDFOptimiseOptio
   const { chosen: dpi, maxSourceDPI: sourceDPI } = resolvePDFDPI(imageDPIs(doc), { dpi: opts.dpi, setting: opts.dpiSetting, aggressive: opts.aggressive });
   const args = (output: string) => gsArgs(input, output, { lossy: dpi < PDF_DPI_NO_DOWNSAMPLE, dpi });
   let done = 0;
-  const onLine = (line: string) => { if (isPageLine(line)) opts.onProgress?.(Math.min(++done, pages) / pages); };
+  // A retried run takes back its pages, so progress only reports when it moves forward.
+  const onPage = (delta: number) => { done += delta; if (delta > 0) opts.onProgress?.(Math.min(done, pages) / pages); };
 
   await mkdir(outputDir, { recursive: true });
   const tmp = await mkdtemp(path.join(outputDir, '.clop-'));
   try {
     const result = path.join(tmp, 'optimised.pdf');
-    if (pages <= PARALLEL_PAGE_THRESHOLD) await gs(args(result), { signal: opts.signal, cwd: tmp, onLine });
-    else await optimiseInChunks(pages, tmp, result, args, opts.signal, onLine);
+    if (pages <= PARALLEL_PAGE_THRESHOLD) await gs(args(result), { signal: opts.signal, cwd: tmp, onPage, tries: 3 });
+    else await optimiseInChunks(pages, tmp, result, args, opts.signal, onPage);
     const [bytes, originalBytes] = [(await stat(result)).size, (await stat(input)).size];
     if (!opts.allowLarger && bytes >= originalBytes) return { path: input, bytes: originalBytes, format: 'pdf', pages, unchanged: true, dpi, sourceDPI };
     const output = outputFile(input, outputDir, opts.name, 'optimised');
@@ -231,10 +245,10 @@ async function optimise(input: string, outputDir: string, opts: PDFOptimiseOptio
   } finally { await rm(tmp, { recursive: true, force: true }); }
 }
 
-async function optimiseInChunks(pages: number, tmp: string, result: string, args: (output: string) => string[], signal: AbortSignal | undefined, onLine: (line: string) => void) {
+async function optimiseInChunks(pages: number, tmp: string, result: string, args: (output: string) => string[], signal: AbortSignal | undefined, onPage: (delta: number) => void) {
   const chunks: { first: number; last: number; file: string }[] = [];
   for (let first = 1; first <= pages; first += PARALLEL_CHUNK_SIZE) chunks.push({ first, last: Math.min(first + PARALLEL_CHUNK_SIZE - 1, pages), file: path.join(tmp, `chunk-${chunks.length}.pdf`) });
-  await inParallel(chunks, PARALLEL_CONCURRENCY, signal, (chunk, signal) => gs([`-dFirstPage=${chunk.first}`, `-dLastPage=${chunk.last}`, ...args(chunk.file)], { signal, cwd: tmp, onLine }).then(() => {}));
+  await inParallel(chunks, PARALLEL_CONCURRENCY, signal, (chunk, signal) => gs([`-dFirstPage=${chunk.first}`, `-dLastPage=${chunk.last}`, ...args(chunk.file)], { signal, cwd: tmp, onPage, tries: 2 }).then(() => {}));
   // Like PDFKit's page-by-page merge on macOS, this keeps the pages and drops document-level outlines.
   const merged = await PDFDocument.create({ updateMetadata: false });
   for (const chunk of chunks) {
@@ -282,7 +296,7 @@ async function render(input: string, outputDir: string, opts: PDFRenderOptions &
     await inParallel(ranges, workers, opts.signal, (range, signal) => gs([
       '-dSAFER', '-dBATCH', '-dNOPAUSE', '-dUseCropBox', `-r${72 * (opts.scale ?? 2)}`, '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4', ...device,
       `-dFirstPage=${range.first}`, `-dLastPage=${range.last}`, '-o', `${range.first}-%d.${ext}`, input,
-    ], { signal, cwd: tmp, onLine: line => { if (isPageLine(line) && !opts.optimise) opts.onProgress?.(++done / total); } }).then(() => {}));
+    ], { signal, cwd: tmp, onPage: () => { if (!opts.optimise) opts.onProgress?.(++done / total); } }).then(() => {}));
     const pages = ranges.flatMap(range => Array.from({ length: range.last - range.first + 1 }, (_, i) => ({ page: range.first + i, rendered: path.join(tmp, `${range.first}-${i + 1}.${ext}`) })));
     // The image queue limits how many optimise at once; every page settles before the temporary folder goes.
     const settled = await Promise.allSettled(pages.map(async ({ page, rendered }): Promise<MediaOutput> => {
