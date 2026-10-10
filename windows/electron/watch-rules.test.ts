@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -107,4 +107,11 @@ test('the rescan after lost changes finds recently changed files, skipping hidde
   // A file's creation time can be older than its modification time but never newer, so the old file only counts where creation times are kept.
   assert.deepEqual(found.map(file => path.relative(dir, file).split(path.sep).join('/')).filter(file => file !== 'old.png').sort(), ['a/b/deep.png', 'new.png']);
   assert.equal((await recentFiles(dir, Date.now() - 60_000, { limit: 2 })).length <= 2, true);
+});
+test('the rescan counts links to files as files and does not follow links to folders', { skip: process.platform === 'win32' }, async t => {
+  const dir = await folder(t), outside = await folder(t);
+  await writeFile(path.join(outside, 'target.png'), 'x'); await mkdir(path.join(outside, 'tree')); await writeFile(path.join(outside, 'tree', 'inside.png'), 'x');
+  await symlink(path.join(outside, 'target.png'), path.join(dir, 'link.png'));
+  await symlink(path.join(outside, 'tree'), path.join(dir, 'linked-tree'));
+  assert.deepEqual((await recentFiles(dir, Date.now() - 60_000)).map(file => path.basename(file)), ['link.png']);
 });

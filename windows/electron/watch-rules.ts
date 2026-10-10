@@ -127,7 +127,7 @@ export async function writable(file: string, { tries = 5, delayMs = 300 } = {}):
 
 /**
  * Files under `root` changed since `since` (by modification or creation time), for the rescan after a watch lost changes. Hidden
- * folders, links and folders `skip` names are not entered, and at most `limit` entries are looked at.
+ * folders, links to folders and folders `skip` names are not entered, and at most `limit` entries are looked at.
  */
 export async function recentFiles(root: string, since: number, { limit = 20_000, skip }: { limit?: number; skip?: (dir: string) => boolean } = {}): Promise<string[]> {
   const found: string[] = [], folders = [root];
@@ -139,9 +139,10 @@ export async function recentFiles(root: string, since: number, { limit = 20_000,
       const file = path.join(folder, entry.name);
       if (entry.name.startsWith('.')) continue;
       if (entry.isDirectory()) { if (!skip?.(file)) folders.push(file); continue; }
-      if (!entry.isFile()) continue;
+      // On Windows a cloud placeholder can read as a link; a link that leads to a file counts as one, a link to a folder is not followed.
+      if (!entry.isFile() && !entry.isSymbolicLink()) continue;
       const info = await stat(file).catch(() => undefined);
-      if (info && Math.max(info.mtimeMs, info.birthtimeMs) >= since) found.push(file);
+      if (info?.isFile() && Math.max(info.mtimeMs, info.birthtimeMs) >= since) found.push(file);
     }
   }
   return found;
