@@ -10,6 +10,7 @@ import { CONVERSION_EXTENSIONS, encoderFamily, videoConversionArgs, videoEncoder
 import { chooseEncoder, hevcHardware } from './videoEncoders';
 import { moveResult, withTemp } from './output';
 import type { MediaJobOptions, MediaOutput } from './types';
+import { watermarkFilters, type Watermark } from './watermark';
 
 /** A crop or resize target; `smartCrop` does not apply to video. */
 export type VideoCrop = CropSpec;
@@ -22,6 +23,8 @@ export interface VideoOptimiseOptions {
   format?: string;
   /** Re-encode to another codec (`videoConversionArgs`). Without a compression the historical fixed arguments apply. */
   convert?: { codec: VideoCodecConversion; compression?: CompressionQuality };
+  /** Video encoder arguments used as given instead of the compression's (`ffmpegEncoderOverride`), such as the targetSize pipeline step's bitrate-capped libx264. */
+  encoderArgs?: string[];
   /** Size to scale to. */
   width?: number; height?: number;
   crop?: VideoCrop;
@@ -176,7 +179,7 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
   const inputBytes = (await stat(input)).size, inputExt = extension(input);
   const convert = opts.convert, wantsHardwareHEVC = convert?.codec === 'hevc' && (!convert.compression || convert.compression.tier === 'fast');
   const ext = (convert && CONVERSION_EXTENSIONS[convert.codec]) ?? (opts.format ?? (inputExt || 'mp4')).toLowerCase();
-  const useEncoder = !!convert || ENCODED_CONTAINERS.has(ext);
+  const useEncoder = !!convert || !!opts.encoderArgs || ENCODED_CONTAINERS.has(ext);
   const family = encoderFamily(opts.encoder ?? 'auto');
   const outputCodec = convert?.codec ?? (useEncoder ? family : ext === 'webm' ? 'vp9' : 'h264');
   const toneMap = info.hdr && (opts.hdrToSdr ?? outputCodec === 'h264');
@@ -221,6 +224,7 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
 
   let encoder: string[] = [];
   if (conversion) encoder = conversion.args;
+  else if (opts.encoderArgs) encoder = opts.encoderArgs;
   else if (useEncoder) {
     // Only the fast tier uses hardware, so only it waits for encoder detection.
     const hardware = tier === 'fast' && !opts.aggressive ? (await chooseEncoder(opts.encoder)).hardware : undefined;
@@ -247,7 +251,7 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
     await firstWorking('ffmpeg', argSets, { signal, onStderrLine: ffmpegProgress(totalUs, onProgress) });
     // Only a plain optimisation may hand back the input: an explicitly requested change would be silently dropped.
     // convertAudioToAAC is a standing setting, so like macOS it does not stop the input being kept.
-    const plain = !size && !crop && !speed && !conversion && ext === inputExt && !opts.removeAudio && !(toneMap && opts.hdrToSdr);
+    const plain = !size && !crop && !speed && !conversion && !opts.encoderArgs && ext === inputExt && !opts.removeAudio && !(toneMap && opts.hdrToSdr);
     if (plain && !opts.allowLarger && (await stat(out)).size >= inputBytes) {
       onProgress?.(1);
       return { path: input, bytes: inputBytes, format: inputExt, width: info.width, height: info.height, durationMs: info.durationMs, unchanged: true };
@@ -272,6 +276,30 @@ export function removeVideoAudio(input: string, outputDir: string, opts: MediaJo
       await firstWorking('ffmpeg', tries(['-y', '-nostdin', '-hide_banner', '-i', input, '-an', '-vcodec', 'copy', ...(strip ? ['-map_metadata', '-1'] : []), ...movflags, ...PROGRESS, out]),
         { signal: opts.signal, onStderrLine: ffmpegProgress(info.durationMs && info.durationMs * 1000, onProgress) });
       const result = await finish(input, out, outputDir, opts.name, ext, opts.signal);
+      onProgress?.(1);
+      return result;
+    });
+  });
+}
+
+/**
+ * `watermarkWithFFmpeg` (PipelineExecution.swift): overlays an image on every frame, sized and placed as the image path
+ * does and kept inside the frame, copying the audio. The video is re-encoded with ffmpeg's default for the container.
+ */
+export function watermarkVideo(input: string, outputDir: string, opts: Omit<MediaJobOptions, 'aggressive'> & { watermark: Watermark; name?: string }): Promise<MediaOutput> {
+  return queue('video')(async () => {
+    const { signal, watermark } = opts;
+    signal?.throwIfAborted();
+    if (!(await stat(watermark.file).then(info => info.isFile(), () => false))) throw new Error(`Watermark image not found: ${watermark.file}`);
+    const info = videoInfo(await ffprobe(input, { signal }));
+    if (!(info.width > 0 && info.height > 0)) throw new Error(`Clop cannot read the size of ${path.basename(input)} to watermark it.`);
+    const ext = extension(input) || 'mp4', filters = watermarkFilters(info.width, watermark, info.height);
+    return withTemp(outputDir, async tmp => {
+      const out = path.join(tmp, `video.${ext}`), onProgress = rising(opts.onProgress);
+      const args = ['-y', '-nostdin', '-hide_banner', '-i', input, '-i', watermark.file, '-filter_complex', `[1:v]${filters.scale}[wm];[0:v][wm]${filters.overlay}`, '-c:a', 'copy', ...PROGRESS, out];
+      // An audio codec the container cannot copy is re-encoded on the second try.
+      await firstWorking('ffmpeg', [args, without(args, ['-c:a', 'copy'])], { signal, onStderrLine: ffmpegProgress(info.durationMs && info.durationMs * 1000, onProgress) });
+      const result = await finish(input, out, outputDir, opts.name, ext, signal);
       onProgress?.(1);
       return result;
     });
