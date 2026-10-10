@@ -37,7 +37,8 @@ const MAX_BACKOFF = 5 * 60_000;
 /**
  * Windows also reports attribute, last-access and security changes as changes. A file that only changed like that keeps an
  * old modification time; one modified within this long before its first notification counts as new content. Files that
- * appear, are renamed in or are copied in (which keeps their old modification time) are reported as created and always count.
+ * appear, are renamed in or are copied in (which keeps their old modification time) are reported as created and always count,
+ * and so does a copy written over a file seen before, which changes its size or file id.
  */
 const FRESH_MS = 5000;
 /** How long to wait before watching a folder again after its `failures`th failure in a row: the poll interval, doubling, up to five minutes. */
@@ -65,8 +66,10 @@ export class FolderWatcher {
   private recent = new Map<string, { file: string; dir: string; timer?: NodeJS.Timeout }>();
   private cancelled = new Set<string>();
   private running = new Set<string>();
-  /** Files waiting for their writes to finish: when they were first reported, and whether they appeared then (rather than changed). */
-  private settling = new Map<string, { timer?: NodeJS.Timeout; created: boolean; at: number }>();
+  /** Files waiting for their writes to finish: when they were first reported, and whether they have new content. */
+  private settling = new Map<string, { timer?: NodeJS.Timeout; content: boolean; at: number }>();
+  /** Size and file id of files seen settled, so a replaced file's new content shows even when it keeps an old modification time. */
+  private sightings = new Map<string, string>();
   /** Failures in a row to watch each folder, and when to try it next; a folder's first reported change resets it. */
   private failures = new Map<string, { count: number; next: number }>();
   private pollAt = Infinity;
@@ -153,18 +156,24 @@ export class FolderWatcher {
     const rootId = this.id(root);
     this.failures.delete(rootId);
     const id = this.id(file), waiting = this.settling.get(id);
-    if (waiting) { waiting.created ||= created; return; }
-    const entry: { timer?: NodeJS.Timeout; created: boolean; at: number } = { created, at: Date.now() };
-    let last = '', since = Date.now();
+    if (waiting) { waiting.content ||= created; return; }
+    const entry: { timer?: NodeJS.Timeout; content: boolean; at: number } = { content: created, at: Date.now() };
+    const before = this.sightings.get(id);
+    let last = '', since = Date.now(), checks = 0;
     const check = async () => {
       const info = await stat(file).catch(() => undefined);
       if (!info?.isFile() || !this.subscriptions.has(rootId) || this.settling.get(id) !== entry) { if (this.settling.get(id) === entry) this.settling.delete(id); return; }
-      const now = `${info.size}:${info.mtimeMs}`;
+      const now = `${info.size}:${info.mtimeMs}`, identity = `${info.size}:${info.ino}`;
+      // New content: a fresh modification time, a size or file id unlike the last time it was seen, or writes still going on
+      // while it settles. A copy that replaces a file (Explorer's replace) can end with the source's old modification time.
+      if (info.mtimeMs >= entry.at - FRESH_MS || (before !== undefined && before !== identity) || (checks > 0 && now !== last)) entry.content = true;
+      checks++;
       if (now !== last) { last = now; since = Date.now(); }
       if (Date.now() - since < this.timing.stabilityMs) { entry.timer = setTimeout(check, this.timing.checkMs); return; }
       this.settling.delete(id);
-      if (!entry.created && info.mtimeMs < entry.at - FRESH_MS) return;
-      this.event(file).catch(() => {});
+      this.sightings.delete(id); this.sightings.set(id, identity);
+      for (const old of this.sightings.keys()) { if (this.sightings.size <= 10_000) break; this.sightings.delete(old); }
+      if (entry.content) this.event(file).catch(() => {});
     };
     entry.timer = setTimeout(check, this.timing.checkMs);
     this.settling.set(id, entry);

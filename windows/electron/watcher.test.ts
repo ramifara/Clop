@@ -218,3 +218,16 @@ test('overlapping updates still end up watching', async t => {
     await until(() => state.handled.length === 1, `nothing was watched after overlapping updates ${ticks} ticks apart`);
   }
 });
+test('a copy that replaces a file and keeps the source\'s old modification time is new content', async t => {
+  const { dir, state, watcher } = await setup(t);
+  const old = path.join(dir, 'replaced.png'), hour = new Date(Date.now() - 3_600_000);
+  await image(old); await utimes(old, hour, hour);
+  await watcher.update();
+  // Seen once, for a change that is not new content.
+  await chmod(old, 0o600);
+  await pause(400);
+  assert.deepEqual(state.handled, []);
+  // Explorer writes the copy over the file, then gives it the source's modification time.
+  await sharp({ create: { width: 90, height: 40, channels: 3, background: '#335577' } }).png().toFile(old); await utimes(old, hour, hour);
+  await until(() => state.handled.length === 1, 'the replaced file was not optimised');
+});
