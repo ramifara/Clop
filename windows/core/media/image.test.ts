@@ -180,6 +180,39 @@ test('the lossless tier keeps 16-bit samples, colour under transparent pixels, a
   const animatedWebP = await w.file('animation.webp', await animation('webp', { frames: 4 }));
   const moving = await optimiseImage(animatedWebP, w.out, { compression: lossless, format: 'gif', name: 'moving' });
   assert.deepEqual([moving.format, (await frames(moving.path)).pages], ['webp', 4]);
+  const animatedGIF = await w.file('animation.gif', await animation('gif', { frames: 4 }));
+  const scaled = await optimiseImage(animatedGIF, w.out, { compression: lossless, width: 48, height: 32, name: 'scaled-gif' });
+  assert.deepEqual([scaled.format, scaled.width, scaled.height, (await frames(scaled.path)).pages], ['webp', 48, 32, 4]);
+});
+
+test('lossless animated WebP keeps the colour under transparent pixels and its timing', async t => {
+  const w = await workspace(t); if (!w) return;
+  const width = 32, height = 24, pages: Buffer[] = [];
+  for (let f = 0; f < 3; f++) {
+    const rgba = Buffer.alloc(width * height * 4);
+    for (let i = 0; i < rgba.length; i += 4) rgba.set([(i + f * 40) % 251, i % 241, (i * 3) % 239, i % 12 ? 0 : 255], i);
+    pages.push(await sharp(rgba, { raw: { width, height, channels: 4 } }).png().toBuffer());
+  }
+  // A large description makes sure the stripped result is smaller, so it is written rather than the input kept.
+  const input = await w.file('hidden.webp', sharp(pages, { join: { animated: true } }).withExif({ IFD0: { ImageDescription: 'x'.repeat(20_000) } })
+    .webp({ lossless: true, exact: true, delay: [100, 200, 300], loop: 2 }));
+  const output = await optimiseImage(input, w.out, { compression: lossless, name: 'hidden' });
+  assert.equal(output.unchanged, undefined);
+  const meta = await frames(output.path);
+  assert.deepEqual([meta.pages, meta.delay, meta.loop], [3, [100, 200, 300], 2]);
+  assert.deepEqual(await pixels(output.path), await pixels(input));
+});
+
+test('requantizing a downscaled greyscale PNG counts its colours correctly', async t => {
+  const w = await workspace(t); if (!w) return;
+  // An odd pixel count: four bytes per pixel only fits because sharp's raw output is sRGB, even for a grey PNG.
+  const size = 499, data = Buffer.alloc(size * size);
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) data[y * size + x] = (x + y) % 2 ? 230 : 20;
+  const input = await w.file('grey.png', sharp(data, { raw: { width: size, height: size, channels: 1 } }).toColourspace('b-w').png({ compressionLevel: 9 }));
+  assert.equal((await sharp(input).metadata()).channels, 1);
+  // Scaled to 437 pixels the checkerboard turns into many greys, so pngquant's result outgrows the original.
+  const output = await optimiseImage(input, w.out, { compression: at(30), width: 437, height: 437 });
+  assert.ok(output.bytes <= (await stat(input)).size);
 });
 
 test('with stripping off, a converted image keeps its metadata', async t => {
@@ -229,14 +262,37 @@ test('aborting while a tool runs stops it and removes the temporary files', asyn
   assert.ok((await readFile(input)).length > 0);
 });
 
-test('a failed adaptive comparison is a warning, not a failure', { skip: process.platform === 'win32' && 'replaces jpegoptim with a shell script' }, async t => {
-  const w = await workspace(t); if (!w) return;
-  const tools = path.join(w.dir, 'tools'), broken = path.join(tools, 'jpegoptim');
+/** Puts a shell script in front of the real jpegoptim for one test. */
+async function fakeJpegoptim(t: TestContext, dir: string, script: string) {
+  const tools = path.join(dir, 'tools');
   await mkdir(tools);
-  await writeFile(broken, '#!/bin/sh\necho "jpegoptim is broken" >&2\nexit 1\n', { mode: 0o755 });
+  await writeFile(path.join(tools, 'jpegoptim'), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
   const previous = process.env.CLOP_TOOLS_DIR;
   process.env.CLOP_TOOLS_DIR = tools;
   t.after(() => { if (previous === undefined) delete process.env.CLOP_TOOLS_DIR; else process.env.CLOP_TOOLS_DIR = previous; });
+}
+
+test('cancelling during the adaptive comparison cancels the job', { skip: process.platform === 'win32' && 'replaces jpegoptim with a shell script' }, async t => {
+  const w = await workspace(t); if (!w) return;
+  // The JPEG candidate starts well after pngquant has finished on this small image, then hangs until killed.
+  await fakeJpegoptim(t, w.dir, 'sleep 1\ntouch started\nexec sleep 30');
+  const controller = new AbortController();
+  // With stripping off no other tool runs after the comparison, so only the comparison can notice the cancellation.
+  const job = optimiseImage(await w.file('photo.png', photo(320, 240).png()), w.out, { compression: adaptive, stripMetadata: false, signal: controller.signal });
+  const started = path.join(w.out, (await waitFor(async () => (await readdir(w.out).catch(() => [])).find(name => name.startsWith('.clop-'))))!, 'started');
+  await waitFor(() => stat(started).then(() => true, () => false));
+  controller.abort();
+  await assert.rejects(job, { name: 'AbortError' });
+  assert.deepEqual(await readdir(w.out), []);
+});
+async function waitFor<T>(check: () => Promise<T>) {
+  for (let i = 0; i < 200; i++) { const value = await check(); if (value) return value; await new Promise(resolve => setTimeout(resolve, 25)); }
+  assert.fail('timed out waiting');
+}
+
+test('a failed adaptive comparison is a warning, not a failure', { skip: process.platform === 'win32' && 'replaces jpegoptim with a shell script' }, async t => {
+  const w = await workspace(t); if (!w) return;
+  await fakeJpegoptim(t, w.dir, 'echo "jpegoptim is broken" >&2\nexit 1');
   const output = await optimiseImage(await w.file('photo.png', photo(320, 240).png()), w.out, { compression: adaptive });
   assert.equal(output.format, 'png');
   assert.equal(output.warnings?.length, 1);

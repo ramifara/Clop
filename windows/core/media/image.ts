@@ -86,7 +86,7 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
   // A JPEG keeps its pixels only when jpegoptim works on it as it is; scaled or converted, it becomes PNG.
   if (lossless && format === 'jpeg' && (resized || source !== 'jpeg')) format = 'png';
   // GIF's 256-colour palette only keeps the pixels of a GIF that is not scaled. Anything else stays in a format that can hold them.
-  if (lossless && format === 'gif' && (source !== 'gif' || (resized && !animated))) format = animated ? 'webp' : 'png';
+  if (lossless && format === 'gif' && (source !== 'gif' || resized)) format = animated ? 'webp' : 'png';
   const converting = format !== source;
 
   await mkdir(outputDir, { recursive: true });
@@ -135,7 +135,12 @@ async function optimiseAnimation(job: Job, format: ImageFormat): Promise<Encoded
   const out = path.join(job.tmp, `ffmpeg.${format}`);
   const scale = job.resized ? [`scale=${job.width}:${job.height}:flags=lanczos`] : [];
   const loop = job.meta.loop ?? 0;
-  if (format === 'webp') {
+  if (format === 'webp' && job.lossless) {
+    // ffmpeg's libwebp_anim has no exact mode, so it would change the colour under transparent pixels; sharp keeps it, with the timing and loop count.
+    let image = decode(job.input, true);
+    if (job.resized) image = image.resize(job.width, job.height, { fit: 'inside', withoutEnlargement: true });
+    await image.webp({ lossless: true, exact: true, effort: 4 }).toFile(out);
+  } else if (format === 'webp') {
     // optimiseAnimatedWebP and convertAnimatedGIFToWebP in Images.swift.
     const quality = job.lossless ? ['-lossless', '1'] : ['-q:v', String(cq.conversionQuality(job.compression))];
     await tool(job, 'ffmpeg', ['-y', '-nostdin', '-i', local(job.input), ...(scale.length ? ['-vf', scale.join(',')] : []), '-an', '-c:v', 'libwebp_anim', ...quality, '-compression_level', '6', '-loop', String(loop), local(out)]);
@@ -192,6 +197,8 @@ async function pngquant(job: Job, file: string, out: string, args?: string[]) {
 async function both(job: Job, main: Promise<string>, other: Promise<string> | undefined, otherFormat: string) {
   const [a, b] = await Promise.allSettled([main, other]);
   if (a.status === 'rejected') throw a.reason;
+  // Cancelling the job is not a failed comparison.
+  if (b.status === 'rejected' && job.opts.signal?.aborted) throw b.reason;
   if (b.status === 'rejected') job.warnings.push(`Clop could not try ${otherFormat} for this image: ${b.reason instanceof Error ? b.reason.message : String(b.reason)}`);
   return [a.value, b.status === 'fulfilled' ? b.value : undefined] as const;
 }
