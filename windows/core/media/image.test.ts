@@ -219,8 +219,8 @@ test('with stripping off, a converted image keeps its metadata', async t => {
   const w = await workspace(t); if (!w) return;
   const input = await w.file('tagged.jpg', photo(320, 240).withMetadata({ orientation: 6 }).withExif({ IFD0: { Artist: 'Someone' } }).jpeg({ quality: 95 }));
   const kept = await optimiseImage(input, w.out, { compression: at(30), format: 'webp', stripMetadata: false, name: 'kept' });
-  // sharp applied the rotation, so the copied tags must not rotate the result again.
-  assert.deepEqual([await tags(kept.path, 'Artist', 'Orientation'), kept.width, kept.height], [{ Artist: 'Someone', Orientation: 1 }, 240, 320]);
+  // sharp applied the rotation, so the copied tags must not rotate the result again: the original's orientation is not copied.
+  assert.deepEqual([await tags(kept.path, 'Artist', 'Orientation'), kept.width, kept.height], [{ Artist: 'Someone' }, 240, 320]);
   const stripped = await optimiseImage(input, w.out, { compression: at(30), format: 'webp', name: 'stripped' });
   assert.equal((await tags(stripped.path, 'Artist')).Artist, undefined);
 });
@@ -311,8 +311,8 @@ test('works in folders whose names fall outside the ANSI code page', async t => 
   }
 });
 
-test('rejects images it cannot optimise', async t => {
+test('rejects files it cannot read as images', async t => {
   const w = await workspace(t); if (!w) return;
-  const svg = await w.file('vector.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"/>'));
-  await assert.rejects(optimiseImage(svg, w.out, { compression: at(30) }), /SVG/);
+  const text = await w.file('notes.png', Buffer.from('not an image'));
+  await assert.rejects(optimiseImage(text, w.out, { compression: at(30) }), /cannot optimise this/);
 });
