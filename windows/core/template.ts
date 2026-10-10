@@ -30,10 +30,11 @@ const randomLetters = () => Array.from({ length: 5 }, () => LETTERS[randomInt(LE
 const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 /** The characters `String.safeFilename` replaces on macOS, plus the ones Windows adds (`\ ?` and control characters). */
 const UNSAFE = /[\\/:{}<>*|?$#&^;'"`\x00-\x1F]/g;
+const replaceUnsafe = (text: string) => text.replace(UNSAFE, '_');
 
 /** Port of `String.safeFilename`, extended for Windows: no trailing dot or space, and no reserved device name such as CON. Pass a file name, with or without extension, not a path. */
 export function safeFileName(name: string): string {
-  let safe = name.replace(UNSAFE, '_').replace(/[. ]+$/, match => '_'.repeat(match.length));
+  let safe = replaceUnsafe(name).replace(/[. ]+$/, match => '_'.repeat(match.length));
   const dot = safe.indexOf('.');
   const base = dot < 0 ? safe : safe.slice(0, dot);
   if (RESERVED.test(base)) safe = `${base}_${safe.slice(base.length)}`;
@@ -79,8 +80,11 @@ export function expandPathTemplate(template: string, ctx: TemplateContext = {}):
   const parts = template.split(windows ? /[\\/]/ : '/').map((part, index) => {
     if (index === 0 && home.test(part)) return resolveHome(part, ctx.home, platform);
     // Each component reads the same counter value; it moves once, below.
-    const value = expandTemplate(part, { ...ctx, counter: ctx.counter && { value: start } }, { safe: false, extension: false });
-    if (/%[PF]/.test(part) || part === '.' || part === '..' || (index === 0 && windows && /^[A-Za-z]:$/.test(value))) return value;
+    const expand = (piece: string) => expandTemplate(piece, { ...ctx, counter: ctx.counter && { value: start } }, { safe: false, extension: false });
+    const value = expand(part);
+    if (part === '.' || part === '..' || (index === 0 && windows && /^[A-Za-z]:$/.test(value))) return value;
+    // The folders `%P` and `%F` stand for stay as they are; the literal text around them is made safe.
+    if (/%[PF]/.test(part)) return part.split(/(%[PF])/).map(piece => /^%[PF]$/.test(piece) ? expand(piece) : replaceUnsafe(expand(piece))).join('');
     return safeFileName(value);
   });
   if (ctx.counter && template.includes('%i')) ctx.counter.value = start + 1;
@@ -95,7 +99,7 @@ export function isAbsoluteTemplate(template: string, ctx: Pick<TemplateContext, 
 }
 
 const TOKEN_PATTERNS: Record<string, string> = {
-  y: '\\d{4}', m: '\\d{2}', d: '\\d{2}', H: '\\d{2}', M: '\\d{2}', S: '\\d{2}', n: '\\p{L}+', w: '\\d', p: 'AM|PM', r: '[a-z]{5}', i: '\\d+', e: '[^./]+', f: '.+', P: '.+', F: '.+',
+  y: '\\d{4}', m: '\\d{2}', d: '\\d{2}', H: '\\d{2}', M: '\\d{2}', S: '\\d{2}', n: '[\\p{L}\\p{M}\\p{N}]+', w: '\\d', p: 'AM|PM', r: '[a-z]{5}', i: '\\d+', e: '[^./]+', f: '.+', P: '.+', F: '.+',
 };
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 

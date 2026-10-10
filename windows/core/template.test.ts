@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { expandPathTemplate, expandTemplate, isAbsoluteTemplate, nameMatchesTemplate, resolveHome, safeFileName, type Counter } from './template';
 
 // Tuesday 5 March 2024, 14:07:09 local time.
@@ -132,6 +133,21 @@ test('folders that came from %P, %F or the home prefix keep their names; literal
   const posixNasty = "/home/rami/Dev & Stuff/Rami's Photos #1 $x";
   assert.equal(expandPathTemplate('%P/optimised/%f', { ...fixed, path: `${posixNasty}/shot.png`, platform: 'linux' }), `${posixNasty}/optimised/shot.png`);
   assert.equal(expandPathTemplate('$HOME/Dev & Stuff/%f', { ...fixed, path: posix, platform: 'linux', home: "/home/o'neil" }), "/home/o'neil/Dev _ Stuff/shot.png");
+});
+
+test('literal text beside %P or %F is made safe while the folders stay as they are', () => {
+  const ctx = { ...fixed, path: "/home/rami/Dev & Stuff/shot.png", platform: 'linux' as const };
+  assert.equal(expandPathTemplate('%P-copy?/%f', ctx), "/home/rami/Dev & Stuff-copy_/shot.png");
+  const win = { ...fixed, path: 'C:\\Users\\Rami\\Dev & Stuff\\shot.png', platform: 'win32' as const };
+  assert.equal(expandPathTemplate('%P-copy?\\%f', win), 'C:\\Users\\Rami\\Dev & Stuff-copy_\\shot.png');
+});
+
+test('%n recognises month names that contain digits or marks, so a template is not stacked in other locales', () => {
+  for (const locale of ['ja-JP', 'ko-KR', 'zh-CN', 'de-DE', 'ar-EG', 'hi-IN']) {
+    const name = expandTemplate('%f-%n', { path: posix, now, locale });
+    assert.equal(nameMatchesTemplate(path.parse(name).name, '%f-%n', { platform: 'linux' }), true, `${locale}: ${name}`);
+  }
+  assert.match(expandTemplate('%n', { now, locale: 'ja-JP' }), /3/);
 });
 
 test('%i in a path template reads and moves the counter once however many components use it', () => {
