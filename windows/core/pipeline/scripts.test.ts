@@ -8,7 +8,7 @@ import { graphic } from '../media/image.fixtures';
 import { pipelineWorkspace } from './executor.fixtures';
 import { PipelineStepError } from './executor';
 import { makeStep } from './model';
-import { readableStderr } from './scripts';
+import { checkWindowsScript, decodeOutput, markedAsDownloaded, readableStderr, zoneMarksDownload } from './scripts';
 
 // Inline code is PowerShell on Windows. Elsewhere it is PowerShell when pwsh is installed, otherwise sh, which these tests write for.
 const windows = process.platform === 'win32';
@@ -111,6 +111,32 @@ test('PowerShell errors written as CLIXML read as text', () => {
   const clixml = '#< CLIXML\r\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04"><S S="Error">nope &amp; more_x000D__x000A_</S><S S="Error">    + CategoryInfo : NotSpecified_x000D__x000A_</S></Objs>';
   assert.equal(readableStderr(clixml), 'nope & more\n+ CategoryInfo : NotSpecified');
   assert.equal(readableStderr('plain error'), 'plain error');
+  // Without the header, and with plain lines written between the error records.
+  assert.equal(readableStderr('before\r\n<Objs Version="1.1.0.1"><S S="Error">bad_x000A_</S><S S="Verbose">noise</S></Objs>\r\nafter'), 'before\nbad\nafter');
+});
+
+test('only script types Windows runs itself are allowed', () => {
+  for (const file of ['C:\\s\\a.ps1', 'C:\\s\\a.BAT', 'C:\\s\\a.cmd', 'C:\\s\\a.exe', 'C:\\s\\a.com']) assert.doesNotThrow(() => checkWindowsScript(file), file);
+  for (const file of ['C:\\s\\a.js', 'C:\\s\\a.vbs', 'C:\\s\\a.lnk', 'C:\\s\\a.url', 'C:\\s\\a.hta', 'C:\\s\\Resize']) assert.throws(() => checkWindowsScript(file), /Clop runs \.ps1, \.bat, \.cmd, \.exe and \.com scripts/, file);
+});
+
+test('the mark of the web is read the way Windows writes it, and an unreadable mark refuses the script', async () => {
+  assert.equal(zoneMarksDownload(Buffer.from('[ZoneTransfer]\r\nZoneId=3\r\n')), true);
+  assert.equal(zoneMarksDownload(Buffer.from('[ZoneTransfer]\r\n  zoneid = 4\r\nReferrerUrl=x\r\n')), true);
+  assert.equal(zoneMarksDownload(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('[ZoneTransfer]\r\nZoneId=3\r\n', 'utf16le')])), true);
+  assert.equal(zoneMarksDownload(Buffer.from('\uFEFF[ZoneTransfer]\nZoneId=3')), true);
+  assert.equal(zoneMarksDownload(Buffer.from('[ZoneTransfer]\r\nZoneId=2\r\n')), false, 'trusted sites');
+  assert.equal(zoneMarksDownload(Buffer.from('[ZoneTransfer]\r\nZoneId=30\r\n')), false);
+  const failing = (code: string) => async () => { throw Object.assign(new Error(code), { code }); };
+  assert.equal(await markedAsDownloaded('C:\\s\\a.ps1', { platform: 'win32', read: failing('ENOENT') }), false);
+  await assert.rejects(markedAsDownloaded('C:\\s\\a.ps1', { platform: 'win32', read: failing('EACCES') }), /could not check whether .* was downloaded/);
+  assert.equal(await markedAsDownloaded('C:\\s\\a.ps1', { platform: 'win32', read: async () => Buffer.from('ZoneId=3') }), true);
+  assert.equal(await markedAsDownloaded('/s/a.sh', { platform: 'linux', read: failing('EACCES') }), false);
+});
+
+test('script output is read as UTF-8, or as Windows-1252 when it is not UTF-8', () => {
+  assert.equal(decodeOutput(Buffer.from('C:\\Users\\Zoë\\a.png', 'utf8')), 'C:\\Users\\Zoë\\a.png');
+  assert.equal(decodeOutput(Buffer.from([0x5a, 0x6f, 0xeb])), 'Zoë');
 });
 
 test('Windows: a batch file gets a file name with cmd metacharacters as one argument, and its output is read as UTF-8', { skip: !windows && 'cmd only exists on Windows' }, async t => {
@@ -122,6 +148,26 @@ test('Windows: a batch file gets a file name with cmd metacharacters as one argu
   const result = await w.run([makeStep('runScript', { path: bat })], input);
   assert.equal((await readFile(log, 'utf8')).trim(), input);
   assert.equal(result.file, `${input}.copy.png`);
+});
+
+test('Windows: cmd never runs a chcp or other program from the script\'s folder, and other script types are refused', { skip: !windows && 'cmd only exists on Windows' }, async t => {
+  const w = await pipelineWorkspace(t); if (!w) return;
+  const input = w.file('in.png');
+  await graphic(40, 30).png().toFile(input);
+  await writeFile(w.file('chcp.bat'), `@echo off\r\n> "${w.file('hijacked.txt')}" echo hijacked\r\n`);
+  await writeFile(w.file('run.bat'), `@echo off\r\n> "${w.file('ran.txt')}" echo ran\r\n`);
+  await w.run([makeStep('runScript', { path: '%P/run.bat' })], input);
+  assert.deepEqual((await readdir(w.files)).filter(name => name.endsWith('.txt')), ['ran.txt']);
+  await writeFile(w.file('run.js'), 'WScript.Echo(1)');
+  await assert.rejects(w.run([makeStep('runScript', { path: '%P/run.js' })], input), /Clop runs \.ps1, \.bat, \.cmd, \.exe and \.com scripts, not \.js files/);
+});
+
+test('Windows: a .ps1 runs with its own exit code', { skip: !windows && 'Windows PowerShell only exists on Windows' }, async t => {
+  const w = await pipelineWorkspace(t); if (!w) return;
+  const input = w.file('in.png');
+  await graphic(40, 30).png().toFile(input);
+  await writeFile(w.file('fail.ps1'), "Write-Error 'broken'\r\nexit 4\r\n");
+  await assert.rejects(w.run([makeStep('runScript', { path: '%P/fail.ps1' })], input), (error: Error) => /failed \(exit 4\): .*broken/s.test(error.message) && !/CLIXML|<Objs/.test(error.message));
 });
 
 test('Windows: a script marked as downloaded from the internet is refused', { skip: !windows && 'the mark of the web is an NTFS stream' }, async t => {
