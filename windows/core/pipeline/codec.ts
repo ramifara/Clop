@@ -111,6 +111,14 @@ export class Unreadable {
 }
 export type Stored<T> = T | Unreadable;
 export const isReadable = <T>(entry: Stored<T>): entry is T => !(entry instanceof Unreadable);
+/** The id of a stored entry, also of one this version cannot read: from its raw object or the JSON string macOS stores. */
+export function storedId(entry: Stored<{ id: string }>): string | undefined {
+  if (isReadable(entry)) return entry.id;
+  let raw = entry.raw;
+  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { return undefined; } }
+  const id = isRecord(raw) ? raw.id : undefined;
+  return typeof id === 'string' ? id : undefined;
+}
 
 const stored = <T>(decode: (value: unknown) => T) => (value: unknown): Stored<T>[] | undefined => !Array.isArray(value) ? undefined : value.map(item => {
   if (item instanceof Unreadable) return item;
