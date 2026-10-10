@@ -4,11 +4,12 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 import { ImageEngine, message } from './electron/engine';
-import { defaultSettings, parseSettings } from './electron/settings';
+import { imageDefaults } from './electron/settings';
+import { defaultSettings, parseSettings } from './core/settings/schema';
 import type { ImageOptions } from './src/types';
 
 function localImagePreview(): Plugin {
-  let settings = { ...defaultSettings };
+  let settings = defaultSettings();
   const engine = new ImageEngine(path.resolve('.preview-data', `session-${Date.now()}`));
   return {
     name: 'clop-local-image-preview',
@@ -41,7 +42,7 @@ function localImagePreview(): Plugin {
             switch (req.url) {
               case '/api/import':
                 if (engine.list().length >= 40) throw new Error('Dismiss some images before adding more.');
-                await engine.importBuffer(Buffer.from(body.data, 'base64'), String(body.name), 'drop', { mode: body.aggressive === true ? 'aggressive' : settings.defaultMode, format: settings.defaultFormat, scale: 1 }); break;
+                await engine.importBuffer(Buffer.from(body.data, 'base64'), String(body.name), 'drop', { ...imageDefaults(settings), ...(body.aggressive === true ? { mode: 'aggressive' } : {}) }); break;
               case '/api/apply': await engine.apply(body.id, body.options as ImageOptions); break;
               case '/api/restore': await engine.restore(body.id); break;
               case '/api/dismiss': await engine.dismiss(body.id); break;

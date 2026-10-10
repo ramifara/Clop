@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
 import { api } from './api';
 import { Icon } from './icons';
-import type { AppState, ImageOptions, ImageResult, Settings } from './types';
+import type { AppState, ClopSettings, ImageOptions, ImageResult } from './types';
 
 const preferences = new URLSearchParams(location.search).has('preferences');
 const humanSize = (value: number) => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(value / 1000))} KB`;
@@ -20,7 +20,7 @@ export function App() {
     return api.subscribe(setState);
   }, []);
   useEffect(() => { document.documentElement.classList.toggle('browser-preview', state?.native === false); }, [state?.native]);
-  useEffect(() => { if (state?.native && !state.dropActive && !state.settings.pinned) setLocalDrag(false); }, [state?.native, state?.dropActive, state?.settings.pinned]);
+  useEffect(() => { if (state?.native && !state.dropActive && !state.settings.keepDropZoneVisible) setLocalDrag(false); }, [state?.native, state?.dropActive, state?.settings.keepDropZoneVisible]);
   useEffect(() => () => { if (notification.current) clearTimeout(notification.current); }, []);
   const run: Run = useCallback(async (task, success) => {
     setError('');
@@ -68,14 +68,14 @@ export function App() {
     }
   }
   function imageDrag(event: DragEvent) {
-    if (state?.native) return Boolean(state.dropActive || state.settings.pinned) && event.dataTransfer.types.some(type => ['Files', 'text/uri-list', 'text/plain'].includes(type));
+    if (state?.native) return Boolean(state.dropActive || state.settings.keepDropZoneVisible) && event.dataTransfer.types.some(type => ['Files', 'text/uri-list', 'text/plain'].includes(type));
     if (!event.dataTransfer.types.includes('Files')) return false;
     return Array.from(event.dataTransfer.items).some(item => /^image\/(png|jpeg|webp|gif|avif|tiff)$/i.test(item.type));
   }
-  const items = state.items.slice(0, state.dropActive || state.settings.pinned || localDrag ? 2 : 3).reverse();
-  return <div className={`corner-surface ${state.settings.corner}`} onDragOver={event => { if (imageDrag(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }} onDragEnter={event => { if (imageDrag(event)) { event.preventDefault(); setLocalDrag(true); } }} onDrop={drop}>
+  const items = state.items.slice(0, state.dropActive || state.settings.keepDropZoneVisible || localDrag ? 2 : 3).reverse();
+  return <div className={`corner-surface ${state.settings.floatingResultsCorner}`} onDragOver={event => { if (imageDrag(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }} onDragEnter={event => { if (imageDrag(event)) { event.preventDefault(); setLocalDrag(true); } }} onDrop={drop}>
     <div className="corner-stack">
-      {(state.dropActive || state.settings.pinned || localDrag) && <div className={`drop-target ${localDrag ? 'receiving' : ''}`} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setLocalDrag(false); }}><strong>Drop to optimise</strong><div className="drop-ring"><span/><span/><span/></div><small>Images · originals stay safe</small><small>Ctrl: smaller file</small></div>}
+      {(state.dropActive || state.settings.keepDropZoneVisible || localDrag) && <div className={`drop-target ${localDrag ? 'receiving' : ''}`} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setLocalDrag(false); }}><strong>Drop to optimise</strong><div className="drop-ring"><span/><span/><span/></div><small>Images · originals stay safe</small><small>Ctrl: smaller file</small></div>}
       {items.map(item => <ResultCard key={item.id} item={item} native={state.native} run={run} onSelect={() => setSelected(item.id)}/>)}
       {(error || state.notice) && <div className="corner-notice" role="alert"><span>{error || state.notice}</span><button aria-label="Dismiss message" onClick={() => { setError(''); void api.window('dismiss-notice'); }}><Icon name="close" size={12}/></button></div>}
       {items.length > 1 && <div className="stack-actions"><button onClick={() => void run(() => api.copy(state.items[0].id), 'Copied')}>Copy latest</button><button onClick={() => void run(async () => { for (const item of state.items) await api.dismiss(item.id); })}>Clear all</button></div>}
@@ -127,7 +127,8 @@ function ResultCard({ item, native, run, onSelect }: { item: ImageResult; native
   </article>;
 }
 
-function Preferences({ settings, run }: { settings: Settings; run: Run }) {
-  function toggle(key: keyof Settings, title: string) { return <label className="preference-row" key={key}><span>{title}</span><input type="checkbox" checked={Boolean(settings[key])} onChange={event => void run(() => api.settings({ [key]: event.target.checked }))}/></label>; }
-  return <div className="preferences"><h1>Clop settings</h1>{toggle('clipboard', 'Automatically optimise clipboard images')}{toggle('autoCopy', 'Copy optimised results to the clipboard')}{toggle('explorerDrag', 'Show drop target while dragging')}{toggle('pinned', 'Keep drop target visible')}{toggle('alwaysOnTop', 'Keep results above other windows')}{toggle('launchAtLogin', 'Start with Windows')}<label className="preference-row"><span>Position</span><select value={settings.corner} onChange={event => void run(() => api.settings({ corner: event.target.value as Settings['corner'] }))}>{['bottom-right', 'bottom-left', 'top-right', 'top-left'].map(corner => <option key={corner} value={corner}>{corner.replace('-', ' ')}</option>)}</select></label><label className="preference-row"><span>Default format</span><select value={settings.defaultFormat} onChange={event => void run(() => api.settings({ defaultFormat: event.target.value as Settings['defaultFormat'] }))}><option value="auto">Keep original format</option>{['png', 'jpeg', 'webp', 'avif', 'gif'].map(format => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select></label><p>Ctrl+Shift+C optimises the clipboard.<br/>Ctrl+Shift+Space shows the latest result.<br/>1–9 downscale; C copies; R restores.</p></div>;
+type Toggle = { [K in keyof ClopSettings]: ClopSettings[K] extends boolean ? K : never }[keyof ClopSettings];
+function Preferences({ settings, run }: { settings: ClopSettings; run: Run }) {
+  function toggle(key: Toggle, title: string) { return <label className="preference-row" key={key}><span>{title}</span><input type="checkbox" checked={Boolean(settings[key])} onChange={event => void run(() => api.settings({ [key]: event.target.checked }))}/></label>; }
+  return <div className="preferences"><h1>Clop settings</h1>{toggle('enableClipboardOptimiser', 'Automatically optimise clipboard images')}{toggle('autoCopyToClipboard', 'Copy optimised results to the clipboard')}{toggle('enableDragAndDrop', 'Show drop target while dragging')}{toggle('keepDropZoneVisible', 'Keep drop target visible')}{toggle('floatingResultsAlwaysOnTop', 'Keep results above other windows')}{toggle('launchAtLogin', 'Start with Windows')}<label className="preference-row"><span>Position</span><select value={settings.floatingResultsCorner} onChange={event => void run(() => api.settings({ floatingResultsCorner: event.target.value as ClopSettings['floatingResultsCorner'] }))}>{['bottomRight', 'bottomLeft', 'topRight', 'topLeft'].map(corner => <option key={corner} value={corner}>{corner.replace(/[A-Z]/, letter => ` ${letter.toLowerCase()}`)}</option>)}</select></label><label className="preference-row"><span>Default format</span><select value={settings.defaultImageFormat} onChange={event => void run(() => api.settings({ defaultImageFormat: event.target.value as ClopSettings['defaultImageFormat'] }))}><option value="auto">Keep original format</option>{['png', 'jpeg', 'webp', 'avif', 'gif'].map(format => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select></label><p>Ctrl+Shift+C optimises the clipboard.<br/>Ctrl+Shift+Space shows the latest result.<br/>1–9 downscale; C copies; R restores.</p></div>;
 }
