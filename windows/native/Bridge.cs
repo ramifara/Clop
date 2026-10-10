@@ -213,9 +213,14 @@ namespace ClopWindows {
         object folder = ((dynamic)shell).NameSpace("shell:AppsFolder");
         if (folder != null) {
           try {
-            foreach (dynamic item in ((dynamic)folder).Items()) {
-              try { string id = Convert.ToString(item.Path); if (id.Contains("!")) AddApp(apps, seen, Convert.ToString(item.Name), id, false); } catch { }
-            }
+            object items = ((dynamic)folder).Items();
+            try {
+              foreach (dynamic item in (dynamic)items) {
+                object entry = item;
+                try { string id = Convert.ToString(item.Path); if (id.Contains("!")) AddApp(apps, seen, Convert.ToString(item.Name), id, false); } catch { }
+                finally { if (entry != null && Marshal.IsComObject(entry)) Marshal.ReleaseComObject(entry); }
+              }
+            } finally { if (items != null && Marshal.IsComObject(items)) Marshal.ReleaseComObject(items); }
           } finally { if (Marshal.IsComObject(folder)) Marshal.ReleaseComObject(folder); }
         }
       } catch { }
@@ -275,14 +280,22 @@ namespace ClopWindows {
           return;
         }
         if (type == "attributes") {
-          // Cloud placeholders (OneDrive files-on-demand): recall on data access, recall on open, offline. Reading attributes does not download them.
-          var cloud = new List<bool>();
-          foreach (object item in (System.Collections.IEnumerable)command["paths"]) {
-            bool placeholder = false;
-            try { placeholder = ((int)File.GetAttributes(Convert.ToString(item)) & 0x441000) != 0; } catch { }
-            cloud.Add(placeholder);
-          }
-          Emit(new { type = "reply", id, ok = true, cloud }); return;
+          // Cloud placeholders (OneDrive files-on-demand): recall on data access, recall on open, offline. Reading attributes does
+          // not download them, but a network or sleeping drive can make it slow, so it runs off the mouse hook's thread too.
+          string request = id;
+          var paths = new List<string>();
+          foreach (object item in (System.Collections.IEnumerable)command["paths"]) paths.Add(Convert.ToString(item));
+          var worker = new Thread(() => {
+            var cloud = new List<bool>();
+            foreach (var file in paths) {
+              bool placeholder = false;
+              try { placeholder = ((int)File.GetAttributes(file) & 0x441000) != 0; } catch { }
+              cloud.Add(placeholder);
+            }
+            EmitFrom(new JavaScriptSerializer(), new { type = "reply", id = request, ok = true, cloud });
+          });
+          worker.IsBackground = true; worker.Start();
+          return;
         }
         if (type == "copy") {
           if (command.ContainsKey("expectedSequence") && Convert.ToUInt32(command["expectedSequence"]) != GetClipboardSequenceNumber()) {
