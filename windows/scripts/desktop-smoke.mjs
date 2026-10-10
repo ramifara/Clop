@@ -20,7 +20,10 @@ execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', 'Add-Type -Ass
 // Images and videos are watched in a folder of the test profile, never the runner's real Desktop.
 const watched = path.join(profile, 'Watched');
 await mkdir(watched);
-await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ videoEncoder: 'libx264', imageDirs: [watched], videoDirs: [watched] }));
+// A clipboard pipeline that converts images named "to-webp" to WebP, the built-in "to WebP" behind a filter, so every other
+// copied image still takes the plain optimisation the checks below expect.
+const clipboardPipeline = { id: 'SMOKE-TO-WEBP', name: 'to WebP', steps: [], rawText: 'if(nameContains: "to-webp") -> convert(to: webp)', skipOptimisation: true, hideResult: false };
+await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ videoEncoder: 'libx264', imageDirs: [watched], videoDirs: [watched], pipelinesToRunOnImage: { clipboard: [clipboardPipeline] } }));
 const app = spawn(executable, ['--remote-debugging-port=9227', `--user-data-dir=${profile}`], { stdio: 'pipe' });
 let output = '';
 app.stdout.on('data', chunk => { output += chunk; }); app.stderr.on('data', chunk => { output += chunk; });
@@ -202,7 +205,20 @@ try {
     await until(() => floating.evaluate(`[...document.querySelectorAll('.corner-card')].some(card => card.getAttribute('aria-label') === ${JSON.stringify(`Optimised ${name}`)})`), `The watched ${kind}'s card did not render`);
   }
   assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'Watched-folder optimisation must not show an error');
-  console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, copied video, PDF and audio files, an ignored app, and a video and an image optimised in place in a watched folder.');
+  // The clipboard pipeline: a copied image named "to-webp" becomes a WebP card, and the clipboard then holds the WebP.
+  const startup = await main.evaluate('window.clop.state()');
+  assert.ok(startup.settings.savedPipelines.some(pipeline => pipeline.id === 'builtin-image-webp'), 'The built-in pipelines should be seeded at startup');
+  const webpSource = path.join(profile, 'to-webp.png');
+  await sharp(sourceFile).resize(800, 533).png().toFile(webpSource);
+  const beforePipeline = new Set(startup.items.map(item => item.id));
+  copyFiles([webpSource]);
+  const converted = await until(async () => (await main.evaluate('window.clop.state()')).items.find(item => !beforePipeline.has(item.id) && item.source === 'clipboard' && item.kind === 'image' && item.status !== 'processing'), 'The clipboard pipeline did not produce a result', 60000);
+  console.log('Clipboard pipeline:', JSON.stringify({ status: converted.status, error: converted.error, format: converted.format, notes: converted.notes }));
+  assert.equal(converted.status, 'ready', converted.error);
+  assert.equal(converted.format, 'webp', 'The attached pipeline should convert the copied image to WebP');
+  const pipelineCopy = await until(async () => { const [result] = (await externalClipboard.request({ type: 'read' })).paths; return result?.endsWith('.webp') && result; }, 'The clipboard did not get the pipeline\'s WebP');
+  assert.equal((await sharp(pipelineCopy).metadata()).format, 'webp');
+  console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, copied video, PDF and audio files, an ignored app, a video and an image optimised in place in a watched folder, and a clipboard pipeline converting to WebP.');
 } finally {
   console.log('Stopping packaged app and native test helper.');
   try { if (main) await main.send('Runtime.evaluate', { expression: 'window.clop.window("quit")' }); } catch {}
