@@ -68,19 +68,42 @@ Use Node.js 24 or newer. From `windows/`:
 
 ```sh
 npm ci
+node scripts/fetch-tools.mjs
 npm run desktop
 npm test
 npm run build
 npm run dist:win
 ```
 
-The packaging command runs on Windows and produces NSIS and portable executables in `release/`. CI tests image processing, compiles the Windows helper, checks native clipboard formats and launches the packaged app. An external clipboard write must produce a corner result automatically. CI checks the 196 × 166 card, selected format, resize, restore and clipboard loop protection, and saves an actual Windows screenshot. Real mouse gestures in a separate native app and Explorer verify image drags, release/Escape and suppression of text selection, text drags, unsupported images, empty space, window movement and resizing.
+`scripts/fetch-tools.mjs` downloads the command-line tools pinned by version and sha256 in `scripts/tools.json`, verifies each download and copies the needed files into `.tools/win32-x64/bin`. Packages already present at the pinned hash are skipped. The installer ships that folder as `resources/bin`. On Linux and macOS the script does nothing unless you pass `--platform win32`; development there uses `ffmpeg`, `gs`, `gifsicle`, `gifski`, `jpegoptim`, `pngquant`, `exiftool`, `heif-dec`, `heif-enc`, `cjxl` and `djxl` from `PATH`. `CLOP_TOOLS_DIR` overrides both. Tests that need a missing tool are skipped locally and fail in CI.
+
+The packaging command runs on Windows, fetches the tools and produces NSIS and portable executables in `release/`. CI runs every bundled tool with only the bundle and Windows on `PATH`, checks that the bundle carries every DLL its programs import, tests image processing, compiles the Windows helper, checks native clipboard formats and launches the packaged app. An external clipboard write must produce a corner result automatically. CI checks the 196 × 166 card, selected format, resize, restore and clipboard loop protection, and saves an actual Windows screenshot. Real mouse gestures in a separate native app and Explorer verify image drags, release/Escape and suppression of text selection, text drags, unsupported images, empty space, window movement and resizing.
 
 `npm run dev` serves a development-only corner-card preview on loopback port 5274. Its background is a neutral canvas so the transparent cards can be inspected in a browser. Paste an image to inspect a card. There are no browse or sample controls. A browser cannot demonstrate system-wide clipboard watching or native Windows drag detection; those are exercised by the packaged-app test. Preview data stays under `.preview-data/` and can be removed after shutdown.
 
 The desktop app does not upload images or send analytics. Downloading an image URL only occurs when that URL is explicitly dropped onto the target. Managed machines may block the Windows helper; Clop reports the failure, and save and drag operations remain available.
 
 API references: [Windows accessibility hit testing](https://learn.microsoft.com/en-us/windows/win32/api/oleacc/nf-oleacc-accessibleobjectfrompoint), [Windows object roles](https://learn.microsoft.com/en-us/windows/win32/winauto/object-roles), [Windows drag events](https://learn.microsoft.com/en-us/windows/win32/winauto/event-constants), [Electron clipboard](https://www.electronjs.org/docs/latest/api/clipboard), [Electron file paths](https://www.electronjs.org/docs/latest/api/web-utils), [Sharp output](https://sharp.pixelplumbing.com/api-output/) and [Sharp resizing](https://sharp.pixelplumbing.com/api-resize/).
+
+## Bundled tools and licences
+
+The Windows build ships these programs unmodified, as separate executables in `resources/bin`:
+
+| Tool | Source | Licence |
+| --- | --- | --- |
+| FFmpeg and FFprobe | [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) essentials build | GPLv3 |
+| Ghostscript (`gswin64c.exe`, `lib`, `Resource`) | [Artifex](https://github.com/ArtifexSoftware/ghostpdl-downloads) | AGPLv3 |
+| gifsicle | [eternallybored.org](https://eternallybored.org/misc/gifsicle/) | GPLv2 |
+| gifski | [ImageOptim/gifski](https://github.com/ImageOptim/gifski) | AGPLv3 |
+| jpegoptim | [tjko/jpegoptim](https://github.com/tjko/jpegoptim) | GPLv3 |
+| pngquant | [MSYS2](https://packages.msys2.org/base/mingw-w64-pngquant) | GPLv3 |
+| ExifTool, with its Strawberry Perl runtime | [exiftool.org](https://exiftool.org) | Perl Artistic Licence or GPL |
+| libheif `heif-dec` and `heif-enc` | [MSYS2](https://packages.msys2.org/base/mingw-w64-libheif) | LGPLv3, examples MIT |
+| libjxl `cjxl` and `djxl` | [libjxl/libjxl](https://github.com/libjxl/libjxl) | BSD-3-Clause |
+| DLLs used by libheif and pngquant (libde265, x265, x264, aom, dav1d, libpng, zlib and others) | MSYS2 | Each package's own licence, listed in `scripts/tools.json` |
+| Microsoft Visual C++ runtime, for Ghostscript and gifski | [conda-forge](https://anaconda.org/conda-forge/vc14_runtime) | Microsoft Visual C++ redistributable licence |
+
+Ghostscript and gifski are AGPLv3. They run as separate programs, and section 13 of GPLv3 permits combining GPLv3 and AGPLv3 work. Source for each tool is available from the linked project.
 
 ## Attribution
 
