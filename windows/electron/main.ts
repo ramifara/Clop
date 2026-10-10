@@ -1,6 +1,6 @@
 import { app, BrowserWindow, clipboard, ClipboardItem, dialog, globalShortcut, ipcMain, Menu, nativeImage, screen, shell, Tray } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFile, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
@@ -8,6 +8,7 @@ import { ImageEngine, message } from './engine';
 import { imageDefaults, rendererSettings } from './settings';
 import { defaultSettings } from '../core/settings/schema';
 import { SettingsStore } from '../core/settings/store';
+import { Workdir } from '../core/workdir';
 import { WindowsBridge } from './native';
 import { ClipboardPickup } from './pickup';
 import type { AppState, ImageOptions, ImageResult } from '../src/types';
@@ -15,7 +16,7 @@ import type { AppState, ImageOptions, ImageResult } from '../src/types';
 const here = path.dirname(fileURLToPath(import.meta.url));
 let main: BrowserWindow, floating: BrowserWindow, tray: Tray, engine: ImageEngine;
 let settings = defaultSettings(), notice: string | undefined, quitting = false, bridgeReady = false;
-let store: SettingsStore, storage: string;
+let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let dropActive = false, dragging = false, importsRunning = 0, hovered = false;
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
@@ -161,7 +162,7 @@ async function optimiseClipboard(sequence?: number, paths: string[] = [], manual
     }
     if (!manual && sequence !== undefined && sequence === lastClipboardSequence) return;
     if (sequence !== undefined) lastClipboardSequence = sequence;
-    if (!manual && paths.length && paths.every(file => path.resolve(file).toLowerCase().startsWith(path.resolve(storage).toLowerCase() + path.sep))) return;
+    if (!manual && paths.length && paths.every(file => workdir.owns(file))) return;
     if (paths.length) {
       if (!manual) {
         const hashes: string[] = [];
@@ -226,7 +227,7 @@ function updateTray() {
     { label: 'Watch clipboard', type: 'checkbox', checked: settings.enableClipboardOptimiser, click: item => toggleSetting({ enableClipboardOptimiser: item.checked }) },
     { label: 'Keep drop zone visible', type: 'checkbox', checked: settings.keepDropZoneVisible, click: item => toggleSetting({ keepDropZoneVisible: item.checked }) },
     { label: 'Settings…', click: () => main.show() },
-    { label: 'Open originals and results', click: () => { void shell.openPath(storage); } },
+    { label: 'Open originals and results', click: () => { void shell.openPath(workdir.temp); } },
     { type: 'separator' }, { label: 'Quit Clop', click: () => app.quit() },
   ]));
 }
@@ -290,22 +291,27 @@ else {
   app.on('second-instance', (_event, argv) => { if (engine) showLatest(); const files = argv.filter(arg => /\.(png|jpe?g|webp|gif|avif|tiff?)$/i.test(arg) && path.isAbsolute(arg)); if (files.length) void importPaths(files, 'file'); });
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
-    storage = path.join(app.getPath('userData'), 'images');
-    store = new SettingsStore(path.join(app.getPath('userData'), 'settings.json'), { home: app.getPath('home'), desktop: app.getPath('desktop'), userData: app.getPath('userData') });
-    await mkdir(storage, { recursive: true });
+    const userData = app.getPath('userData');
+    store = new SettingsStore(path.join(userData, 'settings.json'), { home: app.getPath('home'), desktop: app.getPath('desktop'), userData });
     // An unreadable settings file is left alone; the defaults are used and the reason is shown once the windows exist.
     let settingsError: unknown;
     settings = await store.load().catch(error => { settingsError = error; return store.get(); });
-    // Retain originals for seven days. Never touch the source files dropped into Clop.
-    for (const dir of await readdir(storage, { withFileTypes: true })) if (dir.isDirectory()) {
-      const file = path.join(storage, dir.name);
-      if ((await stat(file)).mtimeMs < Date.now() - 7 * 86400000) await rm(file, { recursive: true, force: true });
-    }
-    engine = new ImageEngine(path.join(storage, `session-${Date.now()}`));
+    // Earlier versions kept originals in `images`. It ages out with the cleanup interval instead of being migrated.
+    const open = async (root: string) => new Workdir(root, { home: app.getPath('home'), legacy: [path.join(userData, 'images')] }).ensure();
+    workdir = await open(settings.workdir).catch(async error => {
+      workdirProblem = `Clop cannot use the working directory ${settings.workdir}: ${message(error)} Using the default folder instead.`;
+      return open(path.join(userData, 'work'));
+    });
+    // The running session's files stay until the next start, however short the cleanup interval is.
+    const session = path.join(workdir.temp, `session-${Date.now()}`);
+    workdir.protect(session);
+    stopCleaner = workdir.startCleaner(() => store.get('workdirCleanupInterval'));
+    engine = new ImageEngine(session);
     engine.on('change', () => { syncFloating(); broadcast(); });
     engine.on('ready', (id: string) => { hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
     await createWindows();
     if (settingsError) inform(message(settingsError));
+    if (workdirProblem) inform(workdirProblem);
     const icon = nativeImage.createFromPath(path.join(here, 'icon.png'));
     tray = new Tray(icon); tray.setToolTip('Clop'); tray.on('double-click', showLatest); updateTray();
     for (const [key, callback] of [
@@ -326,7 +332,7 @@ else {
     const files = process.argv.slice(1).filter(arg => /\.(png|jpe?g|webp|gif|avif|tiff?)$/i.test(arg) && path.isAbsolute(arg));
     if (files.length) await importPaths(files, 'file');
   }).catch(error => { dialog.showErrorBox('Clop could not start', message(error)); app.quit(); });
-  app.on('before-quit', () => { quitting = true; pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
+  app.on('before-quit', () => { quitting = true; stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });
   app.on('activate', () => { if (engine) showLatest(); });
 }
