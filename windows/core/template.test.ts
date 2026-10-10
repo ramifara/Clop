@@ -122,6 +122,24 @@ test('path templates expand tokens and the home prefix, and sanitise every compo
   assert.equal(expandPathTemplate('optimised\\%f', win), 'C:\\Users\\rami\\Pictures\\optimised\\shot.png');
 });
 
+test('folders that came from %P, %F or the home prefix keep their names; literal components do not', () => {
+  const win = { ...fixed, platform: 'win32' as const, home: "C:\\Users\\Rami's" };
+  const nasty = 'C:\\Users\\Rami\\Dev & Stuff\\Rami\'s #1 $x';
+  assert.equal(expandPathTemplate('%P/optimised/%f', { ...win, path: `${nasty}\\shot.png` }), `${nasty}\\optimised\\shot.png`);
+  assert.equal(expandPathTemplate('%P/a&b/%f', { ...win, path: `${nasty}\\shot.png` }), `${nasty}\\a_b\\shot.png`);
+  assert.equal(expandPathTemplate('~/Out & About/%f', { ...win, path: windows }), "C:\\Users\\Rami's\\Out _ About\\shot.png");
+  assert.equal(expandPathTemplate('%USERPROFILE%\\Out\\%f', { ...win, path: windows }), "C:\\Users\\Rami's\\Out\\shot.png");
+  const posixNasty = "/home/rami/Dev & Stuff/Rami's Photos #1 $x";
+  assert.equal(expandPathTemplate('%P/optimised/%f', { ...fixed, path: `${posixNasty}/shot.png`, platform: 'linux' }), `${posixNasty}/optimised/shot.png`);
+  assert.equal(expandPathTemplate('$HOME/Dev & Stuff/%f', { ...fixed, path: posix, platform: 'linux', home: "/home/o'neil" }), "/home/o'neil/Dev _ Stuff/shot.png");
+});
+
+test('%i in a path template reads and moves the counter once however many components use it', () => {
+  const counter: Counter = { value: 7 };
+  assert.equal(expandPathTemplate('out-%i/%f-%i', { path: posix, platform: 'linux', counter }), '/Users/rami/Pictures/out-8/shot-8.png');
+  assert.equal(counter.value, 8);
+});
+
 test('templates anchored at a root, %P or %F are absolute', () => {
   assert.equal(isAbsoluteTemplate('%P/optimised/%f'), true);
   assert.equal(isAbsoluteTemplate('%F-copy'), true);

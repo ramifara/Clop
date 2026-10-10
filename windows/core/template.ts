@@ -47,7 +47,7 @@ export function resolveHome(value: string, home = os.homedir(), platform: NodeJS
 }
 
 /** Port of `generateFileName`: replaces the tokens, makes the result a safe file name unless `safe` is false, then appends the extension of `ctx.path`. */
-export function expandTemplate(template: string, ctx: TemplateContext = {}, { safe = true } = {}): string {
+export function expandTemplate(template: string, ctx: TemplateContext = {}, { safe = true, extension = true } = {}): string {
   const now = ctx.now ?? new Date(), p = pathApi(ctx.platform), file = ctx.path ? p.parse(ctx.path) : undefined;
   const number = (ctx.counter?.value ?? 0) + 1;
   let letters: string | undefined;
@@ -61,18 +61,31 @@ export function expandTemplate(template: string, ctx: TemplateContext = {}, { sa
   // One pass over the template, so a value that contains `%d` is never expanded again.
   let name = template.replace(/%([ymndwHMSprifeFP])/g, (_, token: string) => values[token]());
   if (safe) name = safeFileName(name);
-  if (file?.ext) name += file.ext;
+  if (extension && file?.ext) name += file.ext;
   if (ctx.counter && template.includes('%i')) ctx.counter.value = number;
   return name;
 }
 
-/** Port of the path form of `generateFilePath`: expands the tokens and the home prefix, normalises, and makes every component safe except the drive or share root. A relative result lands next to `ctx.path`. Touches no files. */
+/**
+ * Port of the path form of `generateFilePath`: expands the tokens and the home prefix, normalises, and
+ * makes literal components safe file names. Components that hold `%P` or `%F`, and a leading home prefix,
+ * are real folders and stay as they are, so `%P/optimised/%f` never renames a source folder such as
+ * `Dev & Stuff`. The extension of `ctx.path` goes on the end. A relative result lands next to `ctx.path`.
+ * Touches no files.
+ */
 export function expandPathTemplate(template: string, ctx: TemplateContext = {}): string {
-  const p = pathApi(ctx.platform);
-  // The home prefix goes first: `%USERPROFILE%` would otherwise be read as tokens.
-  const normalised = p.normalize(expandTemplate(resolveHome(template, ctx.home, ctx.platform), ctx, { safe: false })), { root } = p.parse(normalised);
-  const rest = normalised.slice(root.length).split(p.sep).filter(Boolean).map(component => component === '..' ? component : safeFileName(component));
-  const result = p.join(root, ...rest);
+  const platform = ctx.platform ?? process.platform, windows = platform === 'win32', p = pathApi(platform);
+  const start = ctx.counter?.value ?? 0, home = windows ? /^(~|\$HOME|\$\{HOME\}|%USERPROFILE%)$/i : /^(~|\$HOME|\$\{HOME\})$/;
+  const parts = template.split(windows ? /[\\/]/ : '/').map((part, index) => {
+    if (index === 0 && home.test(part)) return resolveHome(part, ctx.home, platform);
+    // Each component reads the same counter value; it moves once, below.
+    const value = expandTemplate(part, { ...ctx, counter: ctx.counter && { value: start } }, { safe: false, extension: false });
+    if (/%[PF]/.test(part) || part === '.' || part === '..' || (index === 0 && windows && /^[A-Za-z]:$/.test(value))) return value;
+    return safeFileName(value);
+  });
+  if (ctx.counter && template.includes('%i')) ctx.counter.value = start + 1;
+  const ext = ctx.path ? p.parse(ctx.path).ext : '';
+  const result = p.normalize(parts.join(p.sep) + ext);
   return !p.isAbsolute(result) && ctx.path ? p.join(p.dirname(ctx.path), result) : result;
 }
 
