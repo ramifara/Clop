@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ItemEngine, message } from './items';
+import { ItemEngine, message, type ImportExtra, type ItemAutomation } from './items';
 import { clipboardPNG } from '../core/media/image-codecs';
 import { imageDefaults, rendererSettings } from './settings';
 import { defaultSettings } from '../core/settings/schema';
@@ -13,13 +13,20 @@ import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ignoredApp } from './apps';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
-import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, type ClipboardMemory } from './clipboard';
+import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, type ClipboardMemory, type CopyingApp } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
 import { enabledKey, placeholderReply } from './watch-rules';
 import { FolderResults, LastBatch, restoreAll } from './automation';
 import { appsReply } from './apps';
-import type { AppState, ImageOptions, ItemResult } from '../src/types';
+import { appPathFromReg, attachedAutomation, attachedPipelines, chosenPipeline, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
+import { seedBuiltinPipelines } from '../core/pipeline/builtins';
+import { pipelinesSkipOptimisation, type PipelinesOutcome } from '../core/pipeline/triggers';
+import type { PipelineEffects } from '../core/pipeline/executor';
+import { run } from '../core/run';
+import type { MediaKind } from '../core/media/types';
+import { spawn } from 'node:child_process';
+import type { AppEntry, AppState, ImageOptions, ItemResult } from '../src/types';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let main: BrowserWindow, floating: BrowserWindow, tray: Tray, engine: ItemEngine;
@@ -34,6 +41,9 @@ let nameCounter: Counter | undefined;
 /** Clipboard images take turns, each optimised and written back before the next one replaces its card. Images share one engine queue anyway. */
 const clipboardImageTurn = serial();
 let marker: OptimisedMarker, folders: FolderResults, watchers: FolderWatcher[] = [];
+let home = '', sessionDir = '';
+/** Folders of the work directory's temp folder that hold pipeline results cards show; kept from the cleaner for the session. */
+const keptRoots = new Set<string>();
 /** Results from watched folders in `dirsHideFloatingResult`; they never show as floating results. */
 const quiet = new Set<string>();
 /** Results that hid or were dismissed, latest last, for "Bring back last result". */
@@ -175,36 +185,130 @@ async function createWindows() {
  * the paths on as text, for results of a copied path.
  */
 async function copy(ids: string[], expectedSequence?: number, { text = false } = {}) {
-  const files = ids.map(id => engine.output(id)), last = engine.get(ids[ids.length - 1]);
+  const files = ids.map(id => engine.output(id));
   const images = ids.every(id => engine.get(id).result.kind === 'image');
   const withFiles = !images || ids.length > 1 || settings.copyImageFilePath;
+  if (process.platform !== 'win32' && !images) throw new Error('Copying files needs the Windows clipboard helper. Save the result instead.');
+  await writeClipboard({ ...(withFiles ? { files } : {}), ...(images ? { image: files[files.length - 1] } : {}), ...(text ? { text: files.join('\r\n') } : {}) }, expectedSequence);
+}
+/**
+ * Writes a file list, an image's pixels and text to the clipboard, marked as Clop's own, unless the clipboard changed since
+ * `expectedSequence`. Resolves with the clipboard's new sequence number, or undefined when the write was skipped (or there is none).
+ */
+async function writeClipboard({ files, image, text }: { files?: string[]; image?: string; text?: string }, expectedSequence?: number): Promise<number | undefined> {
   if (process.platform === 'win32') {
     // Processing can finish before the previous Windows clipboard write has flushed.
     // Snapshot the immutable outputs, then serialize encoding and native writes in action order.
     const write = async () => {
       if (!bridgeReady) throw new Error('The Windows clipboard helper is unavailable. Save or drag the result instead.');
-      const png = images ? path.join(last.directory, `clipboard-${randomUUID()}.png`) : undefined;
+      const png = image ? path.join(workdir.temp, `clipboard-${randomUUID()}.png`) : undefined;
       try {
-        if (png) await clipboardPNG(files[files.length - 1], png, { limitInputPixels: 60_000_000 });
-        const reply = copyReply(await bridge.request({ type: 'copy', ...(withFiles ? { files } : {}), ...(png ? { png } : {}), ...(text ? { text: files.join('\r\n') } : {}), ...(expectedSequence === undefined ? {} : { expectedSequence }) }));
-        if (!reply.skipped) { memory.sequence = reply.sequence; if (png) memory.own = fingerprint(await readFile(png)); }
+        if (png) await clipboardPNG(image!, png, { limitInputPixels: 60_000_000 });
+        const reply = copyReply(await bridge.request({ type: 'copy', ...(files ? { files } : {}), ...(png ? { png } : {}), ...(text ? { text } : {}), ...(expectedSequence === undefined ? {} : { expectedSequence }) }));
+        if (reply.skipped) return undefined;
+        memory.sequence = reply.sequence; if (png) memory.own = fingerprint(await readFile(png));
+        return reply.sequence;
       } finally { if (png) await rm(png, { force: true }); }
     };
     const job = clipboardWrites.then(write, write);
-    clipboardWrites = job.catch(() => {});
-    await job;
-  } else {
-    if (!images) throw new Error('Copying files needs the Windows clipboard helper. Save the result instead.');
-    const image = nativeImage.createFromPath(files[files.length - 1]);
-    if (image.isEmpty()) throw new Error('This format cannot be copied as an image here. Save the result instead.');
-    const png = image.toPNG();
-    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(png)], { type: 'image/png' }) })]);
-    const items = await clipboard.read(), item = items.find(item => item.types.includes('image/png'));
-    memory.own = fingerprint(item ? Buffer.from(await (await item.getType('image/png')).arrayBuffer()) : png);
+    clipboardWrites = job.then(() => {}, () => {});
+    return job;
+  }
+  if (!image) { clipboard.writeText(text ?? ''); return undefined; }
+  const picture = nativeImage.createFromPath(image);
+  if (picture.isEmpty()) throw new Error('This format cannot be copied as an image here. Save the result instead.');
+  const png = picture.toPNG();
+  await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(png)], { type: 'image/png' }) })]);
+  const items = await clipboard.read(), item = items.find(item => item.types.includes('image/png'));
+  memory.own = fingerprint(item ? Buffer.from(await (await item.getType('image/png')).arrayBuffer()) : png);
+  return undefined;
+}
+
+// Pipelines (spec step 21): the effects the executor asks the app for, and the attached and chosen pipelines.
+let appsCache: { at: number; apps: Promise<AppEntry[]> } | undefined;
+/** Apps Windows knows, from the helper, for at most a minute: listing them walks every running process and the Start menu. */
+function knownApps() {
+  if (!appsCache || Date.now() - appsCache.at > 60_000) appsCache = { at: Date.now(), apps: bridgeReady ? bridge.request({ type: 'apps' }).then(appsReply) : Promise.resolve([]) };
+  return appsCache.apps;
+}
+/** The program an App Paths entry names, from the user's then the machine's registry. */
+async function registeredAppPath(exe: string) {
+  for (const hive of ['HKCU', 'HKLM']) {
+    const reg = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'reg.exe');
+    const found = await run(reg, ['query', `${hive}\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\${exe}`, '/ve']).then(reply => appPathFromReg(reply.stdout.toString('utf8')), () => undefined);
+    if (found) return found;
   }
 }
+/** `openWith(app:)`: a packaged app through the helper, a program directly with the file as its argument. */
+async function openWith(file: string, app: string, allowExe: boolean) {
+  if (process.platform !== 'win32') throw new Error('Opening a file with an app works on Windows only.');
+  const target = await resolveApp(app, { apps: knownApps, appPath: registeredAppPath, isFile, watched: watchedFolders(settings, home), allowExe });
+  if (target.includes('!')) {
+    if (!bridgeReady) throw new Error('The Windows helper is unavailable, so Clop cannot open this app.');
+    await bridge.request({ type: 'open-with', aumid: target, file });
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(target, [file], { cwd: path.dirname(target), detached: true, stdio: 'ignore' });
+    child.once('spawn', () => { child.unref(); resolve(); }).once('error', reject);
+  });
+}
+/** A pipeline's `delete` of a folder asks first, as macOS does. */
+async function confirmFolderDeletion(folder: string) {
+  const { response } = await dialog.showMessageBox({ type: 'warning', buttons: ['Move to Recycle Bin', 'Cancel'], defaultId: 1, cancelId: 1, message: 'Move this folder to the Recycle Bin?', detail: `A pipeline wants to delete the folder:\n${folder}` });
+  return response === 0;
+}
+/** The effects of one pipeline run. A clipboard write is skipped once the user copies something else during the run. */
+async function pipelineEffects({ allowExe }: { allowExe: boolean }): Promise<PipelineEffects> {
+  let expected = await currentSequence().catch(() => undefined);
+  return {
+    copyToClipboard: async item => {
+      const written = await writeClipboard('text' in item ? { text: item.text } : { image: item.image, ...(settings.copyImageFilePath ? { files: [item.image] } : {}) }, expected);
+      if (written !== undefined) expected = written;
+    },
+    openWith: (file, app) => openWith(file, app, allowExe),
+    trash: async (target, kind) => {
+      if (kind === 'folder' && !await confirmFolderDeletion(target)) return false;
+      await shell.trashItem(target);
+      return true;
+    },
+  };
+}
+const pipelineHost: PipelineHost = {
+  env: () => ({ settings, workdir, marker, home, counter: nameCounter ??= { value: settings.lastAutoIncrementingNumber } }),
+  effects: pipelineEffects,
+  counterChanged: value => { store.set({ lastAutoIncrementingNumber: value }).then(next => { settings = next; }, error => inform(message(error))); },
+  keep: files => { for (const root of tempRoots(workdir.temp, sessionDir, files)) if (!keptRoots.has(root)) { keptRoots.add(root); workdir.protect(root); } },
+};
+/** A result shown as it is, without optimising: a file a pipeline forked off. */
+const AS_IS: ItemAutomation = { skipOptimisation: true, fallback: false, run: async ({ original }) => ({ file: original, anyRan: false, warnings: [] }) };
+/** After pipelines ran on a result: `hideResult` keeps it from the floating results, and forked files get cards of their own. */
+function afterPipelines(id: string | undefined, outcome: PipelinesOutcome, source: ItemResult['source'], { hide = true } = {}) {
+  if (id && hide && outcome.hidden) quietResult(id);
+  // Not awaited: the fork's job queues behind the one that is running.
+  for (const fork of outcome.forks) void makeRoom().then(() => engine.importPath(fork, source, defaults(), undefined, { automation: AS_IS })).catch(error => inform(message(error)));
+}
+/** The pipelines attached to the clipboard for a copied file of `kind`, as an import's automation. */
+function clipboardAutomation(kind: MediaKind, app?: CopyingApp): ImportExtra | undefined {
+  let id: string | undefined;
+  const automation = attachedAutomation(attachedPipelines(kind, 'clipboard', settings, home), {
+    host: pipelineHost, context: { kind, sourceApp: app }, fallback: true, done: outcome => afterPipelines(id, outcome, 'clipboard'),
+  });
+  return automation && { automation, staged: staged => { id = staged; } };
+}
+/** The pipelines attached to the watched folder `dir`. When they replace optimisation and none did anything, the card stays out of sight, as on macOS. */
+function folderAutomation(file: string, kind: MediaKind, dir: string, id: () => string | undefined) {
+  const pipelines = attachedPipelines(kind, dir, settings, home), replaces = pipelinesSkipOptimisation(pipelines);
+  return attachedAutomation(pipelines, {
+    host: pipelineHost, context: { kind }, fallback: false, source: file,
+    done: outcome => { const staged = id(); if (staged && replaces && !outcome.anyRan) quietResult(staged); afterPipelines(staged, outcome, 'folder'); },
+  });
+}
+/** Keeps a result out of the floating results. The shelf holds at most 40 results, so a quiet result older than the latest few is long gone. */
+function quietResult(id: string) { quiet.add(id); for (const old of quiet) { if (quiet.size <= 80) break; quiet.delete(old); } }
+const itemId = (value: unknown) => { if (typeof value !== 'string' || !value || value.length > 64) throw new Error('Choose a result.'); return value; };
 /** Imports local files one by one, telling about each that fails. Returns the results that finished. */
-async function importPaths(files: unknown, source: ItemResult['source'], { aggressive = false, name }: { aggressive?: boolean; name?: (file: string) => Promise<string | undefined> } = {}) {
+async function importPaths(files: unknown, source: ItemResult['source'], { aggressive = false, name, extra }: { aggressive?: boolean; name?: (file: string) => Promise<string | undefined>; extra?: (file: string) => ImportExtra | undefined } = {}) {
   if (!Array.isArray(files) || files.length > 20 || files.some(p => typeof p !== 'string' || !path.isAbsolute(p))) throw new Error('Choose up to 20 local files at a time.');
   dropActive = false; importsRunning++; broadcast();
   const completed: string[] = [];
@@ -212,7 +316,7 @@ async function importPaths(files: unknown, source: ItemResult['source'], { aggre
     for (const file of files as string[]) {
       try {
         await makeRoom();
-        const id = await engine.importPath(file, source, defaults(aggressive), await name?.(file));
+        const id = await engine.importPath(file, source, defaults(aggressive), await name?.(file), extra?.(file));
         if (isReady(id)) completed.push(id);
       } catch (error) { inform(`${path.basename(file)}: ${message(error)}`); }
     }
@@ -252,19 +356,22 @@ async function copyClipboardResults(ids: string[], sequence?: number, options?: 
   await copy(accumulated.length > 1 ? accumulated : ids, sequence, options);
 }
 /** The steps of importing clipboard results (see `importClipboardList`), written back against the clipboard `sequence` they came from. */
-function clipboardSteps(sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }): ClipboardListSteps {
+function clipboardSteps(sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }, app?: CopyingApp): ClipboardListSteps {
   return {
     turn: clipboardImageTurn, prepare: prepareClipboardImages, writeBack: ids => copyClipboardResults(ids, sequence, options),
-    load: list => importPaths(list, 'clipboard', { aggressive, name: async file => mediaKind(file) === 'image' ? clipboardImageName(path.basename(file)) : undefined }),
+    load: list => importPaths(list, 'clipboard', {
+      aggressive, name: async file => mediaKind(file) === 'image' ? clipboardImageName(path.basename(file)) : undefined,
+      extra: file => clipboardAutomation(mediaKind(file) ?? 'image', app),
+    }),
   };
 }
-function importClipboardFiles(files: string[], sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }) {
-  return importClipboardList(files.slice(0, 20), clipboardSteps(sequence, aggressive, options));
+function importClipboardFiles(files: string[], sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }, app?: CopyingApp) {
+  return importClipboardList(files.slice(0, 20), clipboardSteps(sequence, aggressive, options, app));
 }
-function importClipboardImage(bytes: Buffer, name: string, sequence: number | undefined, aggressive: boolean) {
-  return importClipboardImages(clipboardSteps(sequence, aggressive), async () => {
+function importClipboardImage(bytes: Buffer, name: string, sequence: number | undefined, aggressive: boolean, app?: CopyingApp) {
+  return importClipboardImages(clipboardSteps(sequence, aggressive, undefined, app), async () => {
     await makeRoom();
-    const id = await engine.importBuffer(bytes, await clipboardImageName(name), 'clipboard', defaults(aggressive));
+    const id = await engine.importBuffer(bytes, await clipboardImageName(name), 'clipboard', defaults(aggressive), clipboardAutomation('image', app));
     return isReady(id) ? [id] : [];
   });
 }
@@ -295,8 +402,8 @@ function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive 
     switch (plan.type) {
       case 'retry': void optimiseClipboard(plan.change, false, aggressive); return;
       case 'none': if (plan.notice) inform(plan.notice); return;
-      case 'files': return () => importClipboardFiles(plan.files, plan.sequence, aggressive, { text: plan.text });
-      case 'image': return () => importClipboardImage(plan.bytes, `Clipboard-${stamp()}.${plan.ext}`, plan.sequence, aggressive);
+      case 'files': return () => importClipboardFiles(plan.files, plan.sequence, aggressive, { text: plan.text }, plan.app);
+      case 'image': return () => importClipboardImage(plan.bytes, `Clipboard-${stamp()}.${plan.ext}`, plan.sequence, aggressive, plan.app);
       case 'url': return () => importUrl(plan.url, aggressive, 'clipboard', plan.sequence);
     }
   });
@@ -363,6 +470,18 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'dismiss': await dismiss(id); break;
     case 'settings': await updateSettings(rendererSettings(args[0])); break;
     case 'apps': return bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [];
+    case 'pipelines': return pipelineChoices(settings, engine.get(itemId(args[0])).result.kind);
+    case 'run-pipeline': {
+      const target = itemId(args[0]), { kind, source } = engine.get(target).result, pipeline = chosenPipeline(settings, kind, args[1]);
+      await engine.runPipeline(target, async input => {
+        const outcome = await runForApp(pipelineHost, [pipeline], input.optimised ?? await input.fresh(), { kind }, input.signal);
+        // Asked for from the card, so the result stays in view whatever the pipeline's hideResult says.
+        afterPipelines(target, outcome, source, { hide: false });
+        return { file: outcome.file, anyRan: outcome.anyRan, warnings: outcomeNotes(outcome) };
+      });
+      if (isReady(target) && copiesBack(target)) await copy([target]);
+      break;
+    }
     case 'window':
       switch (args[0]) {
         case 'hide': BrowserWindow.fromWebContents(event.sender)?.hide(); break;
@@ -395,6 +514,9 @@ else {
     // An unreadable settings file is left alone; the defaults are used and the reason is shown once the windows exist.
     let settingsError: unknown;
     settings = await store.load().catch(error => { settingsError = error; return store.get(); });
+    // The built-in pipelines join the library once per version. Not over a settings file that could not be read: saving would replace it.
+    const seeded = settingsError ? undefined : seedBuiltinPipelines(settings.savedPipelines, settings.builtinPipelinesSeededVersion);
+    if (seeded) settings = await store.set(seeded).catch(error => { settingsError = error; return settings; });
     // Earlier versions kept originals in `images`. It ages out with the cleanup interval instead of being migrated.
     const open = async (root: string) => new Workdir(root, { home: app.getPath('home'), legacy: [path.join(userData, 'images')] }).ensure();
     workdir = await open(settings.workdir).catch(async error => {
@@ -402,7 +524,7 @@ else {
       return open(path.join(userData, 'work'));
     });
     // The running session's files stay until the next start, however short the cleanup interval is.
-    const session = path.join(workdir.temp, `session-${Date.now()}`);
+    const session = sessionDir = path.join(workdir.temp, `session-${Date.now()}`);
     workdir.protect(session);
     stopCleaner = workdir.startCleaner(() => store.get('workdirCleanupInterval'));
     engine = new ItemEngine(session, () => settings);
@@ -413,11 +535,9 @@ else {
     if (settingsError) inform(message(settingsError));
     if (workdirProblem) inform(workdirProblem);
     marker = new OptimisedMarker(path.join(userData, 'optimised.json'));
-    const home = app.getPath('home');
+    home = app.getPath('home');
     folders = new FolderResults({
-      engine, settings: () => settings, home, options: () => defaults(), makeRoom,
-      // The shelf holds at most 40 results, so a quiet result older than the latest few is long gone.
-      quiet: id => { quiet.add(id); for (const old of quiet) { if (quiet.size <= 80) break; quiet.delete(old); } },
+      engine, settings: () => settings, home, options: () => defaults(), makeRoom, quiet: quietResult, automation: folderAutomation,
       env: () => ({ settings, workdir, marker, home, counter: nameCounter ??= { value: settings.lastAutoIncrementingNumber } }),
       saved: value => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); },
     });

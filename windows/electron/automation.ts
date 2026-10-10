@@ -6,14 +6,8 @@ import { executePlacement, planPlacement, type PlacementEnv } from '../core/plac
 import type { ClopSettings } from '../core/settings/schema';
 import type { MediaKind, MediaOutput } from '../core/media/types';
 import type { ImageOptions } from '../src/types';
-import { message, type ItemEngine, type ItemPlacement } from './items';
+import { message, type ItemAutomation, type ItemEngine, type ItemPlacement } from './items';
 import { hidesResult } from './watch-rules';
-
-/**
- * The pipelines to run on a file of `kind` from `source` (a watched folder as stored, or `clipboard`). There are none until
- * pipelines exist, so every file is just optimised.
- */
-export function pipelinesFor(_kind: MediaKind, _source: string): readonly { skipsPreOptimisation: boolean }[] { return []; }
 
 export type FolderEnv = PlacementEnv & { marker: OptimisedMarker };
 
@@ -108,6 +102,11 @@ export interface FolderHost {
   /** A result from a folder in `dirsHideFloatingResult`: kept from the floating results. */
   quiet: (id: string) => void;
   home?: string;
+  /**
+   * The pipelines attached to the watched folder `dir`, as the item's automation (`attachedAutomation`), or undefined when
+   * there are none. `id` gives the result's id once it is in the shelf.
+   */
+  automation?: (file: string, kind: MediaKind, dir: string, id: () => string | undefined) => ItemAutomation | undefined;
 }
 /** Optimises files from watched folders as shelf results placed back in their folder. */
 export class FolderResults {
@@ -122,15 +121,16 @@ export class FolderResults {
     const { engine } = this.host, key = this.key(file);
     this.pending.add(key);
     try {
-      const pipelines = pipelinesFor(kind, dir);
-      if (pipelines.length && pipelines.every(pipeline => pipeline.skipsPreOptimisation)) return;
       const hide = hidesResult(dir, this.host.settings(), this.host.home);
+      let staged: string | undefined;
+      const automation = this.host.automation?.(file, kind, dir, () => staged);
       await this.host.makeRoom();
       if (this.cancelled.has(key)) return;
       // Watched files are optimised in their own format; converting is left to the card.
       const id = await engine.importPath(file, 'folder', { ...this.host.options(), format: 'auto' }, undefined, {
-        placement: folderPlacement(file, kind, this.host.env, this.host.saved),
+        placement: folderPlacement(file, kind, this.host.env, this.host.saved), automation,
         staged: id => {
+          staged = id;
           this.ids.set(key, id);
           if (this.cancelled.has(key)) void engine.dismiss(id).catch(() => {});
           else if (hide) this.host.quiet(id);

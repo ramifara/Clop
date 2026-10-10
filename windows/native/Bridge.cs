@@ -14,8 +14,33 @@ using Accessibility;
 using System.Windows.Automation;
 
 namespace ClopWindows {
+  // Opens a file in a packaged (Store) app by its AUMID, the way Explorer's "Open with" does.
+  [ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IApplicationActivationManager {
+    [PreserveSig] int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, [MarshalAs(UnmanagedType.LPWStr)] string arguments, int options, out uint processId);
+    [PreserveSig] int ActivateForFile([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, IntPtr itemArray, [MarshalAs(UnmanagedType.LPWStr)] string verb, out uint processId);
+    [PreserveSig] int ActivateForProtocol([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, IntPtr itemArray, out uint processId);
+  }
+  [ComImport, Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")] class ApplicationActivationManager { }
+
   // Windows PowerShell 5.1 runs this helper on an STA thread. No runtime installation needed.
   public static class Bridge {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern int SHCreateItemFromParsingName(string path, IntPtr bindContext, ref Guid riid, out IntPtr item);
+    [DllImport("shell32.dll")] static extern int SHCreateShellItemArrayFromShellItem(IntPtr item, ref Guid riid, out IntPtr array);
+    static void OpenInPackagedApp(string aumid, string file) {
+      Guid shellItem = new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), itemArray = new Guid("b63ea76d-1f85-456f-a19c-48159efa858b");
+      IntPtr item = IntPtr.Zero, array = IntPtr.Zero;
+      try {
+        Marshal.ThrowExceptionForHR(SHCreateItemFromParsingName(file, IntPtr.Zero, ref shellItem, out item));
+        Marshal.ThrowExceptionForHR(SHCreateShellItemArrayFromShellItem(item, ref itemArray, out array));
+        var manager = (IApplicationActivationManager)new ApplicationActivationManager();
+        uint process;
+        Marshal.ThrowExceptionForHR(manager.ActivateForFile(aumid, array, "open", out process));
+      } finally {
+        if (array != IntPtr.Zero) Marshal.Release(array);
+        if (item != IntPtr.Zero) Marshal.Release(item);
+      }
+    }
     [DllImport("user32.dll")] static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
@@ -319,6 +344,11 @@ namespace ClopWindows {
           }
           Sequence = GetClipboardSequenceNumber();
           Emit(new { type = "reply", id, ok = true, sequence = Sequence }); return;
+        }
+        if (type == "open-with") {
+          // The app process validates both: an AUMID from the Start menu's app list, and an absolute path to an existing file.
+          OpenInPackagedApp(Convert.ToString(command["aumid"]), Convert.ToString(command["file"]));
+          Emit(new { type = "reply", id, ok = true }); return;
         }
         throw new InvalidOperationException("Unknown Windows bridge command.");
       } catch (Exception error) { Emit(new { type = "reply", id, ok = false, error = error.Message }); }
