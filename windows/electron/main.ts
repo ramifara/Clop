@@ -223,13 +223,15 @@ function updateTray() {
     { label: 'Show latest results', click: showLatest },
     { label: 'Optimise clipboard', accelerator: 'Control+Shift+C', click: () => { void optimiseClipboard(undefined, [], true); } },
     { type: 'separator' },
-    { label: 'Watch clipboard', type: 'checkbox', checked: settings.enableClipboardOptimiser, click: item => { void updateSettings({ enableClipboardOptimiser: item.checked }); } },
-    { label: 'Keep drop zone visible', type: 'checkbox', checked: settings.keepDropZoneVisible, click: item => { void updateSettings({ keepDropZoneVisible: item.checked }); } },
+    { label: 'Watch clipboard', type: 'checkbox', checked: settings.enableClipboardOptimiser, click: item => toggleSetting({ enableClipboardOptimiser: item.checked }) },
+    { label: 'Keep drop zone visible', type: 'checkbox', checked: settings.keepDropZoneVisible, click: item => toggleSetting({ keepDropZoneVisible: item.checked }) },
     { label: 'Settings…', click: () => main.show() },
     { label: 'Open originals and results', click: () => { void shell.openPath(storage); } },
     { type: 'separator' }, { label: 'Quit Clop', click: () => app.quit() },
   ]));
 }
+// A failed tray toggle rebuilds the menu so its checkbox shows the setting that is actually in effect.
+function toggleSetting(value: unknown) { updateSettings(value).catch(error => { updateTray(); inform(message(error)); }); }
 async function updateSettings(value: unknown) {
   settings = await store.set(value);
   if (!settings.enableClipboardOptimiser) pickup.cancel();
