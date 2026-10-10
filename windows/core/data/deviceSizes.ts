@@ -1,4 +1,4 @@
-import { groupMatches, type CropSizeGroup, type Size } from './cropSizes';
+import { findSize, groupMatches, type CropSizeGroup, type Size } from './cropSizes';
 
 // Port of Shared/DeviceSizes.swift: screen sizes in pixels, portrait, newest devices first.
 const sizes = (table: Record<string, [number, number]>) => Object.fromEntries(Object.entries(table).map(([name, [width, height]]) => [name, { width, height }])) as Record<string, Size>;
@@ -71,11 +71,4 @@ export const DEVICE_SIZE_GROUPS: { category: string; groups: CropSizeGroup[] }[]
 export const deviceSizeGroup = (name: string) => DEVICE_SIZE_GROUPS.flatMap(c => c.groups).find(g => groupMatches(g, name));
 
 /** `findDeviceSize`: a device or device group's screen size by name, case-insensitively. */
-export function findDeviceSize(name: string): Size | undefined {
-  if (Object.hasOwn(DEVICE_SIZES, name)) return DEVICE_SIZES[name];
-  const needle = name.toLowerCase();
-  const key = Object.keys(DEVICE_SIZES).find(k => k.toLowerCase() === needle);
-  if (key) return DEVICE_SIZES[key];
-  const found = deviceSizeGroup(name);
-  return found && { width: found.width, height: found.height };
-}
+export const findDeviceSize = (name: string) => findSize(DEVICE_SIZES, deviceSizeGroup, name);

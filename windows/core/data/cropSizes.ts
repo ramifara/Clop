@@ -25,3 +25,13 @@ export function groupMatches(group: CropSizeGroup, name: string) {
   const needle = name.toLowerCase();
   return group.name.toLowerCase() === needle || group.members.some(member => member.toLowerCase() === needle);
 }
+
+/** A size by its exact name, then case-insensitively, then by a group's name or member (`findDeviceSize`, `findPaperSize`). */
+export function findSize(table: Record<string, Size>, group: (name: string) => CropSizeGroup | undefined, name: string): Size | undefined {
+  if (Object.hasOwn(table, name)) return table[name];
+  const needle = name.toLowerCase();
+  const key = Object.keys(table).find(k => k.toLowerCase() === needle);
+  if (key) return table[key];
+  const found = group(name);
+  return found && { width: found.width, height: found.height };
+}
