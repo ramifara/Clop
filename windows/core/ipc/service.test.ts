@@ -144,6 +144,7 @@ test('plain requests become steps that end in one optimise left for placement', 
     { optimise: { encoder: 'aggressive', adaptive: false, location: 'temporaryFolder', compression: { tier: 'smaller', factor: 70 } } },
   ]);
   assert.deepEqual(requestSteps({ ...request, size: { width: 16, height: 9, name: '', longEdge: false, smartCrop: true, isAspectRatio: true } }, 'image')[0], { crop: { aspectRatio: '16:9', smartCrop: true, location: 'inPlace' } });
+  assert.deepEqual(requestSteps({ ...request, size: { width: 100, height: 100, name: '', longEdge: false, smartCrop: false } }, 'audio').map(step => Object.keys(step)[0]), ['changeSpeed', 'optimise'], 'a crop does not lower an audio bitrate');
   assert.deepEqual(requestSteps({ ...request, audioBitrate: 128 }, 'audio').map(step => Object.keys(step)[0]), ['downscale', 'changeSpeed', 'lowerBitrate', 'optimise']);
   assert.deepEqual([factorText(0.5), factorText(0.25), factorText(0.125), cropSizeText({ width: 1919, height: 0, name: '', longEdge: false, smartCrop: false }), cropSizeText({ width: 1200, height: 630, name: '', longEdge: false, smartCrop: false })], ['0.5', '0.25', '0.125', '1920', '1200x630']);
 });

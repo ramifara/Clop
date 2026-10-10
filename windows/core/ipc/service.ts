@@ -79,7 +79,8 @@ function cropParams(size: CropSize) {
 export function requestSteps(req: OptimisationRequest, kind: Exclude<MediaKind, 'pdf'>): PipelineStep[] {
   const steps: PipelineStep[] = [], visual = kind === 'image' || kind === 'video';
   if (req.size && visual) steps.push(makeStep('crop', cropParams(req.size)));
-  else if (req.downscaleFactor !== undefined && req.downscaleFactor < 1) steps.push(makeStep('downscale', { factor: req.downscaleFactor }));
+  // `clop crop` also sends a downscale factor, which only applies without a size: an audio file in a crop keeps its bitrate.
+  else if (!req.size && req.downscaleFactor !== undefined && req.downscaleFactor < 1) steps.push(makeStep('downscale', { factor: req.downscaleFactor }));
   if (req.changePlaybackSpeedFactor !== undefined && req.changePlaybackSpeedFactor !== 1 && kind !== 'image') {
     const frames = req.changePlaybackSpeedFrames === 'keep' ? 'keepFrames' : req.changePlaybackSpeedFrames === 'drop' ? 'dropFrames' : undefined;
     steps.push(makeStep('changeSpeed', { factor: req.changePlaybackSpeedFactor, ...(frames ? { frames } : {}) }));
@@ -145,9 +146,9 @@ async function keepExtension(produced: string, input: string): Promise<string> {
 }
 
 /** Removes the work folder of a result that has been placed elsewhere. Only the service's own run folders: the app's card files stay. */
-async function discard(produced: string) {
+async function discard(produced: string, final: string) {
   const step = path.dirname(produced), runRoot = path.dirname(step);
-  if (!path.basename(runRoot).startsWith('pipeline-')) return;
+  if (!path.basename(runRoot).startsWith('pipeline-') || samePath(path.dirname(final), step)) return;
   await rm(step, { recursive: true, force: true });
   await rmdir(runRoot).catch(() => {});
 }
@@ -233,7 +234,7 @@ export class ClopService {
           if (!produced && kind === 'pdf') ({ produced, dpi } = await this.pdf(run, input, req, settings, progress));
           produced ??= (await runPipeline({ id: 'request', steps: requestSteps(req, kind as Exclude<MediaKind, 'pdf'>), skipOptimisation: true, hideResult: req.hideFloatingResult }, input, opts)).file;
           final = await this.place(run, produced, input, kind, req, env);
-          if (!samePath(produced, final)) await discard(produced);
+          await discard(produced, final);
         }
         run.current = final;
       } finally { await run.cleanup(); }
