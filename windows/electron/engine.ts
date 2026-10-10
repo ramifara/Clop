@@ -81,6 +81,7 @@ export class ImageEngine extends EventEmitter {
       if (!output.unchanged) e.revision++;
       // Keep earlier results until the session ends: other apps may still be pasting or dragging them.
       e.outputPath = output.path;
+      for (const warning of output.warnings ?? []) console.warn(warning);
       Object.assign(r, { status: 'ready', options, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes,
         preview: output.unchanged ? r.originalPreview : await thumbnail(output.path), unchanged: !!output.unchanged, restored: false });
       this.changed(); this.emit('ready', id);

@@ -11,6 +11,8 @@ import type { MediaJobOptions, MediaOutput } from './types';
 
 // Windows cannot delete or rename a file that sharp's file cache still holds open.
 sharp.cache({ files: 0 });
+/** Every decode refuses corrupt data and stays under the engine's 60-megapixel budget, counted across all frames. */
+const decode = (file: string, animated = false) => sharp(file, { failOn: 'error', limitInputPixels: 60_000_000, animated });
 
 export type ImageFormat = 'png' | 'jpeg' | 'webp' | 'avif' | 'gif';
 export const IMAGE_FORMATS: readonly ImageFormat[] = ['png', 'jpeg', 'webp', 'avif', 'gif'];
@@ -28,7 +30,7 @@ export interface ImageOptimiseOptions {
 }
 type Options = ImageOptimiseOptions & MediaJobOptions;
 type Source = ImageFormat | 'tiff';
-interface Job { input: string; tmp: string; source: Source; meta: Metadata; width: number; height: number; resized: boolean; compression: CompressionQuality; lossless: boolean; adaptive: boolean; opts: Options }
+interface Job { input: string; tmp: string; source: Source; meta: Metadata; width: number; height: number; resized: boolean; compression: CompressionQuality; lossless: boolean; adaptive: boolean; opts: Options; warnings: string[]; started?: boolean }
 /** An optimiser's result; `quantized` is the PNG pngquant started from. */
 interface Encoded { file: string; format: ImageFormat; quantized?: string }
 
@@ -41,7 +43,12 @@ const threads = () => `--threads=${availableParallelism()}`;
  * pngquant and gifsicle open files through the ANSI code page, so a path with other characters
  * (a profile folder such as C:\Users\Zoë) would fail; every file a tool sees lives in that folder.
  */
-const tool = (job: Job, name: ToolName, args: string[]) => run(name, args, { signal: job.opts.signal, cwd: job.tmp });
+function tool(job: Job, name: ToolName, args: string[]) {
+  const running = run(name, args, { signal: job.opts.signal, cwd: job.tmp });
+  if (!job.started) { job.started = true; job.opts.onProgress?.(0); }
+  return running;
+}
+const strip = (job: Job, file: string) => job.opts.stripMetadata ?? true ? stripExif(file, { preserveColour: job.opts.preserveColorMetadata ?? true, signal: job.opts.signal }) : undefined;
 const local = (file: string) => path.basename(file);
 const size = async (file: string) => (await stat(file)).size;
 
@@ -56,6 +63,7 @@ function displaySize(meta: Metadata): [number, number] {
  * Optimises an image the way Clop on macOS does: sharp only decodes, scales and converts, then
  * jpegoptim, pngquant, gifsicle or ffmpeg compress with the arguments the CompressionQuality factor
  * maps to. A result that is not smaller than an unscaled, unconverted input keeps the input.
+ * `onProgress` gets 0 once the first tool is running and 1 when the result is ready.
  */
 export function optimiseImage(input: string, outputDir: string, opts: Options): Promise<MediaOutput> {
   return queue('image')(() => optimise(input, outputDir, opts));
@@ -63,7 +71,7 @@ export function optimiseImage(input: string, outputDir: string, opts: Options): 
 
 async function optimise(input: string, outputDir: string, opts: Options): Promise<MediaOutput> {
   opts.signal?.throwIfAborted();
-  const meta = await sharp(input, { animated: true }).metadata();
+  const meta = await decode(input, true).metadata();
   const source = sourceFormat(meta);
   if (!source || !SOURCES.has(source)) throw new Error(`Clop cannot optimise ${source?.toUpperCase() ?? 'this'} images. Use PNG, JPEG, GIF, WebP, AVIF or TIFF.`);
   const animated = (meta.pages ?? 1) > 1;
@@ -84,11 +92,12 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
   try {
     const copy = path.join(tmp, `source.${source}`);
     await copyFile(input, copy);
-    const job: Job = { input: copy, tmp, source: source as Source, meta, width, height, resized, compression, lossless, adaptive: compression.tier === 'adaptive' && !opts.format, opts };
+    const job: Job = { input: copy, tmp, source: source as Source, meta, width, height, resized, compression, lossless, adaptive: compression.tier === 'adaptive' && !opts.format, opts, warnings: [] };
     const originalBytes = await size(input);
-    const unchanged = (): MediaOutput => ({ path: input, bytes: originalBytes, format: source, width: sourceWidth, height: sourceHeight, unchanged: true });
+    const done = (output: MediaOutput): MediaOutput => { opts.onProgress?.(1); return job.warnings.length ? { ...output, warnings: job.warnings } : output; };
+    const unchanged = () => done({ path: input, bytes: originalBytes, format: source, width: sourceWidth, height: sourceHeight, unchanged: true });
     let result = animated ? await optimiseAnimation(job, format) : await optimiseStill(job, format);
-    if (opts.stripMetadata ?? true) await stripExif(result.file, { preserveColour: opts.preserveColorMetadata ?? true, signal: opts.signal });
+    await strip(job, result.file);
     // A downscaled flat PNG can come out larger than its original: requantize toward the original's colours, or keep the original.
     if (resized && source === 'png' && result.quantized && await size(result.file) > originalBytes) {
       const smaller = await requantizeUnder(job, result.quantized, originalBytes);
@@ -100,8 +109,8 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
     let output = path.join(outputDir, `${opts.name ?? path.parse(input).name}.${result.format}`);
     if (path.resolve(output) === path.resolve(input)) output = path.join(outputDir, `${opts.name ?? path.parse(input).name}-optimised.${result.format}`);
     await retryBusy(() => rename(result.file, output));
-    const [outWidth, outHeight] = displaySize(await sharp(output, { animated: true }).metadata());
-    return { path: output, bytes, format: result.format, width: outWidth, height: outHeight };
+    const [outWidth, outHeight] = displaySize(await decode(output, true).metadata());
+    return done({ path: output, bytes, format: result.format, width: outWidth, height: outHeight });
   } finally { await rm(tmp, { recursive: true, force: true }); }
 }
 
@@ -140,7 +149,7 @@ async function optimiseAnimation(job: Job, format: ImageFormat): Promise<Encoded
 
 /** Decodes, orients, scales and encodes with sharp: an intermediate for the optimisers, or the result for WebP and AVIF. */
 async function encode(job: Job, format: ImageFormat, file = path.join(job.tmp, `encoded.${format}`)) {
-  let image = sharp(job.input).autoOrient().keepIccProfile();
+  let image = decode(job.input).autoOrient().keepIccProfile();
   if (job.resized) image = image.resize(job.width, job.height, { fit: 'inside', withoutEnlargement: true });
   const quality = cq.conversionQuality(job.compression), lossless = job.lossless;
   switch (format) {
@@ -169,27 +178,31 @@ async function pngquant(job: Job, file: string, out: string, args?: string[]) {
   return out;
 }
 
-/** Runs both candidates of an adaptive test to completion, so neither still writes into the temporary folder once it is removed. */
-async function both(main: Promise<string>, other: Promise<string> | undefined) {
+/**
+ * Runs both candidates of an adaptive test to completion, so neither still writes into the temporary
+ * folder once it is removed. The other format failing only costs the comparison, so it becomes a warning.
+ */
+async function both(job: Job, main: Promise<string>, other: Promise<string> | undefined, otherFormat: string) {
   const [a, b] = await Promise.allSettled([main, other]);
   if (a.status === 'rejected') throw a.reason;
+  if (b.status === 'rejected') job.warnings.push(`Clop could not try ${otherFormat} for this image: ${b.reason instanceof Error ? b.reason.message : String(b.reason)}`);
   return [a.value, b.status === 'fulfilled' ? b.value : undefined] as const;
 }
 
 /** optimiseJPEG: jpegoptim capped at the factor's quality; adaptive also tries PNG on low-entropy photos. */
 async function optimiseJPEG(job: Job, file: string): Promise<Encoded> {
   const testPNG = job.adaptive && ((await largeAreaEntropy(file)) ?? 0) < 5;
-  const [jpeg, png] = await both(jpegoptim(job, file, job.lossless ? undefined : cq.jpegMaxQuality(job.compression)),
-    testPNG ? encode(job, 'png', path.join(job.tmp, 'adaptive.png')).then(png => pngquant(job, png, path.join(job.tmp, 'adaptive-pngquant.png'))) : undefined);
+  const [jpeg, png] = await both(job, jpegoptim(job, file, job.lossless ? undefined : cq.jpegMaxQuality(job.compression)),
+    testPNG ? encode(job, 'png', path.join(job.tmp, 'adaptive.png')).then(png => pngquant(job, png, path.join(job.tmp, 'adaptive-pngquant.png'))) : undefined, 'PNG');
   if (png && await size(jpeg) - await size(png) > ADAPTIVE_GAIN) return { file: png, format: 'png' };
   return { file: jpeg, format: 'jpeg' };
 }
 
 /** optimisePNG: pngquant at the factor's speed, quality and palette; adaptive also tries JPEG on opaque images. */
 async function optimisePNG(job: Job, file: string): Promise<Encoded> {
-  const testJPEG = job.adaptive && (await sharp(file).stats()).isOpaque;
-  const [png, jpeg] = await both(pngquant(job, file, path.join(job.tmp, 'pngquant.png')),
-    testJPEG ? encode(job, 'jpeg', path.join(job.tmp, 'adaptive.jpeg')).then(jpeg => jpegoptim(job, jpeg, cq.jpegSecondaryMaxQuality(job.compression))) : undefined);
+  const testJPEG = job.adaptive && (await decode(file).stats()).isOpaque;
+  const [png, jpeg] = await both(job, pngquant(job, file, path.join(job.tmp, 'pngquant.png')),
+    testJPEG ? encode(job, 'jpeg', path.join(job.tmp, 'adaptive.jpeg')).then(jpeg => jpegoptim(job, jpeg, cq.jpegSecondaryMaxQuality(job.compression))) : undefined, 'JPEG');
   if (jpeg && await size(png) - await size(jpeg) > ADAPTIVE_GAIN) return { file: jpeg, format: 'jpeg' };
   return { file: png, format: 'png', quantized: file };
 }
@@ -202,7 +215,7 @@ async function optimiseGIF(job: Job, file: string): Promise<Encoded> {
     file = resized;
   }
   const out = path.join(job.tmp, 'gifsicle.gif');
-  const meta = await sharp(file, { animated: true }).metadata();
+  const meta = await decode(file, true).metadata();
   const drop = job.lossless ? [] : gifFrameDropArgs(meta.delay ?? Array(meta.pages ?? 1).fill(0), cq.gifFrameDropEveryNth(job.compression), job.opts.gifFrameDropBehaviour);
   const args = [...(job.lossless ? ['-O3'] : cq.gifsicleArgs(job.compression)), threads(), '--output', local(out)];
   // Frame selections apply to the input before them; --unoptimize keeps frame-diffed inputs whole through deletion.
@@ -236,16 +249,16 @@ async function requantizeUnder(job: Job, resized: string, originalBytes: number)
   for (const colors of [own, ...[128, 64, 32, 16].filter(c => c !== own)]) {
     const out = await pngquant(job, resized, path.join(job.tmp, `requantized-${colors}.png`), [String(colors), '--force', '--speed', '1']).catch(error => { if (job.opts.signal?.aborted) throw error; });
     if (!out || await size(out) >= originalBytes) continue;
-    if (job.opts.stripMetadata ?? true) await stripExif(out, { preserveColour: job.opts.preserveColorMetadata ?? true, signal: job.opts.signal });
+    await strip(job, out);
     return out;
   }
 }
 
 /** Distinct colours up to `cap` + 1, from a nearest-neighbour sample of at most 256K pixels so no new colours are blended in. */
 async function uniqueColours(file: string, cap: number) {
-  const meta = await sharp(file).metadata(), max = 256 * 1024;
+  const meta = await decode(file).metadata(), max = 256 * 1024;
   const scale = Math.min(1, Math.sqrt(max / ((meta.width ?? 1) * (meta.height ?? 1))));
-  const { data } = await sharp(file).resize(Math.max(1, Math.round((meta.width ?? 1) * scale)), Math.max(1, Math.round((meta.height ?? 1) * scale)), { kernel: 'nearest', fit: 'fill' })
+  const { data } = await decode(file).resize(Math.max(1, Math.round((meta.width ?? 1) * scale)), Math.max(1, Math.round((meta.height ?? 1) * scale)), { kernel: 'nearest', fit: 'fill' })
     .ensureAlpha().raw({ depth: 'uchar' }).toBuffer({ resolveWithObject: true });
   const seen = new Set<number>();
   for (let i = 0; i < data.length && seen.size <= cap; i += 4) seen.add(data.readUInt32LE(i));
@@ -254,9 +267,9 @@ async function uniqueColours(file: string, cap: number) {
 
 /** `largeAreaEntropy`: Shannon entropy of the joined R, G and B histograms, only for images over a megapixel. */
 async function largeAreaEntropy(file: string) {
-  const meta = await sharp(file).metadata();
+  const meta = await decode(file).metadata();
   if ((meta.width ?? 0) * (meta.height ?? 0) <= 1_000_000) return undefined;
-  const { data } = await sharp(file).removeAlpha().toColourspace('srgb').raw({ depth: 'uchar' }).toBuffer({ resolveWithObject: true });
+  const { data } = await decode(file).removeAlpha().toColourspace('srgb').raw({ depth: 'uchar' }).toBuffer({ resolveWithObject: true });
   const histogram = new Float64Array(768);
   for (let i = 0; i + 2 < data.length; i += 3) { histogram[data[i]]++; histogram[256 + data[i + 1]]++; histogram[512 + data[i + 2]]++; }
   const total = data.length - data.length % 3;
@@ -267,7 +280,7 @@ async function largeAreaEntropy(file: string) {
 
 /** Never hand back a still in place of an animation (the checks after gifsicle and ffmpeg in Images.swift). */
 async function keepAnimated(file: string) {
-  if (((await sharp(file, { animated: true }).metadata()).pages ?? 1) < 2) throw new Error('The animation would have been flattened to a single frame.');
+  if (((await decode(file, true).metadata()).pages ?? 1) < 2) throw new Error('The animation would have been flattened to a single frame.');
 }
 
 /**

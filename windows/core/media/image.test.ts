@@ -54,7 +54,9 @@ test('outputs stay within 2% of the sizes recorded for the macOS arguments', asy
 test('JPEG: aggressive compresses harder, and a result that cannot shrink keeps the input', async t => {
   const w = await workspace(t); if (!w) return;
   const input = await w.file('photo.jpg', photo(640, 480).jpeg({ quality: 95 }));
-  const normal = await optimiseImage(input, w.out, { compression: at(30), name: 'normal' });
+  const progress: number[] = [];
+  const normal = await optimiseImage(input, w.out, { compression: at(30), name: 'normal', onProgress: fraction => progress.push(fraction) });
+  assert.deepEqual([progress, normal.warnings], [[0, 1], undefined]);
   const aggressive = await optimiseImage(input, w.out, { compression: at(30), aggressive: true, name: 'aggressive' });
   assert.deepEqual([normal.format, normal.path, normal.width, normal.height], ['jpeg', path.join(w.out, 'normal.jpeg'), 640, 480]);
   assert.ok(aggressive.bytes < normal.bytes && normal.bytes < (await stat(input)).size);
@@ -159,14 +161,37 @@ test('a downscaled flat PNG is requantized toward its own colours, or the origin
   assert.deepEqual([kept.unchanged, kept.path, kept.width, kept.bytes], [true, diagonal, 800, (await stat(diagonal)).size]);
 });
 
-test('aborting stops the optimiser and removes its temporary files', async t => {
+test('an already aborted job never starts', async t => {
+  const w = await workspace(t); if (!w) return;
+  const input = await w.file('photo.jpg', photo(160, 120).jpeg());
+  await assert.rejects(optimiseImage(input, w.out, { compression: at(30), signal: AbortSignal.abort() }), { name: 'AbortError' });
+  await assert.rejects(readdir(w.out), { code: 'ENOENT' });
+});
+
+test('aborting while a tool runs stops it and removes the temporary files', async t => {
   const w = await workspace(t); if (!w) return;
   const input = await w.file('large.png', photo(3000, 2000).png({ compressionLevel: 1 }));
-  const controller = new AbortController();
-  setTimeout(() => controller.abort(), 300);
-  await assert.rejects(optimiseImage(input, w.out, { compression: at(30), signal: controller.signal }), { name: 'AbortError' });
+  const controller = new AbortController(), progress: number[] = [];
+  // Progress 0 arrives once the first tool (pngquant here) has been started.
+  const onProgress = (fraction: number) => { progress.push(fraction); controller.abort(); };
+  await assert.rejects(optimiseImage(input, w.out, { compression: at(30), signal: controller.signal, onProgress }), { name: 'AbortError' });
+  assert.deepEqual(progress, [0]);
   assert.deepEqual(await readdir(w.out), []);
   assert.ok((await readFile(input)).length > 0);
+});
+
+test('a failed adaptive comparison is a warning, not a failure', { skip: process.platform === 'win32' && 'replaces jpegoptim with a shell script' }, async t => {
+  const w = await workspace(t); if (!w) return;
+  const tools = path.join(w.dir, 'tools'), broken = path.join(tools, 'jpegoptim');
+  await mkdir(tools);
+  await writeFile(broken, '#!/bin/sh\necho "jpegoptim is broken" >&2\nexit 1\n', { mode: 0o755 });
+  const previous = process.env.CLOP_TOOLS_DIR;
+  process.env.CLOP_TOOLS_DIR = tools;
+  t.after(() => { if (previous === undefined) delete process.env.CLOP_TOOLS_DIR; else process.env.CLOP_TOOLS_DIR = previous; });
+  const output = await optimiseImage(await w.file('photo.png', photo(320, 240).png()), w.out, { compression: adaptive });
+  assert.equal(output.format, 'png');
+  assert.equal(output.warnings?.length, 1);
+  assert.match(output.warnings![0], /could not try JPEG.*jpegoptim is broken/s);
 });
 
 test('works in folders whose names fall outside the ANSI code page', async t => {
