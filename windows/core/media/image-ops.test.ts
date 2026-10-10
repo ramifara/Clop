@@ -94,6 +94,14 @@ test('watermarks a corner at the requested scale and opacity, and every frame of
   await assert.rejects(watermarkImage(input, w.out, { compression: at(30), watermark: { file: path.join(w.dir, 'missing.png') } }), /not found/);
   // ffmpeg's watermark width is truncated, as watermarkWithFFmpeg computes it.
   assert.equal(watermarkFilters(333, { file: mark }).scale.split(':')[0], 'scale=49');
+  // A watermark taller than an animation's frame is fitted inside it rather than cut off by the padding.
+  const tall = await w.file('tall.png', sharp({ create: { width: 20, height: 80, channels: 4, background: '#0000ffff' } }).png());
+  const fitted = await watermarkImage(gif, w.out, { compression: at(30), watermark: { file: tall, scale: 0.5 }, name: 'fitted' });
+  for (const y of [5, 75]) {
+    const { data } = await sharp(fitted.path, { page: 0 }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const [r, g, b] = data.subarray((y * 120 + 90) * 3, (y * 120 + 90) * 3 + 3);
+    assert.ok(r < 40 && g < 40 && b > 200, `row ${y} has ${r},${g},${b} where the watermark should be`);
+  }
 });
 
 test('stripping keeps DPI, orientation and colour; keeping copies every tag but an obsolete rotation', async t => {

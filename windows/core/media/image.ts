@@ -208,7 +208,7 @@ async function optimiseAnimation(job: Job, format: ImageFormat): Promise<Encoded
   const mark = watermark && path.join(job.tmp, `watermark${path.extname(watermark.file).toLowerCase()}`);
   if (mark) await copyFile(watermark.file, mark);
   const inputs = ['-i', local(job.input), ...(mark ? ['-i', local(mark)] : [])];
-  const filters = watermark && watermarkFilters(job.width, watermark);
+  const filters = watermark && watermarkFilters(job.width, watermark, job.height);
   const graph = (tail: string[]) => filters
     ? ['-filter_complex', [`[0:v]${[...geometry, 'null'].join(',')}[base]`, `[1:v]${filters.scale}[wm]`, `[base][wm]${[filters.overlay, ...tail].join(',')}`].join(';')]
     : (geometry.length || tail.length ? ['-vf', [...geometry, ...tail].join(',')] : []);

@@ -8,10 +8,19 @@ const PADDING = 20;
 /** A fraction of the image's width (0.15 by default), at least 16 pixels and at most the image's width. Swift rounds it for stills and truncates it for ffmpeg. */
 const watermarkWidth = (imageWidth: number, { scale = 0.15 }: Watermark, whole: (n: number) => number) => Math.min(imageWidth, Math.max(16, whole(imageWidth * scale)));
 
-/** The ffmpeg filters that scale the watermark input and overlay it, from `watermarkWithFFmpeg` (PipelineExecution.swift). */
-export function watermarkFilters(imageWidth: number, watermark: Watermark) {
-  const at = { topLeft: `${PADDING}:${PADDING}`, topRight: `W-w-${PADDING}:${PADDING}`, bottomLeft: `${PADDING}:H-h-${PADDING}`, center: '(W-w)/2:(H-h)/2', bottomRight: `W-w-${PADDING}:H-h-${PADDING}` };
-  return { scale: `scale=${watermarkWidth(imageWidth, watermark, Math.trunc)}:-1,format=rgba,colorchannelmixer=aa=${watermark.opacity ?? 1}`, overlay: `overlay=${at[watermark.position ?? 'bottomRight']}` };
+/**
+ * The ffmpeg filters that scale the watermark input and overlay it, from `watermarkWithFFmpeg`
+ * (PipelineExecution.swift). With the frame's height the watermark is kept inside the frame, as the
+ * still path keeps it: no taller than the frame, and placed no further out than its edges.
+ */
+export function watermarkFilters(imageWidth: number, watermark: Watermark, imageHeight?: number) {
+  const at = { topLeft: [`${PADDING}`, `${PADDING}`], topRight: [`W-w-${PADDING}`, `${PADDING}`], bottomLeft: [`${PADDING}`, `H-h-${PADDING}`], center: ['(W-w)/2', '(H-h)/2'], bottomRight: [`W-w-${PADDING}`, `H-h-${PADDING}`] }[watermark.position ?? 'bottomRight'];
+  const width = watermarkWidth(imageWidth, watermark, Math.trunc);
+  if (imageHeight === undefined) return { scale: `scale=${width}:-1,format=rgba,colorchannelmixer=aa=${watermark.opacity ?? 1}`, overlay: `overlay=${at.join(':')}` };
+  return {
+    scale: `scale=w='max(1,min(${width},trunc(${imageHeight}*iw/ih)))':h=-1,format=rgba,colorchannelmixer=aa=${watermark.opacity ?? 1}`,
+    overlay: `overlay=x='max(0,min(W-w,${at[0]}))':y='max(0,min(H-h,${at[1]}))'`,
+  };
 }
 
 /** The watermark scaled to a `width` × `height` image and placed as `watermarked` (Images.swift) draws it, kept inside the image. */
