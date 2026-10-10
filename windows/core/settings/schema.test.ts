@@ -43,6 +43,9 @@ test('defaults follow Settings.swift and the Windows encodings', () => {
   assert.deepEqual(defaultSettings({ ...paths, desktop: '/home/user/OneDrive/Desktop' }).imageDirs, ['~/OneDrive/Desktop']);
   assert.deepEqual(defaultSettings({ ...paths, desktop: '/srv/desk', userData: '/srv/clop' }).imageDirs.concat(defaultSettings({ ...paths, userData: '/srv/clop' }).workdir), ['/srv/desk', path.join('/srv/clop', 'work')]);
   assert.equal(defaults.videoEncoder, 'auto');
+  // Windows keeps optimising image files copied in Explorer, as it did before the macOS key existed here.
+  assert.equal(defaults.optimiseImagePathClipboard, true);
+  assert.match(settingsSchema.optimiseImagePathClipboard.encoding!, /Windows default differs from macOS/);
   assert.deepEqual(defaults.keyComboModifiers, ['Control', 'Shift']);
   assert.deepEqual(defaults.enabledKeys, ['-', '=', 'Backspace', 'Space', 'Z', 'P', 'C', 'A', 'X', 'R', 'K', 'Escape']);
   assert.deepEqual(defaults.imageCompression, { tier: 'custom', factor: 30 });

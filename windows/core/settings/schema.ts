@@ -107,7 +107,7 @@ export const settingsSchema = {
   optimiseVideoClipboard: bool(false, 'Optimise copied video files.'),
   optimiseAudioClipboard: bool(false, 'Optimise copied audio files.'),
   optimisePDFClipboard: bool(false, 'Optimise copied PDF files.'),
-  optimiseImagePathClipboard: bool(false, 'Optimise copied image files (paths rather than image data).'),
+  optimiseImagePathClipboard: bool(true, 'Optimise copied image files (paths rather than image data).', { encoding: 'Windows default differs from macOS (false): the Windows app has always optimised image files copied in Explorer.' }),
   stripMetadata: bool(true, 'Strip identifying EXIF metadata.'),
   preserveDates: bool(true, 'Keep the original creation and modification dates.'),
   preserveColorMetadata: bool(true, 'Keep colour profile tags when stripping metadata.'),
