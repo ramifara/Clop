@@ -1,5 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { COMPRESSION_TIERS, settingsSchema, SETTING_KEYS, type ClopSettings, type CompressionQuality, type SettingKey, type SettingSpec } from '../settings/schema';
+import { isReadable, type Stored } from '../pipeline/codec';
+import { stepKind, type Pipeline, type PresetZone } from '../pipeline/model';
 import type { MCPSettingInfo, SettingsRequest, SettingsResponse } from './protocol';
 
 // `MCPSettingsBridge` (Clop/MCPSettings.swift): every setting as an agent or `clop settings` sees it, each value as a
@@ -147,29 +149,50 @@ export function mcpRefusal(origin: string | undefined, pipeline: string | undefi
   return step ? scriptRefusal(step) : undefined;
 }
 
-/** Every pipeline a stored library value holds: saved pipelines, preset zones' pipelines and attached pipelines. */
-const storedPipelines = (key: SettingKey, value: unknown): unknown[] => {
-  if (key === 'presetZones') return Array.isArray(value) ? value.map(zone => (zone as { pipeline?: unknown })?.pipeline ?? zone) : [];
-  if (key.startsWith('pipelinesToRunOn')) return value && typeof value === 'object' ? Object.values(value).flat() : [];
-  return key === 'savedPipelines' && Array.isArray(value) ? value : [];
-};
+/** The pipelines of a decoded library value, grouped by where they sit: one group per watched source, one for the library or the zones. */
+function placedPipelines(key: SettingKey, decoded: unknown): Map<string, Stored<Pipeline>[]> {
+  if (key === 'savedPipelines') return new Map([['', decoded as Stored<Pipeline>[]]]);
+  if (key === 'presetZones') return new Map([['', (decoded as Stored<PresetZone>[]).map(zone => isReadable(zone) ? zone.pipeline : zone)]]);
+  if (key.startsWith('pipelinesToRunOn')) return new Map(Object.entries(decoded as Record<string, Stored<Pipeline>[]>));
+  return new Map();
+}
+const SCRIPT_KINDS: readonly string[] = ['runScript', 'runShortcut'];
+const scriptKind = (pipeline: Pipeline) => pipeline.steps.map(stepKind).find(kind => SCRIPT_KINDS.includes(kind));
 
 /**
- * An agent's library write: refused when a pipeline it adds (or a saved pipeline a new reference points at) has a script
- * step and the user has not allowed those. Pipelines already stored are the user's own and are not judged.
+ * An agent's library write: refused, unless the user allowed script steps, when it puts a pipeline with a script step
+ * somewhere it was not before, or points a reference at a saved pipeline with one. Every value is decoded exactly as the
+ * app will read it (`settingsSchema[key].parse`), so legacy shapes and escaped JSON strings are judged by the steps they
+ * become, never by their text. Newness is per key and source, so moving an attachment to another folder, file type or
+ * the clipboard counts as new. A reference is judged by every saved pipeline with its id when it is new, and by the one
+ * it runs (`resolvePipeline`) when a library change moves it. An entry this version cannot read cannot be checked, so an
+ * agent may not add one.
  */
 function libraryRefusal(values: Record<string, unknown>, settings: ClopSettings): string | undefined {
   if (settings.mcpAllowScriptSteps) return undefined;
   const json = (value: unknown) => JSON.stringify(value) ?? '';
-  const saved = [...storedPipelines('savedPipelines', values.savedPipelines ?? settings.savedPipelines)];
+  // Both sides are decoded the same way, so an entry the agent left as it was compares equal however it was sent.
+  const before = (key: SettingKey) => spec(key).parse(settings[key]) ?? settings[key];
+  const after = (key: SettingKey) => key in values ? spec(key).parse(values[key]) : before(key);
+  const savedBefore = (before('savedPipelines') as Stored<Pipeline>[]).filter(isReadable);
+  const savedAfter = (after('savedPipelines') as Stored<Pipeline>[]).filter(isReadable);
+  const resolved = (entry: Pipeline, saved: Pipeline[]) => entry.libraryID === undefined ? undefined : saved.find(other => other.id === entry.libraryID);
   for (const key of LIBRARY_KEYS) {
-    if (!(key in values)) continue;
-    const before = new Set(storedPipelines(key, settings[key]).map(json));
-    for (const added of storedPipelines(key, values[key]).filter(entry => !before.has(json(entry)))) {
-      const id = (added as { libraryID?: unknown })?.libraryID;
-      const target = id === undefined ? undefined : saved.find(entry => (entry as { id?: unknown })?.id === id);
-      const step = SCRIPT_STEP.exec(json(added))?.[0] ?? SCRIPT_STEP.exec(json(target))?.[0];
-      if (step) return scriptRefusal(step);
+    const was = placedPipelines(key, before(key));
+    for (const [place, entries] of placedPipelines(key, after(key))) {
+      const known = new Set((was.get(place) ?? []).map(json));
+      for (const entry of entries) {
+        if (!known.has(json(entry))) {
+          if (!isReadable(entry)) return `Clop cannot read one of the pipelines in this change (${entry.reason}), so it cannot check it for script steps. Agents may only save pipelines Clop can read.`;
+          const targets = entry.libraryID === undefined ? [] : [...savedBefore, ...savedAfter].filter(other => other.id === entry.libraryID);
+          const step = scriptKind(entry) ?? targets.map(scriptKind).find(Boolean);
+          if (step) return scriptRefusal(step);
+        } else if (isReadable(entry)) {
+          const target = resolved(entry, savedAfter);
+          const step = target && json(target) !== json(resolved(entry, savedBefore)) ? scriptKind(target) : undefined;
+          if (step) return scriptRefusal(step);
+        }
+      }
     }
   }
   return undefined;

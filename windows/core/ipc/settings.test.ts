@@ -111,3 +111,58 @@ test('agents write only the keys the macOS bridge lists, and never plant script 
   assert.equal((await mcp({ action: 'update', values: { savedPipelines: [userScript, pipeline('NEW', 'runScript(code: "calc")')] } })).ok, true);
   assert.equal((await mcp({ action: 'set', key: 'editorAppImage', value: 'C:\\editor.exe' })).ok, true);
 });
+
+/** An MCP-enabled store holding the user's own script pipeline, and an agent's `update`. */
+function agentLibrary() {
+  const store = memoryStore({ mcpEnabled: true });
+  const userScript = { id: 'USER', name: 'Mine', steps: parseSteps('runScript(code: "echo mine")'), skipOptimisation: true, hideResult: false };
+  store.current.savedPipelines = [userScript];
+  const update = (values: Record<string, unknown>) => handleSettingsRequest({ action: 'update', values, origin: 'mcp' }, store);
+  return { store, userScript, update };
+}
+
+test('the script gate judges a legacy preset zone by the runShortcut step it becomes', async () => {
+  const { update } = agentLibrary();
+  assert.match((await update({ presetZones: [{ id: 'old-all', icon: 'x', name: 'old', shortcut: { name: 'evil', identifier: 'evil' } }] })).error!, /runShortcut step/);
+  assert.equal((await update({ presetZones: [{ id: 'old-all', icon: 'x', name: 'old' }] })).ok, true, 'a zone with neither stays a plain zone');
+});
+
+test('the script gate judges a pipeline sent as an escaped JSON string by its decoded steps', async () => {
+  const { update } = agentLibrary();
+  const escaped = '{"id":"ESC","steps":[{"run\\u0053cript":{"code":"calc"}}],"skipOptimisation":true,"hideResult":false}';
+  assert.equal(JSON.parse(escaped).steps[0].runScript.code, 'calc');
+  assert.match((await update({ savedPipelines: [escaped] })).error!, /runScript step/);
+  assert.match((await update({ pipelinesToRunOnImage: { clipboard: [escaped] } })).error!, /runScript step/, 'clipboard pipelines run on the next copy');
+  assert.match((await update({ presetZones: [{ id: 'z', icon: 'x', name: 'z', pipeline: escaped }] })).error!, /runScript step/);
+});
+
+test('the script gate counts a script pipeline or reference moved to another source as new', async () => {
+  const { store, userScript, update } = agentLibrary();
+  const copy = { ...userScript, id: 'COPY' }, reference = { id: 'REF', steps: [], skipOptimisation: false, hideResult: false, libraryID: 'USER' };
+  store.current.pipelinesToRunOnImage = { '~/Mine': [copy, reference] };
+  assert.match((await update({ pipelinesToRunOnImage: { '~/Mine': [copy, reference], clipboard: [copy] } })).error!, /runScript step/);
+  assert.match((await update({ pipelinesToRunOnImage: { '~/Mine': [], clipboard: [reference] } })).error!, /runScript step/);
+  assert.match((await update({ pipelinesToRunOnVideo: { '~/Mine': [copy] } })).error!, /runScript step/, 'another file type is another place');
+  assert.equal((await update({ pipelinesToRunOnImage: { '~/Mine': [copy, reference], '~/Other': [] } })).ok, true, 'leaving them where the user put them is fine');
+  assert.equal((await update({ pipelinesToRunOnImage: { '~/Mine': [copy] } })).ok, true, 'taking an attachment away is fine');
+});
+
+test('the script gate follows references to the pipeline the app will run', async () => {
+  const { store, userScript, update } = agentLibrary();
+  const plain = { id: 'USER', name: 'Plain', steps: parseSteps('convert(to: webp)'), skipOptimisation: false, hideResult: false };
+  const reference = { id: 'REF', steps: [], skipOptimisation: false, hideResult: false, libraryID: 'USER' };
+  // Two saved pipelines share an id: a reference runs the first one.
+  store.current.savedPipelines = [plain, userScript];
+  assert.match((await update({ pipelinesToRunOnImage: { clipboard: [reference] } })).error!, /runScript step/, 'any pipeline a new reference may reach');
+  store.current.pipelinesToRunOnImage = { clipboard: [reference] };
+  assert.match((await update({ savedPipelines: [userScript, plain] })).error!, /runScript step/, 'reordering the library to point a reference at a script');
+  assert.equal((await update({ savedPipelines: [plain] })).ok, true);
+});
+
+test('agents may not add pipelines Clop cannot read, but keep the ones already stored', async () => {
+  const { store, update } = agentLibrary();
+  const future = { id: 'NEW', steps: [{ launchMissiles: {} }], skipOptimisation: true, hideResult: false };
+  assert.match((await update({ savedPipelines: [future] })).error!, /cannot read/);
+  store.current.savedPipelines = settingsSchema.savedPipelines.parse([future])!;
+  assert.equal((await update({ savedPipelines: [future, { id: 'SAFE', steps: parseSteps('convert(to: webp)'), skipOptimisation: false, hideResult: false }] })).ok, true);
+});
