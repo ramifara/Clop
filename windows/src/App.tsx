@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
 import { api } from './api';
 import { Icon } from './icons';
-import type { AppState, ClopSettings, ImageOptions, ItemResult } from './types';
+import type { AppEntry, AppState, ClopSettings, ImageOptions, ItemResult } from './types';
 
 const preferences = new URLSearchParams(location.search).has('preferences');
 const humanSize = (value: number) => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(value / 1000))} KB`;
@@ -138,5 +138,22 @@ function ResultCard({ item, native, run, onSelect }: { item: ItemResult; native:
 type Toggle = { [K in keyof ClopSettings]: ClopSettings[K] extends boolean ? K : never }[keyof ClopSettings];
 function Preferences({ settings, run }: { settings: ClopSettings; run: Run }) {
   function toggle(key: Toggle, title: string) { return <label className="preference-row" key={key}><span>{title}</span><input type="checkbox" checked={Boolean(settings[key])} onChange={event => void run(() => api.settings({ [key]: event.target.checked }))}/></label>; }
-  return <div className="preferences"><h1>Clop settings</h1>{toggle('enableClipboardOptimiser', 'Automatically optimise the clipboard')}{toggle('optimiseImagePathClipboard', 'Also optimise copied image files and paths')}{toggle('optimiseVideoClipboard', 'Optimise copied videos')}{toggle('optimisePDFClipboard', 'Optimise copied PDFs')}{toggle('optimiseAudioClipboard', 'Optimise copied audio files')}{toggle('autoCopyToClipboard', 'Copy results of drops to the clipboard')}{toggle('enableDragAndDrop', 'Show drop target while dragging')}{toggle('keepDropZoneVisible', 'Keep drop target visible')}{toggle('floatingResultsAlwaysOnTop', 'Keep results above other windows')}{toggle('launchAtLogin', 'Start with Windows')}<label className="preference-row"><span>Position</span><select value={settings.floatingResultsCorner} onChange={event => void run(() => api.settings({ floatingResultsCorner: event.target.value as ClopSettings['floatingResultsCorner'] }))}>{['bottomRight', 'bottomLeft', 'topRight', 'topLeft'].map(corner => <option key={corner} value={corner}>{corner.replace(/[A-Z]/, letter => ` ${letter.toLowerCase()}`)}</option>)}</select></label><label className="preference-row"><span>Default format</span><select value={settings.defaultImageFormat} onChange={event => void run(() => api.settings({ defaultImageFormat: event.target.value as ClopSettings['defaultImageFormat'] }))}><option value="auto">Keep original format</option>{['png', 'jpeg', 'webp', 'avif', 'gif'].map(format => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select></label><p>Ctrl+Shift+C optimises the clipboard.<br/>Ctrl+Shift+Space shows the latest result.<br/>1–9 downscale; C copies; R restores.</p></div>;
+  return <div className="preferences"><h1>Clop settings</h1>{toggle('enableClipboardOptimiser', 'Automatically optimise the clipboard')}{toggle('optimiseImagePathClipboard', 'Also optimise copied image files and paths')}{toggle('optimiseVideoClipboard', 'Optimise copied videos')}{toggle('optimisePDFClipboard', 'Optimise copied PDFs')}{toggle('optimiseAudioClipboard', 'Optimise copied audio files')}{toggle('autoCopyToClipboard', 'Copy results of drops to the clipboard')}{toggle('enableDragAndDrop', 'Show drop target while dragging')}{toggle('keepDropZoneVisible', 'Keep drop target visible')}{toggle('floatingResultsAlwaysOnTop', 'Keep results above other windows')}{toggle('launchAtLogin', 'Start with Windows')}<IgnoredApps ignored={settings.clipboardIgnoredAppBundleIds} run={run}/><label className="preference-row"><span>Position</span><select value={settings.floatingResultsCorner} onChange={event => void run(() => api.settings({ floatingResultsCorner: event.target.value as ClopSettings['floatingResultsCorner'] }))}>{['bottomRight', 'bottomLeft', 'topRight', 'topLeft'].map(corner => <option key={corner} value={corner}>{corner.replace(/[A-Z]/, letter => ` ${letter.toLowerCase()}`)}</option>)}</select></label><label className="preference-row"><span>Default format</span><select value={settings.defaultImageFormat} onChange={event => void run(() => api.settings({ defaultImageFormat: event.target.value as ClopSettings['defaultImageFormat'] }))}><option value="auto">Keep original format</option>{['png', 'jpeg', 'webp', 'avif', 'gif'].map(format => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select></label><p>Ctrl+Shift+C optimises the clipboard.<br/>Ctrl+Shift+Space shows the latest result.<br/>1–9 downscale; C copies; R restores.</p></div>;
+}
+
+/** The ignored-apps picker: running apps and Start Menu apps, refreshed whenever the settings window shows. */
+function IgnoredApps({ ignored, run }: { ignored: string[]; run: Run }) {
+  const [apps, setApps] = useState<AppEntry[]>();
+  useEffect(() => {
+    const load = () => { if (document.visibilityState === 'visible') api.apps().then(setApps, () => setApps([])); };
+    load(); document.addEventListener('visibilitychange', load);
+    return () => document.removeEventListener('visibilitychange', load);
+  }, []);
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const name = (entry: string) => apps?.find(app => same(app.path, entry))?.name ?? entry.split(/[\\/]/).pop();
+  const save = (list: string[]) => void run(() => api.settings({ clipboardIgnoredAppBundleIds: list }));
+  return <div className="ignored-apps"><span>Ignore copies from these apps</span>
+    {ignored.length ? <ul>{ignored.map(entry => <li key={entry} title={entry}><span>{name(entry)}</span><button aria-label={`Stop ignoring ${name(entry)}`} onClick={() => save(ignored.filter(other => other !== entry))}><Icon name="close" size={9}/></button></li>)}</ul> : <small>None: copies from every app are optimised.</small>}
+    <select aria-label="Ignore an app" value="" onChange={event => { if (event.target.value) save([...ignored, event.target.value]); }}><option value="">{apps ? 'Add an app…' : 'Loading apps…'}</option>{apps?.filter(app => !ignored.some(entry => same(entry, app.path))).map(app => <option key={app.path} value={app.path} title={app.path}>{app.running ? `${app.name} (running)` : app.name}</option>)}</select>
+  </div>;
 }

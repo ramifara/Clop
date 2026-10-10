@@ -15,6 +15,8 @@ export interface ItemResult {
   durationMs?: number; pages?: number; progress?: number;
 }
 export type { ClopSettings };
+/** An app the ignored-apps picker offers: a running app with a window, or a Start Menu app. `path` is an exe path, or an AUMID for a packaged app. */
+export interface AppEntry { name: string; path: string; running: boolean }
 export interface AppState { items: ItemResult[]; settings: ClopSettings; native: boolean; platform: string; dropActive?: boolean; notice?: string }
 export interface ClopApi {
   state(): Promise<AppState>; subscribe(callback: (state: AppState) => void): () => void;
@@ -22,6 +24,8 @@ export interface ClopApi {
   apply(id: string, options: ImageOptions): Promise<void>; restore(id: string): Promise<void>;
   copy(id: string): Promise<void>; save(id: string): Promise<void>; reveal(id: string): Promise<void>;
   drag(id: string): void; dismiss(id: string): Promise<void>; settings(settings: Partial<ClopSettings>): Promise<void>;
+  /** Apps for the ignored-apps picker; empty without the Windows helper. */
+  apps(): Promise<AppEntry[]>;
   window(action: 'hide' | 'main' | 'float' | 'quit' | 'minimize' | 'interactive' | 'passthrough' | 'dismiss-notice'): Promise<void>;
 }
 declare global { interface Window { clop?: ClopApi } }

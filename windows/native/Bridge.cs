@@ -31,6 +31,11 @@ namespace ClopWindows {
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
+    [DllImport("user32.dll")] static extern IntPtr GetClipboardOwner();
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint process);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder name, ref uint size);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern int GetApplicationUserModelId(IntPtr process, ref uint length, StringBuilder id);
     delegate IntPtr MouseCallback(int code, IntPtr message, IntPtr data);
     [StructLayout(LayoutKind.Sequential)] struct MouseData { public Point Point; public uint Mouse, Flags, Time; public UIntPtr Extra; }
     [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int type, MouseCallback callback, IntPtr module, uint thread);
@@ -120,7 +125,8 @@ namespace ClopWindows {
             bool bitmap = HasBitmap(contents);
             bool image = bitmap || paths.Exists(file => Extensions.Contains(Path.GetExtension(file)));
             bool text = contents != null && contents.GetDataPresent(DataFormats.UnicodeText);
-            Emit(new { type = "clipboard", sequence = next, paths = paths.ToArray(), image, bitmap, text, process = ForegroundProcess, app = ForegroundApp });
+            string owner, aumid; ClipboardSource(out owner, out aumid);
+            Emit(new { type = "clipboard", sequence = next, paths = paths.ToArray(), image, bitmap, text, process = ForegroundProcess, app = ForegroundApp, owner, aumid });
           } catch { /* A different app may temporarily hold the clipboard. Retry on its next change. */ }
         }
         DetectImageDrag();
@@ -146,6 +152,70 @@ namespace ClopWindows {
         }
         return process;
       } catch { return 0; }
+    }
+    // The app that put the clipboard contents there, for the ignored apps: the clipboard owner's process, or the app in
+    // front when the clipboard has no owner. Packaged apps also report their AUMID.
+    static void ClipboardSource(out string path, out string aumid) {
+      var window = GetClipboardOwner();
+      if (window == IntPtr.Zero) window = GetForegroundWindow();
+      string name;
+      ProcessIdentity(AppProcess(window, out name), out path, out aumid);
+    }
+    static void ProcessIdentity(uint process, out string path, out string aumid) {
+      path = ""; aumid = "";
+      if (process == 0) return;
+      // PROCESS_QUERY_LIMITED_INFORMATION also opens elevated and protected processes.
+      var handle = OpenProcess(0x1000, false, process);
+      if (handle == IntPtr.Zero) return;
+      try {
+        var name = new StringBuilder(32768); uint size = (uint)name.Capacity;
+        if (QueryFullProcessImageName(handle, 0, name, ref size)) path = name.ToString(0, (int)size);
+        var id = new StringBuilder(256); uint length = (uint)id.Capacity;
+        try { if (GetApplicationUserModelId(handle, ref length, id) == 0) aumid = id.ToString(); } catch (EntryPointNotFoundException) { }
+      } finally { CloseHandle(handle); }
+    }
+    // For the ignored-apps picker: apps running with a visible window, then Start Menu shortcuts to programs and packaged
+    // Start Menu apps. A packaged app is listed by its AUMID, which stays the same when it updates; others by exe path.
+    static List<Dictionary<string, object>> Apps() {
+      var apps = new List<Dictionary<string, object>>();
+      var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+      foreach (var process in Process.GetProcesses()) {
+        try {
+          if (process.MainWindowHandle == IntPtr.Zero || String.IsNullOrEmpty(process.MainWindowTitle)) continue;
+          string name, path, aumid;
+          ProcessIdentity(AppProcess(process.MainWindowHandle, out name), out path, out aumid);
+          if (path == "") continue;
+          string description = null;
+          try { description = FileVersionInfo.GetVersionInfo(path).FileDescription; } catch { }
+          AddApp(apps, seen, String.IsNullOrEmpty(description) ? Path.GetFileNameWithoutExtension(path) : description, aumid != "" ? aumid : path, true);
+        } catch { } finally { process.Dispose(); }
+      }
+      object scripting = null, shell = null;
+      try {
+        scripting = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
+        dynamic links = scripting;
+        foreach (var root in new[] { Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu) }) {
+          try {
+            foreach (var link in Directory.EnumerateFiles(root, "*.lnk", SearchOption.AllDirectories)) {
+              try {
+                string target = Convert.ToString(links.CreateShortcut(link).TargetPath);
+                if (target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(target)) AddApp(apps, seen, Path.GetFileNameWithoutExtension(link), target, false);
+              } catch { }
+            }
+          } catch { /* A folder the user cannot read ends that part of the list. */ }
+        }
+        shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
+        dynamic folder = ((dynamic)shell).NameSpace("shell:AppsFolder");
+        if (folder != null) foreach (dynamic item in folder.Items()) {
+          try { string id = Convert.ToString(item.Path); if (id.Contains("!")) AddApp(apps, seen, Convert.ToString(item.Name), id, false); } catch { }
+        }
+      } catch { }
+      finally { if (scripting != null) Marshal.ReleaseComObject(scripting); if (shell != null) Marshal.ReleaseComObject(shell); }
+      return apps;
+    }
+    static void AddApp(List<Dictionary<string, object>> apps, HashSet<string> seen, string name, string path, bool running) {
+      if (apps.Count >= 2000 || String.IsNullOrEmpty(name) || !seen.Add(path)) return;
+      apps.Add(new Dictionary<string, object> { { "name", name }, { "path", path }, { "running", running } });
     }
     static List<string> FileList() {
       var paths = new List<string>();
@@ -180,8 +250,10 @@ namespace ClopWindows {
           var contents = Clipboard.GetDataObject();
           bool owned = contents != null && Convert.ToString(contents.GetData("ClopWindows.Owner")) == ClipboardOwner;
           bool text = contents != null && contents.GetDataPresent(DataFormats.UnicodeText);
-          Emit(new { type = "reply", id, ok = true, sequence = GetClipboardSequenceNumber(), paths = FileList().ToArray(), bitmap = HasBitmap(contents), text, owned, transient = Excluded(contents) }); return;
+          string owner, aumid; ClipboardSource(out owner, out aumid);
+          Emit(new { type = "reply", id, ok = true, sequence = GetClipboardSequenceNumber(), paths = FileList().ToArray(), bitmap = HasBitmap(contents), text, owned, transient = Excluded(contents), owner, aumid }); return;
         }
+        if (type == "apps") { Emit(new { type = "reply", id, ok = true, apps = Apps() }); return; }
         if (type == "copy") {
           if (command.ContainsKey("expectedSequence") && Convert.ToUInt32(command["expectedSequence"]) != GetClipboardSequenceNumber()) {
             Emit(new { type = "reply", id, ok = true, skipped = true }); return;

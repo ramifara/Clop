@@ -25,7 +25,7 @@ Apps that do not expose their image objects through Windows accessibility cannot
 
 Clipboard cards disappear after ten seconds and file cards after thirty, as in the original defaults. Hovering pauses dismissal. The tray's `Show latest results` or `Ctrl+Shift+Space` brings recent cards back. Up to three cards stack vertically. The tray also provides clipboard controls, optional pinning, settings and access to originals.
 
-Settings stay closed unless requested from the tray. Choose a screen corner, default format, which copied file types to optimise, clipboard behaviour or starting with Windows. The current cursor's screen receives automatic popups.
+Settings stay closed unless requested from the tray. Choose a screen corner, default format, which copied file types to optimise, clipboard behaviour, apps whose copies to ignore or starting with Windows. The current cursor's screen receives automatic popups.
 
 ## Install
 
@@ -62,6 +62,8 @@ Automatic clipboard optimisation follows `handleClipboardChange` in `ClopApp.swi
 The result goes back on the clipboard as a file list holding the optimised file under its source's name, with image data for images and the path as text for a copied path. `Ctrl+Shift+C` optimises whatever is on the clipboard whatever these settings say: any copied media file or path, image data, a data-URL image (`data:image/png;base64,…`) or bare base64 image data and an http(s) link, which is downloaded. Links are only downloaded then or when dropped; Clop never fetches a copied link by itself. OneDrive files-on-demand are downloaded by reading them; a file that cannot be downloaded is skipped with a notice.
 
 A new clipboard image replaces the previous clipboard image's card, so `Show latest results` brings back only the latest clipboard image unless `appendClipboardResults` is on. With `appendClipboardResults` the cards stay, until `clipboardAccumulationTimeout` seconds (30) pass without a new one, and with `copyConsecutiveClipboardImages` all of them go on the clipboard together as files. `copyImageFilePath` (on) puts an image result's file beside its image data; off, only the image data goes on the clipboard. With `copyImageFilePath` and `useCustomNameTemplateForClipboardImages` on, clipboard images are named by `customNameTemplateForClipboardImages` (`clop_%y-%m-%d_%i` when empty). Clipboard results always go back on the clipboard, as on macOS; `autoCopyToClipboard` decides whether dropped and opened files' results do too. Apart from the per-type switches, these options are set in `settings.json` until the settings window gains them.
+
+Copies made by an app in `clipboardIgnoredAppBundleIds` are not optimised automatically; `Ctrl+Shift+C` still optimises them. The app is the clipboard's owner (the app in front when the clipboard has no owner), and an entry is its exe path, its AUMID for a packaged app (such as `Microsoft.ScreenSketch_8wekyb3d8bbwe!App`), or just an exe name such as `KeePassXC.exe`, compared without regard to case. The settings window picks apps from those running with a window and the Start Menu's programs and apps.
 
 ## Video engine
 

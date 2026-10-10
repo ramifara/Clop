@@ -13,6 +13,7 @@ import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
 import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, type ClipboardMemory } from './clipboard';
+import { appsReply } from './apps';
 import type { AppState, ImageOptions, ItemResult } from '../src/types';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -315,6 +316,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'reveal': shell.showItemInFolder(engine.output(id)); break;
     case 'dismiss': await dismiss(id); break;
     case 'settings': await updateSettings(rendererSettings(args[0])); break;
+    case 'apps': return bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [];
     case 'window':
       switch (args[0]) {
         case 'hide': BrowserWindow.fromWebContents(event.sender)?.hide(); break;

@@ -26,7 +26,7 @@ export function imageDefaults(settings: ClopSettings): ImageOptions {
   return { mode: imageMode(settings.imageCompression), format: settings.defaultImageFormat, scale: 1 };
 }
 /** The settings the renderer may change: exactly what the settings window writes. Everything else (app paths, the work folder, MCP switches, pipelines) only changes from the main process. */
-export const RENDERER_SETTINGS = ['enableClipboardOptimiser', 'optimiseImagePathClipboard', 'optimiseVideoClipboard', 'optimisePDFClipboard', 'optimiseAudioClipboard', 'autoCopyToClipboard', 'enableDragAndDrop', 'keepDropZoneVisible', 'floatingResultsAlwaysOnTop', 'launchAtLogin', 'floatingResultsCorner', 'defaultImageFormat'] as const satisfies readonly SettingKey[];
+export const RENDERER_SETTINGS = ['enableClipboardOptimiser', 'optimiseImagePathClipboard', 'optimiseVideoClipboard', 'optimisePDFClipboard', 'optimiseAudioClipboard', 'autoCopyToClipboard', 'enableDragAndDrop', 'keepDropZoneVisible', 'floatingResultsAlwaysOnTop', 'launchAtLogin', 'floatingResultsCorner', 'defaultImageFormat', 'clipboardIgnoredAppBundleIds'] as const satisfies readonly SettingKey[];
 export function rendererSettings(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Choose a setting to change.');
   const blocked = Object.keys(value).filter(key => !(RENDERER_SETTINGS as readonly string[]).includes(key));

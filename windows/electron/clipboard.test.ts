@@ -60,7 +60,8 @@ test('checks every field of a clipboard change from the Windows helper', () => {
   assert.deepEqual(clipboardChange(change), { sequence: 42, paths: ['/a/clip.mp4'], image: false, bitmap: false, text: true, process: 1234, app: 'explorer' });
   assert.deepEqual(clipboardChange({ type: 'reply', id: 'x', ok: true, sequence: 7, paths: [], bitmap: true, owned: true, transient: false }), { sequence: 7, paths: [], image: false, bitmap: true, text: false, owned: true, transient: false });
   for (const bad of [null, 'x', { ...change, sequence: -1 }, { ...change, sequence: 1.5 }, { ...change, sequence: '42' }, { ...change, paths: '/a/clip.mp4' }, { ...change, paths: ['clip.mp4'] },
-    { ...change, paths: [''] }, { ...change, paths: [1] }, { ...change, paths: Array(65).fill('/a/b.png') }, { ...change, bitmap: 'yes' }, { ...change, owned: 1 }, { ...change, process: 'x' }, { ...change, app: 3 }])
+    { ...change, paths: [''] }, { ...change, paths: [1] }, { ...change, paths: Array(65).fill('/a/b.png') }, { ...change, bitmap: 'yes' }, { ...change, owned: 1 }, { ...change, process: 'x' }, { ...change, app: 3 },
+    { ...change, owner: 7 }, { ...change, aumid: ['x'] }, { ...change, owner: 'x'.repeat(40_000) }])
     assert.equal(clipboardChange(bad), undefined, JSON.stringify(bad)?.slice(0, 80));
 });
 test('replies from the Windows helper are checked before use', () => {
@@ -202,4 +203,19 @@ test('automatic optimisation takes copied files from drives only, mapped network
   assert.equal(plan.type, 'none');
   assert.match((plan as { notice: string }).notice, /a\.png is on a network share.*Ctrl\+Shift\+C/);
   assert.deepEqual(share.looked, []);
+});
+test('the app that copied is reported with a change, and an ignored app\'s copies are left alone unless optimised by hand', async () => {
+  const owner = 'C:\\Program Files\\KeePassXC\\KeePassXC.exe';
+  assert.deepEqual(clipboardChange({ sequence: 3, paths: [], owner, aumid: '' }), { sequence: 3, paths: [], image: false, bitmap: false, text: false, owner });
+  const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(8)]);
+  const copied = (ignored: string[], more: Partial<ClipboardSnapshot> = { owner }) => sources({ snapshots: [change(1, { bitmap: true, text: false, ...more })], image: png, settings: { ...settings, clipboardIgnoredAppBundleIds: ignored } }).value;
+  assert.deepEqual(await clipboardIntake(undefined, false, memory(), copied(['c:/program files/keepassxc/keepassxc.exe'])), { type: 'none' });
+  assert.equal((await clipboardIntake(undefined, false, memory(), copied(['C:\\Other\\app.exe']))).type, 'image');
+  assert.equal((await clipboardIntake(undefined, true, memory(), copied([owner]))).type, 'image');
+  // A change pushed by the helper is checked the same way as a snapshot read later.
+  const pushed = sources({ snapshots: [], image: png, settings: { ...settings, clipboardIgnoredAppBundleIds: [owner] } }).value;
+  assert.deepEqual(await clipboardIntake(change(2, { bitmap: true, text: false, owner }), false, memory(), pushed), { type: 'none' });
+  // Packaged apps are ignored by their AUMID.
+  const aumid = 'Microsoft.ScreenSketch_8wekyb3d8bbwe!App';
+  assert.deepEqual(await clipboardIntake(undefined, false, memory(), copied([aumid.toLowerCase()], { owner: 'C:\\Program Files\\WindowsApps\\ScreenSketch.exe', aumid })), { type: 'none' });
 });
