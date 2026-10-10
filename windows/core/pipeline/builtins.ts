@@ -1,3 +1,4 @@
+import { isReadable, type Stored } from './codec';
 import type { ClopFileType, Pipeline } from './model';
 import { parseSteps } from './parser';
 
@@ -30,18 +31,27 @@ export const builtinPipeline = (def: BuiltinPipelineDef): Pipeline => ({
   skipOptimisation: def.skipOptimisation, hideResult: false, fileType: def.fileType, icon: def.icon, details: def.details,
 });
 
+/** The id of a saved entry, also of one this version cannot read: from its raw object or the JSON string macOS stores. */
+function storedId(entry: Stored<Pipeline>): string | undefined {
+  if (isReadable(entry)) return entry.id;
+  let raw = entry.raw;
+  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { return undefined; } }
+  const id = typeof raw === 'object' && raw !== null ? (raw as { id?: unknown }).id : undefined;
+  return typeof id === 'string' ? id : undefined;
+}
+
 /**
  * `seedBuiltinPipelines`: adds the built-ins newer than `seededVersion` to the library, once per version, so a built-in the
- * user deleted stays deleted. Built-ins already present only get a missing icon or details filled in. Returns undefined
- * when the library is already seeded at this version.
+ * user deleted stays deleted. Built-ins already present only get a missing icon or details filled in; one this version
+ * cannot read is kept as it is and not added again. Returns undefined when the library is already seeded at this version.
  */
-export function seedBuiltinPipelines(saved: readonly Pipeline[], seededVersion: number): { savedPipelines: Pipeline[]; builtinPipelinesSeededVersion: number } | undefined {
+export function seedBuiltinPipelines(saved: readonly Stored<Pipeline>[], seededVersion: number): { savedPipelines: Stored<Pipeline>[]; builtinPipelinesSeededVersion: number } | undefined {
   if (seededVersion >= BUILTIN_PIPELINES_VERSION) return undefined;
   const savedPipelines = [...saved];
   for (const def of BUILTIN_PIPELINE_DEFS) {
-    const index = savedPipelines.findIndex(pipeline => pipeline.id === def.id);
-    if (index >= 0) savedPipelines[index] = { ...savedPipelines[index], icon: savedPipelines[index].icon ?? def.icon, details: savedPipelines[index].details ?? def.details };
-    else if (def.version > seededVersion) savedPipelines.push(builtinPipeline(def));
+    const index = savedPipelines.findIndex(entry => storedId(entry) === def.id), entry = savedPipelines[index];
+    if (index < 0) { if (def.version > seededVersion) savedPipelines.push(builtinPipeline(def)); }
+    else if (isReadable(entry)) savedPipelines[index] = { ...entry, icon: entry.icon ?? def.icon, details: entry.details ?? def.details };
   }
   return { savedPipelines, builtinPipelinesSeededVersion: BUILTIN_PIPELINES_VERSION };
 }
