@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expandHome } from './paths';
+import { expandHome, portablePath } from './paths';
 import { LEGACY_KEYS, SETTING_KEYS, defaultSettings, isLegacySettings, migrateLegacy, parseSettings, settingsSchema, type SettingSpec } from './schema';
 
 const windowsRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -36,9 +36,12 @@ test('every default is a valid value of its own setting', () => {
 
 test('defaults follow Settings.swift and the Windows encodings', () => {
   const defaults = defaultSettings(paths);
-  assert.equal(defaults.workdir, path.join(paths.userData, 'work'));
+  assert.equal(defaults.workdir, '~/.config/Clop for Windows/work');
+  assert.equal(expandHome(defaults.workdir, paths.home), path.join(paths.userData, 'work'));
   assert.equal(defaults.workdirCleanupInterval, 259200);
-  assert.deepEqual([defaults.imageDirs, defaults.videoDirs, defaults.pdfDirs, defaults.audioDirs], [[paths.desktop], [paths.desktop], [], []]);
+  assert.deepEqual([defaults.imageDirs, defaults.videoDirs, defaults.pdfDirs, defaults.audioDirs], [['~/Desktop'], ['~/Desktop'], [], []]);
+  assert.deepEqual(defaultSettings({ ...paths, desktop: '/home/user/OneDrive/Desktop' }).imageDirs, ['~/OneDrive/Desktop']);
+  assert.deepEqual(defaultSettings({ ...paths, desktop: '/srv/desk', userData: '/srv/clop' }).imageDirs.concat(defaultSettings({ ...paths, userData: '/srv/clop' }).workdir), ['/srv/desk', path.join('/srv/clop', 'work')]);
   assert.equal(defaults.videoEncoder, 'auto');
   assert.deepEqual(defaults.keyComboModifiers, ['Control', 'Shift']);
   assert.deepEqual(defaults.enabledKeys, ['-', '=', 'Backspace', 'Space', 'Z', 'P', 'C', 'A', 'X', 'R', 'K', 'Escape']);
@@ -103,4 +106,17 @@ test('expandHome resolves ~, $HOME and ${HOME} prefixes only', () => {
   assert.equal(expandHome('$HOME/a/b', '/users/x'), path.join('/users/x', 'a/b'));
   assert.equal(expandHome('${HOME}', '/users/x'), path.join('/users/x'));
   for (const unchanged of ['/tmp/~', '~user/x', '$HOMEDIR/x', 'C:\\Users\\x', '']) assert.equal(expandHome(unchanged, '/users/x'), unchanged);
+});
+
+test('pdfDPI accepts adaptive (0) and the 48–300 range only', () => {
+  for (const dpi of [0, 48, 150, 300]) assert.equal(parseSettings({ pdfDPI: dpi }).pdfDPI, dpi);
+  for (const dpi of [1, 47, 301, -1, 72.5]) assert.equal(parseSettings({ pdfDPI: dpi }).pdfDPI, 0, String(dpi));
+});
+
+test('portablePath turns paths inside the profile into ~ paths', () => {
+  assert.equal(portablePath(path.join('/users/x', 'Desktop'), '/users/x'), '~/Desktop');
+  assert.equal(portablePath(path.join('/users/x', 'a', 'b'), '/users/x'), '~/a/b');
+  assert.equal(portablePath('/users/x', '/users/x'), '~');
+  for (const outside of ['/users/xy/Desktop', '/srv/data']) assert.equal(portablePath(outside, '/users/x'), outside);
+  assert.equal(expandHome(portablePath(path.join(os.homedir(), 'Pictures'))), path.join(os.homedir(), 'Pictures'));
 });

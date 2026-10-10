@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { defaultPaths, type DefaultPaths } from './paths';
+import { defaultPaths, portablePath, type DefaultPaths } from './paths';
 
 // Every key from Clop/Settings.swift keeps its macOS name, so `clop settings get/set` and the MCP
 // settings tools speak the same names on both platforms. Defaults are copied from the Swift
@@ -44,7 +44,7 @@ function list(value: Default<string[]>, description: string, { values, item, uni
   const valid = (v: unknown) => typeof v === 'string' && (!values || values.includes(v)) && (!item || item.test(v));
   return spec('list', value, description, v => Array.isArray(v) && v.every(valid) ? unique ? [...new Set(v as string[])] : [...v as string[]] : undefined, { values, ...flags });
 }
-/** Values whose model belongs to a later module (pipelines, preset zones). Stored as plain JSON. */
+/** Values whose model belongs to a later module (pipelines, preset zones). Stored as plain JSON and only shallow-checked (an array, or a map of arrays) until the pipeline model (Task 11) validates them. */
 function json<T>(value: T, description: string, check: (value: unknown) => boolean, flags?: Flags) {
   return spec<T>('object', value, description, v => check(v) ? JSON.parse(JSON.stringify(v)) as T : undefined, flags);
 }
@@ -58,7 +58,7 @@ const formats = (value: string[], description: string) => list(value, `${descrip
 export const COMPRESSION_TIERS = ['adaptive', 'lossless', 'fast', 'smaller', 'custom'] as const;
 export interface CompressionQuality { tier: (typeof COMPRESSION_TIERS)[number]; factor: number }
 /** Mirrors the tolerant `CompressionQuality` decoder: a missing tier is `custom`, a missing factor 50, and the factor is clamped to 0–100. */
-const compression = (value: CompressionQuality, description: string, flags?: Flags) => spec<CompressionQuality>('object', value, `${description} macOS: \`CompressionQuality\`.`, v => {
+const compression = (value: CompressionQuality, description: string, flags?: Flags) => spec<CompressionQuality>('object', value, `${description} The factor runs 5–100; 0 means auto (video only), and stored values are clamped to 0–100 as the macOS decoder does. macOS: \`CompressionQuality\`.`, v => {
   if (!isRecord(v)) return undefined;
   const tier = COMPRESSION_TIERS.includes(v.tier as CompressionQuality['tier']) ? v.tier as CompressionQuality['tier'] : 'custom';
   return { tier, factor: Number.isInteger(v.factor) ? Math.max(0, Math.min(100, v.factor as number)) : 50 };
@@ -87,7 +87,7 @@ const videoEncoder = spec<(typeof VIDEO_ENCODERS)[number]>('enum', 'auto', 'Vide
 
 const UNSUPPORTED = { unsupportedOnWindows: true } as const;
 const EXE = { encoding: 'Path to an .exe; empty uses the Windows default app. macOS stores an app path.' } as const;
-const DIRS = { encoding: 'Absolute folder paths; a leading `~` or `$HOME` means the user profile folder.' } as const;
+const DIRS = { encoding: 'Folder paths; a leading `~` or `$HOME` means the user profile folder. Defaults are stored that way (`~/Desktop`).' } as const;
 const NORMAL = 30, AGGRESSIVE = 64; // COMPRESSION_FACTOR_NORMAL and _AGGRESSIVE in Shared.swift
 const isPipelineMap = (v: unknown) => isRecord(v) && Object.values(v).every(Array.isArray);
 
@@ -113,7 +113,7 @@ export const settingsSchema = {
   preserveColorMetadata: bool(true, 'Keep colour profile tags when stripping metadata.'),
   useBatchModeForFolders: bool(true, 'Large drops and folders open the batch optimiser.'),
   batchModeFileCountThreshold: int(30, 'Drops with more files than this use batch mode.'),
-  workdir: str(paths => path.join(paths.userData, 'work'), 'Working directory for backups and temporary files.', { encoding: 'Absolute path, default `%APPDATA%\\Clop for Windows\\work`; a leading `~` or `$HOME` means the user profile folder.' }),
+  workdir: str(paths => portablePath(path.join(paths.userData, 'work'), paths.home), 'Working directory for backups and temporary files.', { encoding: 'Path; a leading `~` or `$HOME` means the user profile folder. Default `~/AppData/Roaming/Clop for Windows/work` (`%APPDATA%\\Clop for Windows\\work`).' }),
   workdirCleanupInterval: oneOf([600, 3600, 43200, 86400, 259200, 604800, 2592000, 0], 259200, 'Delete working directory files older than this many seconds; 0 never deletes. macOS: `CleanupInterval`.', { encoding: 'Seconds, the CleanupInterval raw value.' }),
   formatsToConvertToJPEG: formats(['webp', 'avif', 'heic', 'bmp'], 'Image formats converted to JPEG before optimising.'),
   formatsToConvertToPNG: formats(['tiff'], 'Image formats converted to PNG before optimising.'),
@@ -147,13 +147,13 @@ export const settingsSchema = {
   useAggressiveOptimisationGIF: bool(false, 'Legacy aggressive GIF flag, superseded by `imageCompression`.'),
   gifFrameDropBehaviour: oneOf(['playFaster', 'keepDuration'], 'playFaster', 'What happens to GIF timing when high compression drops frames. macOS: `GIFFrameDropBehaviour`.'),
   convertHDRToSDR: bool(false, 'Tone map HDR images to SDR when processing them.'),
-  imageCompression: compression({ tier: 'custom', factor: NORMAL }, 'Image compression: tier plus factor 5–100 (30 normal, 64 aggressive). Legacy Windows key: `defaultMode` (balanced 30, aggressive 64, lossless tier `lossless`).', { encoding: 'Windows also accepts tier `lossless` for images, the lossless mode of the original Windows app.' }),
+  imageCompression: compression({ tier: 'custom', factor: NORMAL }, 'Image compression: tier plus factor (30 normal, 64 aggressive). Legacy Windows key: `defaultMode` (balanced 30, aggressive 64, lossless tier `lossless`).', { encoding: 'Windows also accepts tier `lossless` for images, the lossless mode of the original Windows app.' }),
   audioCompression: compression({ tier: 'custom', factor: 35 }, 'Audio compression factor; 35 matches 192 kbps AAC.'),
   videoCompression: compression({ tier: 'fast', factor: 50 }, 'Video compression: `fast` uses the hardware encoder, `smaller` a software encoder at the factor\'s CRF, `lossless` CRF 17.'),
   compressionModelMigratedVersion: int(0, 'macOS migration guard for the unified compression keys.', UNSUPPORTED),
-  pdfDPI: int(0, 'PDF image DPI: 0 picks one per PDF, otherwise 48–300.', { max: 300 }),
-  imageDirs: list(paths => [paths.desktop], 'Folders watched for new images.', DIRS),
-  videoDirs: list(paths => [paths.desktop], 'Folders watched for new videos.', DIRS),
+  pdfDPI: spec('integer', 0, 'PDF image DPI: 0 picks one per PDF, otherwise 48–300 (PDF_DPI_MIN to PDF_DPI_MAX).', v => v === 0 || (Number.isInteger(v) && (v as number) >= 48 && (v as number) <= 300) ? v as number : undefined, { min: 0, max: 300 }),
+  imageDirs: list(paths => [portablePath(paths.desktop, paths.home)], 'Folders watched for new images.', DIRS),
+  videoDirs: list(paths => [portablePath(paths.desktop, paths.home)], 'Folders watched for new videos.', DIRS),
   pdfDirs: list([], 'Folders watched for new PDFs.', DIRS),
   audioDirs: list([], 'Folders watched for new audio files.', DIRS),
   dirsHideFloatingResult: list([], 'Watched folders whose results do not show a floating card. macOS: `Set<String>`.', { ...DIRS, unique: true }),
