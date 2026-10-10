@@ -5,7 +5,7 @@ import type { MediaKind } from '../core/media/types';
 import { expandHome } from '../core/settings/paths';
 import { mediaKind } from './clipboard';
 import { watchTree } from './folder-events';
-import { clopIgnored, matchingWatchedDir, qualifies, recentFiles, watchSettings, writable } from './watch-rules';
+import { clopIgnored, matchingWatchedDir, qualifies, watchSettings, writable } from './watch-rules';
 
 export interface WatcherHost {
   settings: () => ClopSettings;
@@ -91,7 +91,7 @@ export class FolderWatcher {
     this.key = key;
     for (const root of existing) {
       try {
-        const unsubscribe = await watchTree(root, { file: (file, created) => this.changed(root, file, created), overflow: () => void this.rescan(root), lost: () => this.failed(root) }, { checkMs: this.timing.pollMs });
+        const unsubscribe = await watchTree(root, { file: (file, created) => this.changed(root, file, created), lost: () => this.failed(root), skip: dir => this.host.owns(dir) }, { checkMs: this.timing.pollMs });
         // A newer update has taken over.
         if (generation !== this.generation || this.key !== key) { unsubscribe(); return; }
         this.subscriptions.push(unsubscribe);
@@ -115,12 +115,6 @@ export class FolderWatcher {
     this.key = '';
     if (count === 3) this.host.notice(`Clop keeps failing to watch ${root}${error instanceof Error ? ` (${error.message})` : ''}. It keeps trying, less often each time.`);
     this.retry(count === 1 && !error ? 0 : backoff(count, this.timing.pollMs));
-  }
-
-  /** The watch lost changes because too many came at once: files changed in the last minute are looked at again. */
-  private async rescan(root: string) {
-    console.warn(`Clop missed changes in ${root} and is looking for files changed in the last minute.`);
-    for (const file of await recentFiles(root, Date.now() - 60_000, { skip: dir => this.host.owns(dir) })) this.changed(root, file, true);
   }
 
   /** Hidden files and folders (Clop's `.clop-*.tmp` copies among them), Clop's working directory and other kinds of file are never looked at. */
