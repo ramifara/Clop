@@ -26,8 +26,8 @@ const LIMIT = 128 * 1024 * 1024;
 const PIXELS = 60_000_000;
 /** Ordinary read failures; anything else on Windows may be a OneDrive placeholder that could not download. */
 const LOCAL_ERRORS = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY', 'EISDIR']);
-/** `cancel` stops this item's running job when it is dismissed. */
-interface Entry { result: ItemResult; originalPath: string; outputPath: string; directory: string; inputFormat: string; revision: number; cancel: AbortController }
+/** `cancel` stops this item's running job when it is dismissed; `running` says a job is under way, `shown` that a result was ever ready to paste. */
+interface Entry { result: ItemResult; originalPath: string; outputPath: string; directory: string; inputFormat: string; revision: number; cancel: AbortController; running?: boolean; shown?: boolean }
 export type ItemSettings = Pick<ClopSettings, 'imageCompression' | 'stripMetadata' | 'preserveColorMetadata' | 'gifFrameDropBehaviour' | 'videoCompression' | 'videoEncoder' | 'capVideoFPS' | 'targetVideoFPS'
   | 'minVideoFPS' | 'removeAudioFromVideos' | 'convertAudioToAAC' | 'adaptiveVideoSize' | 'pdfDPI' | 'audioCompression' | 'formatsToConvertToAAC' | 'formatsToConvertToMP3' | 'audioCoverArt' | 'preserveDates'>;
 /**
@@ -123,7 +123,7 @@ export class ItemEngine extends EventEmitter {
     const e = this.entries.get(id);
     if (!e) return;
     const r = e.result, signal = AbortSignal.any([this.controller.signal, e.cancel.signal]);
-    r.status = 'processing'; r.error = undefined; r.progress = undefined; this.changed();
+    r.status = 'processing'; r.error = undefined; r.progress = undefined; e.running = true; this.changed();
     try {
       // Each result gets a folder of its own and keeps the original's name, so a pasted or dragged file is named like its source.
       const outputDir = path.join(e.directory, String(e.revision + 1)), name = path.parse(e.originalPath).name;
@@ -145,9 +145,13 @@ export class ItemEngine extends EventEmitter {
       const preview = r.kind !== 'image' || output.unchanged ? r.originalPreview : await imageThumbnail(output.path, DECODED.has(output.format));
       Object.assign(r, { status: 'ready', options, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes, preview,
         durationMs: output.durationMs ?? r.durationMs, pages: output.pages ?? r.pages, progress: undefined, unchanged: !!output.unchanged, restored: false });
-      this.changed();
+      e.shown = true; this.changed();
       if (this.entries.get(id) === e) this.emit('ready', id);
     } catch (error) { Object.assign(r, { status: 'error', error: message(error), progress: undefined }); this.changed(); }
+    finally {
+      e.running = false;
+      if (this.entries.get(id) !== e && !e.shown) await discard(e);
+    }
   }
   private optimiseMedia(kind: Exclude<MediaKind, 'image'>, file: string, outputDir: string, job: MediaJobOptions & { name: string }): Promise<MediaOutput> {
     const s = this.settings();
@@ -165,7 +169,7 @@ export class ItemEngine extends EventEmitter {
     e.outputPath = e.originalPath;
     Object.assign(e.result, { status: 'ready', width: e.result.originalWidth, height: e.result.originalHeight, outputBytes: e.result.originalBytes,
       format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, maxEdge: undefined, format: 'auto' }, restored: true, unchanged: true, error: undefined });
-    this.changed(); this.emit('ready', id);
+    e.shown = true; this.changed(); this.emit('ready', id);
   }); }
   /**
    * Removes an item at once, without waiting behind other jobs of its kind, and stops its job if one is running.
@@ -177,6 +181,8 @@ export class ItemEngine extends EventEmitter {
     this.entries.delete(id);
     entry.cancel.abort();
     this.changed();
+    // Nothing can be pasting a result that was never ready, so its folder goes; a running job removes it once it stops.
+    if (!entry.shown && !entry.running) await discard(entry);
   }
   async idle() { await Promise.all(this.queues.values()); }
   /** Stops every running and queued job, for quitting. Later imports are refused. */
@@ -189,6 +195,8 @@ export function mediaExtension(info: VideoInfo | AudioInfo | undefined) {
   if (info.kind === 'video') return has('mp4') ? 'mp4' : has('webm') && /^(vp8|vp9|av1)$/.test(info.codec ?? '') ? 'webm' : has('matroska') ? 'mkv' : has('avi') ? 'avi' : has('mpeg') ? 'mpg' : 'mp4';
   return has('mp4') ? 'm4a' : has('mp3') ? 'mp3' : has('ogg') ? (info.codec === 'opus' ? 'opus' : 'ogg') : has('flac') ? 'flac' : has('wav') ? 'wav' : has('aiff') ? 'aiff' : has('aac') ? 'aac' : 'm4a';
 }
+/** Removes an item's folder. One still locked (by Defender, say) is left to the working directory's cleaner. */
+const discard = (entry: Entry) => rm(entry.directory, { recursive: true, force: true, maxRetries: 3 }).catch(() => {});
 function unreadable(file: string, error: unknown) {
   const name = path.basename(file), code = (error as NodeJS.ErrnoException).code ?? '';
   if (code === 'ENOENT') return new Error(`${name} no longer exists.`);

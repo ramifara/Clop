@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -272,6 +272,7 @@ test('dismissing is immediate, safe to repeat and stops a running job', async t 
   const { dir } = f;
   const engine = new ItemEngine(path.join(dir, 'session'), () => ({ ...defaultSettings(), videoCompression: { tier: 'smaller', factor: 90 } }));
   const short = await engine.importPath(await clip(path.join(dir, 'short.mp4'), { seconds: 0.5 }), 'drop', balanced);
+  const folder = (id: string) => path.join(dir, 'session', id);
   const started = new Promise<void>(resolve => engine.on('change', () => { if (engine.list().some(item => item.name === 'long.mp4' && item.status === 'processing')) resolve(); }));
   const long = engine.importPath(await clip(path.join(dir, 'long.mp4'), { width: 1280, height: 720, seconds: 6 }), 'drop', { ...balanced, mode: 'aggressive' });
   await started;
@@ -280,11 +281,15 @@ test('dismissing is immediate, safe to repeat and stops a running job', async t 
   await Promise.all([engine.dismiss(short), engine.dismiss(short)]);
   assert.ok(Date.now() - before < 1000);
   assert.ok(engine.list().every(item => item.id !== short));
+  // A result that was ready may still be pasting somewhere, so its folder stays.
+  assert.ok((await stat(folder(short))).isDirectory());
   // The running encode stops when its card is dismissed, and its import ends without an error.
   const running = engine.list().find(item => item.name === 'long.mp4')!.id;
   await engine.dismiss(running);
   assert.equal(await long, running);
   assert.ok(Date.now() - before < 5000);
   assert.deepEqual(engine.list(), []);
+  // One that never was ready cannot be, so its folder goes.
+  await assert.rejects(stat(folder(running)), { code: 'ENOENT' });
   await engine.dismiss(running);
 });
