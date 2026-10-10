@@ -24,7 +24,9 @@ const frames = async (file: string) => sharp(file, { animated: true }).metadata(
 const pixels = async (file: string) => sharp(file, { animated: true }).raw().toBuffer();
 async function tags(file: string, ...names: string[]) {
   const { stdout } = await run('exiftool', ['-j', '-n', ...names.map(name => `-${name}`), file]);
-  return JSON.parse(stdout.toString())[0] as Record<string, unknown>;
+  // exiftool writes SourceFile with forward slashes on Windows; only the tags matter.
+  const { SourceFile: _, ...found } = JSON.parse(stdout.toString())[0] as Record<string, unknown>;
+  return found;
 }
 
 // Recorded with the macOS argument sets on the Linux builds of the bundled tool versions. The Windows
@@ -60,9 +62,20 @@ test('JPEG: aggressive compresses harder, and a result that cannot shrink keeps 
   const aggressive = await optimiseImage(input, w.out, { compression: at(30), aggressive: true, name: 'aggressive' });
   assert.deepEqual([normal.format, normal.path, normal.width, normal.height], ['jpeg', path.join(w.out, 'normal.jpeg'), 640, 480]);
   assert.ok(aggressive.bytes < normal.bytes && normal.bytes < (await stat(input)).size);
+  // As in Swift, any smaller result is kept. mozjpeg-based jpegoptim (the Windows build) still shaves a few bytes off its own output.
   const again = await optimiseImage(normal.path, w.out, { compression: at(30), name: 'again' });
-  assert.deepEqual(again, { path: normal.path, bytes: normal.bytes, format: 'jpeg', width: 640, height: 480, unchanged: true });
-  assert.deepEqual((await readdir(w.out)).sort(), ['aggressive.jpeg', 'normal.jpeg'], 'temporary files are removed');
+  if (again.unchanged) assert.deepEqual(again, { path: normal.path, bytes: normal.bytes, format: 'jpeg', width: 640, height: 480, unchanged: true });
+  else assert.ok(again.bytes < normal.bytes && again.path === path.join(w.out, 'again.jpeg'));
+  assert.deepEqual((await readdir(w.out)).filter(name => name.startsWith('.clop-')), [], 'temporary files are removed');
+});
+
+test('a result that is not smaller keeps the input', async t => {
+  const w = await workspace(t); if (!w) return;
+  // sharp encodes WebP the same on every platform, and re-encoding a quality-5 WebP at the factor's quality 60 grows it.
+  const input = await w.file('rough.webp', photo(320, 240).webp({ quality: 5 }));
+  const output = await optimiseImage(input, w.out, { compression: at(30), name: 'rough' });
+  assert.deepEqual(output, { path: input, bytes: (await stat(input)).size, format: 'webp', width: 320, height: 240, unchanged: true });
+  assert.deepEqual(await readdir(w.out), []);
 });
 
 test('strips identifying metadata but keeps orientation, resolution and colour profile', async t => {
@@ -71,7 +84,7 @@ test('strips identifying metadata but keeps orientation, resolution and colour p
   const stripped = await optimiseImage(input, w.out, { compression: at(30), name: 'stripped' });
   const kept = await optimiseImage(input, w.out, { compression: at(30), stripMetadata: false, name: 'kept' });
   const names = ['Artist', 'Orientation', 'XResolution', 'ProfileDescription'];
-  assert.deepEqual(await tags(stripped.path, ...names), { SourceFile: stripped.path, Orientation: 6, XResolution: 300, ProfileDescription: 'sP3C' });
+  assert.deepEqual(await tags(stripped.path, ...names), { Orientation: 6, XResolution: 300, ProfileDescription: 'sP3C' });
   assert.equal((await tags(kept.path, ...names)).Artist, 'Someone');
   assert.deepEqual([stripped.width, stripped.height], [240, 320]);
   const scaled = await optimiseImage(input, w.out, { compression: at(30), width: 120, height: 160, name: 'scaled' });
