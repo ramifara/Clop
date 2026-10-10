@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readdir, writeFile, rm, stat } from 'node:fs/promises';
 import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import os from 'node:os';
@@ -17,7 +17,10 @@ const profile = await mkdtemp(path.join(os.tmpdir(), 'clop-desktop-'));
 const executable = path.resolve('release/win-unpacked/Clop for Windows.exe');
 execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()']);
 // Software H.264, so the video size check does not depend on which hardware encoder the runner happens to have.
-await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ videoEncoder: 'libx264' }));
+// Images and videos are watched in a folder of the test profile, never the runner's real Desktop.
+const watched = path.join(profile, 'Watched');
+await mkdir(watched);
+await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ videoEncoder: 'libx264', imageDirs: [watched], videoDirs: [watched] }));
 const app = spawn(executable, ['--remote-debugging-port=9227', `--user-data-dir=${profile}`], { stdio: 'pipe' });
 let output = '';
 app.stdout.on('data', chunk => { output += chunk; }); app.stderr.on('data', chunk => { output += chunk; });
@@ -139,6 +142,17 @@ try {
   // The older result may have reached its normal ten-second dismissal by now.
   assert.equal(finalState.items.filter(item => item.id !== initialImage.id).length, 1, 'Pixel-only clipboard writes must produce exactly one new card');
   assert.equal(finalState.notice, undefined, 'Pixel-only clipboard processing must not show an error');
+  // Copies by an ignored app are left alone: here Windows PowerShell is the fixture app that copies. A new image, so only the ignore keeps it from a card.
+  const ignoredImage = path.join(profile, 'ignored.png');
+  await sharp(sourceFile).resize(1200, 800).png().toFile(ignoredImage);
+  const copyImage = () => execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', '$ErrorActionPreference = "Stop"; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $image = New-Object System.Drawing.Bitmap($env:CLOP_SMOKE_IMAGE); try { [System.Windows.Forms.Clipboard]::SetImage($image) } finally { $image.Dispose() }'], { env: { ...process.env, CLOP_SMOKE_IMAGE: ignoredImage } });
+  const known = new Set(finalState.items.map(item => item.id)), fresh = async () => (await main.evaluate('window.clop.state()')).items.find(item => !known.has(item.id) && item.source === 'clipboard');
+  await main.evaluate('window.clop.settings({ clipboardIgnoredAppBundleIds: ["powershell.exe"] })');
+  copyImage(); await pause(3000);
+  assert.equal(await fresh(), undefined, 'An image copied by an ignored app must not be optimised');
+  await main.evaluate('window.clop.settings({ clipboardIgnoredAppBundleIds: [] })');
+  copyImage();
+  await until(fresh, 'The same copy was not optimised once its app was no longer ignored');
   // Videos, PDFs and audio copied as files, as Explorer copies them (a file list and nothing else), each get a card once
   // their clipboard setting is on, and the clipboard then holds the optimised file under the same name.
   await main.evaluate('window.clop.settings({ optimiseVideoClipboard: true, optimisePDFClipboard: true, optimiseAudioClipboard: true })');
@@ -166,7 +180,25 @@ try {
     assert.equal((await stat(rewritten)).size, item.outputBytes, `The clipboard should hold the optimised ${kind}`);
   }
   assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'Copying video, PDF and audio files must not show an error');
-  console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, and copied video, PDF and audio files.');
+  // A video and an image dropped into a watched folder are optimised where they are, each original kept in the working directory's backups.
+  const dropped = [[video, path.join(watched, 'desk-clip.mp4'), 'video'], [sourceFile, path.join(watched, 'desk-shot.png'), 'image']];
+  const before = new Set((await main.evaluate('window.clop.state()')).items.map(item => item.id));
+  for (const [source, target] of dropped) await copyFile(source, target);
+  for (const [source, target, kind] of dropped) {
+    const name = path.basename(target);
+    const item = await until(async () => (await main.evaluate('window.clop.state()')).items.find(item => !before.has(item.id) && item.source === 'folder' && item.name === name && item.status !== 'processing'), `The ${kind} dropped into the watched folder was not optimised`, 120000);
+    console.log(`Watched ${kind}:`, JSON.stringify({ status: item.status, error: item.error, originalBytes: item.originalBytes, outputBytes: item.outputBytes }));
+    assert.equal(item.status, 'ready', item.error);
+    const originalBytes = (await stat(source)).size;
+    assert.equal((await stat(target)).size, item.outputBytes, `The watched ${kind} should be replaced by its optimised version`);
+    assert.ok(item.outputBytes < originalBytes, `The watched ${kind} should be smaller after optimising`);
+    const backups = path.join(profile, 'work', 'backups'), backup = (await readdir(backups)).find(file => file.startsWith(`${path.parse(name).name}-`) && file.endsWith(path.extname(name)));
+    assert.ok(backup, `The watched ${kind}'s original should be in the backups`);
+    assert.equal((await stat(path.join(backups, backup))).size, originalBytes, `The backup should be the original ${kind}`);
+    await until(() => floating.evaluate(`[...document.querySelectorAll('.corner-card')].some(card => card.getAttribute('aria-label') === ${JSON.stringify(`Optimised ${name}`)})`), `The watched ${kind}'s card did not render`);
+  }
+  assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'Watched-folder optimisation must not show an error');
+  console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, copied video, PDF and audio files, an ignored app, and a video and an image optimised in place in a watched folder.');
 } finally {
   console.log('Stopping packaged app and native test helper.');
   try { if (main) await main.send('Runtime.evaluate', { expression: 'window.clop.window("quit")' }); } catch {}

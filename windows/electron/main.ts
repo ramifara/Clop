@@ -13,6 +13,10 @@ import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
 import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, type ClipboardMemory } from './clipboard';
+import { OptimisedMarker } from '../core/marker';
+import { FolderWatcher } from './watcher';
+import { enabledKey } from './watch-rules';
+import { FolderResults, LastBatch } from './automation';
 import { appsReply } from './apps';
 import type { AppState, ImageOptions, ItemResult } from '../src/types';
 
@@ -28,6 +32,13 @@ const memory: ClipboardMemory = { fingerprint: '', own: '' };
 let nameCounter: Counter | undefined;
 /** Clipboard images take turns, each optimised and written back before the next one replaces its card. Images share one engine queue anyway. */
 const clipboardImageTurn = serial();
+let marker: OptimisedMarker, folders: FolderResults, watchers: FolderWatcher[] = [];
+/** Results from watched folders in `dirsHideFloatingResult`; they never show as floating results. */
+const quiet = new Set<string>();
+/** Results that hid or were dismissed, latest last, for "Bring back last result". */
+const removedOrder: string[] = [];
+const lastBatch = new LastBatch();
+const paused = () => settings.pauseAutomaticOptimisations;
 const intake = new ClipboardIntake(error => inform(message(error)));
 const pickup = new ClipboardPickup(change => { void optimiseClipboard(change); });
 let clipboardWrites: Promise<void> = Promise.resolve();
@@ -45,7 +56,7 @@ const currentSequence = async () => bridgeReady ? sequenceReply(await bridge.req
 /** Whether a result is still in the shelf and finished; a card can be dismissed while its import runs. */
 const isReady = (id: string) => { try { return engine.get(id).result.status === 'ready'; } catch { return false; } };
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
-const state = (): AppState => ({ items: engine.list().filter(item => !hidden.has(item.id)), settings, native: true, platform: process.platform, dropActive, notice });
+const state = (): AppState => ({ items: engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id)), settings, native: true, platform: process.platform, dropActive, notice });
 function broadcast() { for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state()); }
 function inform(text: string) { notice = text; syncFloating(); broadcast(); }
 function positionFloating() {
@@ -77,13 +88,31 @@ function scheduleHide(id: string) {
   const existing = hideTimers.get(id); if (existing) clearTimeout(existing);
   const check = () => {
     if (hovered || dragging) { hideTimers.set(id, setTimeout(check, 1000)); return; }
-    hidden.add(id); hideTimers.delete(id); syncFloating(); broadcast();
+    hidden.add(id); hideTimers.delete(id); removedOrder.push(id); syncFloating(); broadcast();
   };
   hideTimers.set(id, setTimeout(check, engine.get(id).result.source === 'clipboard' ? 10000 : 30000));
 }
 async function dismiss(id: string) {
   const timer = hideTimers.get(id); if (timer) clearTimeout(timer);
   hideTimers.delete(id); hidden.delete(id); await engine.dismiss(id);
+  if (quiet.delete(id)) return;
+  removedOrder.push(id); removedOrder.splice(0, removedOrder.length - 80);
+}
+/** "Bring back last result": the result that hid or was dismissed last shows again. */
+function bringBackLast() {
+  while (removedOrder.length) {
+    const id = removedOrder.pop()!;
+    if ((hidden.has(id) && engine.has(id)) || engine.bringBack(id)) { hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); return; }
+  }
+  inform('There is no result to bring back.');
+}
+/** "Revert last optimisations": the latest batch of results gets its originals back, over the files of watched folders too. */
+async function revertLast() {
+  const ids = lastBatch.take().filter(id => engine.has(id));
+  if (!ids.length) { inform('There are no recent optimisations to revert.'); return; }
+  for (const id of ids) await engine.restore(id);
+  const clipboardIds = ids.filter(id => engine.has(id) && engine.get(id).result.source === 'clipboard');
+  if (clipboardIds.length) await copyClipboardResults(clipboardIds);
 }
 async function makeRoom() {
   const oldest = engine.list().at(-1);
@@ -241,7 +270,7 @@ async function readClipboardImage() {
  * own, so a long encode never holds up the next copy, and no copy or manual request is dropped.
  */
 function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive = false): Promise<void> {
-  if (!manual && !settings.enableClipboardOptimiser) return Promise.resolve();
+  if (!manual && (!settings.enableClipboardOptimiser || paused())) return Promise.resolve();
   return intake.submit(async () => {
     const plan = await clipboardIntake(change, manual, memory, {
       settings, owns: file => workdir.owns(file), image: readClipboardImage, text: () => clipboard.readText(), isFile, fingerprint: filesFingerprint, hash: fingerprint,
@@ -274,6 +303,12 @@ function updateTray() {
     { type: 'separator' },
     { label: 'Watch clipboard', type: 'checkbox', checked: settings.enableClipboardOptimiser, click: item => toggleSetting({ enableClipboardOptimiser: item.checked }) },
     { label: 'Keep drop zone visible', type: 'checkbox', checked: settings.keepDropZoneVisible, click: item => toggleSetting({ keepDropZoneVisible: item.checked }) },
+    { label: 'Pause automatic optimisations', type: 'checkbox', checked: settings.pauseAutomaticOptimisations, click: item => toggleSetting({ pauseAutomaticOptimisations: item.checked }) },
+    { type: 'separator' },
+    { label: 'Revert last optimisations', click: () => { revertLast().catch(error => inform(message(error))); } },
+    { label: 'Bring back last result', click: bringBackLast },
+    { label: 'Stop all', click: () => engine.stop() },
+    { type: 'separator' },
     { label: 'Settings…', click: () => main.show() },
     { label: 'Open originals and results', click: () => { void shell.openPath(workdir.temp); } },
     { type: 'separator' }, { label: 'Quit Clop', click: () => app.quit() },
@@ -283,7 +318,7 @@ function updateTray() {
 function toggleSetting(value: unknown) { updateSettings(value).catch(error => { updateTray(); inform(message(error)); }); }
 async function updateSettings(value: unknown) {
   settings = await store.set(value);
-  if (!settings.enableClipboardOptimiser) pickup.cancel();
+  if (!settings.enableClipboardOptimiser || paused()) pickup.cancel();
   floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop);
   syncFloating();
   if (process.platform === 'win32') app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin, path: process.execPath, args: ['--hidden'] });
@@ -294,7 +329,7 @@ function nativeSettings() {
   return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating].map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
 }
 /** Card actions put a clipboard result back on the clipboard, and others with `autoCopyToClipboard`. */
-function copiesBack(id: string) { const { result } = engine.get(id); return result.status === 'ready' && (result.source === 'clipboard' || settings.autoCopyToClipboard); }
+function copiesBack(id: string) { const { result } = engine.get(id); return result.status === 'ready' && (result.source === 'clipboard' || (settings.autoCopyToClipboard && result.source !== 'folder')); }
 function trusted(sender: Electron.WebContents) { return [main, floating].some(window => window && !window.isDestroyed() && window.webContents === sender); }
 ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) => {
   if (!trusted(event.sender)) throw new Error('Untrusted window.');
@@ -344,6 +379,8 @@ else {
     Menu.setApplicationMenu(null);
     const userData = app.getPath('userData');
     store = new SettingsStore(path.join(userData, 'settings.json'), { home: app.getPath('home'), desktop: app.getPath('desktop'), userData });
+    // Watching guards against apps that rewrite many files in its first seconds on the first launch.
+    const firstLaunch = !await stat(store.file).then(() => true, () => false);
     // An unreadable settings file is left alone; the defaults are used and the reason is shown once the windows exist.
     let settingsError: unknown;
     settings = await store.load().catch(error => { settingsError = error; return store.get(); });
@@ -359,10 +396,26 @@ else {
     stopCleaner = workdir.startCleaner(() => store.get('workdirCleanupInterval'));
     engine = new ItemEngine(session, () => settings);
     engine.on('change', () => { syncFloating(); broadcast(); });
-    engine.on('ready', (id: string) => { hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
+    engine.on('ready', (id: string) => { if (quiet.has(id)) return; hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
+    engine.on('add', (id: string) => lastBatch.add(id));
     await createWindows();
     if (settingsError) inform(message(settingsError));
     if (workdirProblem) inform(workdirProblem);
+    marker = new OptimisedMarker(path.join(userData, 'optimised.json'));
+    const home = app.getPath('home');
+    folders = new FolderResults({
+      engine, settings: () => settings, home, options: () => defaults(), makeRoom, quiet: id => { quiet.add(id); },
+      env: () => ({ settings, workdir, marker, home, counter: nameCounter ??= { value: settings.lastAutoIncrementingNumber } }),
+      saved: value => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); },
+    });
+    watchers = (['image', 'video', 'pdf', 'audio'] as const).map(kind => new FolderWatcher(kind, {
+      // The stream hint moves with a renamed file, which the cache keyed by path cannot follow.
+      settings: () => settings, home, firstLaunch, owns: file => workdir.owns(file), isOptimised: async file => await marker.isOptimised(file) || await marker.hint(file) === true,
+      handle: (file, dir) => folders.optimise(file, kind, dir), cancel: files => folders.cancel(files), notice: inform,
+      disable: () => toggleSetting({ [enabledKey(kind)]: false }),
+    }));
+    store.on('change', next => { settings = next; for (const watcher of watchers) void watcher.update(); });
+    for (const watcher of watchers) void watcher.update();
     const icon = nativeImage.createFromPath(path.join(here, 'icon.png'));
     tray = new Tray(icon); tray.setToolTip('Clop'); tray.on('double-click', showLatest); updateTray();
     for (const [key, callback] of [
@@ -373,7 +426,7 @@ else {
     if (process.platform === 'win32') {
       bridge.on('ready', () => { bridgeReady = true; void bridge.request(nativeSettings()).then(() => { if (settings.enableClipboardOptimiser) void optimiseClipboard(); }).catch(error => inform(message(error))); });
       bridge.on('clipboard', event => {
-        if (!settings.enableClipboardOptimiser) return;
+        if (!settings.enableClipboardOptimiser || paused()) return;
         const change = clipboardChange(event);
         if (change) pickup.change(change); else inform('The Windows helper sent an unreadable clipboard change.');
       });
@@ -387,7 +440,7 @@ else {
     const files = process.argv.slice(1).filter(arg => path.isAbsolute(arg) && mediaKind(arg));
     if (files.length) await importFiles(files, 'file');
   }).catch(error => { dialog.showErrorBox('Clop could not start', message(error)); app.quit(); });
-  app.on('before-quit', () => { quitting = true; engine?.abort(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
+  app.on('before-quit', () => { quitting = true; engine?.abort(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });
   app.on('activate', () => { if (engine) showLatest(); });
 }
