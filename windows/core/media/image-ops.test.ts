@@ -70,6 +70,14 @@ test('long edge and aspect ratio crops, and centred crops of animations', async 
   }
 });
 
+test('a lossless crop of an animated WebP keeps every frame through sharp', async t => {
+  const w = await workspace(t); if (!w) return;
+  const webp = await w.file('animation.webp', await animation('webp', { frames: 6, width: 96, height: 64, delays: [100, 200, 100, 200, 100, 300] }));
+  const square = await cropImage(webp, w.out, { compression: lossless, cropSize: { width: 32, height: 32 }, name: 'lossless-square' });
+  const meta = await sharp(square.path, { animated: true }).metadata();
+  assert.deepEqual([square.format, square.width, square.height, meta.pages, meta.delay], ['webp', 32, 32, 6, [100, 200, 100, 200, 100, 300]]);
+});
+
 test('watermarks a corner at the requested scale and opacity, and every frame of an animation', async t => {
   const w = await workspace(t); if (!w) return;
   const input = await w.file('white.png', sharp({ create: { width: 400, height: 300, channels: 3, background: '#ffffff' } }).png());
