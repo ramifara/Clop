@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
 import { api } from './api';
 import { Icon } from './icons';
-import type { AppEntry, AppState, ClopSettings, ImageOptions, ItemResult } from './types';
+import type { AppEntry, AppState, ClopSettings, ImageOptions, ItemResult, PipelineChoice } from './types';
 
 const preferences = new URLSearchParams(location.search).has('preferences');
 const humanSize = (value: number) => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(value / 1000))} KB`;
@@ -88,7 +88,8 @@ export function App() {
 }
 
 function ResultCard({ item, native, run, onSelect }: { item: ItemResult; native: boolean; run: Run; onSelect: () => void }) {
-  const [panel, setPanel] = useState<'scale' | 'compression' | 'dimensions' | 'menu' | null>(null);
+  const [panel, setPanel] = useState<'scale' | 'compression' | 'dimensions' | 'menu' | 'pipelines' | null>(null);
+  const [pipelines, setPipelines] = useState<PipelineChoice[]>();
   const [scale, setScale] = useState(Math.round(item.width / item.originalWidth * 100));
   const [edge, setEdge] = useState(Math.max(item.width, item.height).toString());
   const [comparing, setComparing] = useState(false);
@@ -120,9 +121,11 @@ function ResultCard({ item, native, run, onSelect }: { item: ItemResult; native:
     {panel === 'scale' ? <div className="card-panel scale-panel"><button className="panel-close" aria-label="Close downscale" onClick={() => setPanel(null)}><Icon name="close" size={10}/></button><strong>{scale}% · {Math.round(item.originalWidth * scale / 100)}×{Math.round(item.originalHeight * scale / 100)}</strong><input autoFocus type="range" aria-label="Downscale" min="10" max="100" step="5" value={scale} onChange={event => setScale(Number(event.target.value))} onPointerUp={event => commitScale(Number(event.currentTarget.value))} onKeyUp={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) commitScale(Number(event.currentTarget.value)); }}/><div className="scale-presets">{[100, 75, 50, 25, 10].map(value => <button key={value} disabled={busy} onClick={() => commitScale(value)}>{value}%</button>)}</div></div>
     : panel === 'compression' ? <div className="card-panel compression-panel"><strong>Compression</strong>{(['balanced', 'aggressive', 'lossless'] as const).map(mode => <button key={mode} className={mode === item.options.mode ? 'active' : ''} onClick={() => apply({ mode })}>{mode === 'balanced' ? 'Balanced' : mode === 'aggressive' ? 'Smaller' : 'Lossless'}</button>)}</div>
     : panel === 'dimensions' ? <form className="card-panel dimension-panel" onSubmit={event => { event.preventDefault(); apply({ maxEdge: Number(edge), scale: 1 }); }}><label htmlFor={`edge-${item.id}`}>Longest edge</label><div><input id={`edge-${item.id}`} autoFocus type="number" min="1" max="16000" value={edge} onChange={event => setEdge(event.target.value)}/><span>px</span><button type="submit" aria-label="Apply dimensions"><Icon name="check" size={14}/></button></div></form>
-    : panel === 'menu' ? <div className="card-panel action-menu">{image && <><button onClick={() => { setPanel(null); setComparing(true); }}>Compare original</button><button onClick={() => setPanel('dimensions')}>Set dimensions…</button></>}<button onClick={() => void run(() => api.save(item.id))}>Save as…</button>{native && <button onClick={() => void run(() => api.reveal(item.id))}>Show in Explorer</button>}</div>
+    : panel === 'menu' ? <div className="card-panel action-menu">{image && <><button onClick={() => { setPanel(null); setComparing(true); }}>Compare original</button><button onClick={() => setPanel('dimensions')}>Set dimensions…</button></>}<button onClick={() => void run(() => api.save(item.id))}>Save as…</button>{native && <button onClick={() => void run(() => api.reveal(item.id))}>Show in Explorer</button>}{native && <button onClick={() => { setPipelines(undefined); setPanel('pipelines'); void run(async () => setPipelines(await api.pipelines(item.id))); }}>Run pipeline…</button>}</div>
+    : panel === 'pipelines' ? <div className="card-panel action-menu pipeline-menu" aria-label="Run a pipeline"><button className="panel-close" aria-label="Close pipelines" onClick={() => setPanel(null)}><Icon name="close" size={10}/></button>{!pipelines ? <span>Loading…</span> : pipelines.length ? pipelines.map(pipeline => <button key={pipeline.id} title={pipeline.text} onClick={() => { setPanel(null); setCollapsed(true); void run(() => api.runPipeline(item.id, pipeline.id)); }}>{pipeline.name}</button>) : <span>No saved pipelines for this file.</span>}</div>
     : !busy && !item.error && <div className="action-grid" aria-label={`${NOUNS[item.kind]} actions`}>{actions.map(action => <button key={action.name} className="grid-button" aria-label={action.name} title={action.name} onPointerDown={event => { if (action.name === 'Downscale') { event.preventDefault(); setPanel('scale'); } }} onClick={action.action}><Icon name={action.icon} size={17}/></button>)}</div>}
     <div className="card-bottom">
+      {!busy && !item.error && !panel && item.notes?.length ? <div className="card-notes" role="status" title={item.notes.join('\n')}>{item.notes[0]}{item.notes.length > 1 ? ` (+${item.notes.length - 1})` : ''}</div> : null}
       {busy ? <div className="card-progress"><span className="spinner"/>Optimising…{item.progress ? ` ${Math.round(item.progress * 100)}%` : ''}</div> : item.error ? <div className="card-error" role="alert">{item.error}<button onClick={() => void run(() => api.restore(item.id))}>Restore original</button></div> : panel ? null : <>
         <div className="size-diff"><span className={item.outputBytes < item.originalBytes ? 'old' : ''}>{humanSize(item.originalBytes)}</span>{item.outputBytes !== item.originalBytes && <><Icon name="arrow" size={11}/><strong className={saved < 0 ? 'larger' : ''}>{humanSize(item.outputBytes)}</strong></>}</div>
         {image ? <button className="resolution-chip" aria-label="Set dimensions" title="Set dimensions" disabled={busy} onClick={() => setPanel('dimensions')}>{item.width}×{item.height}{change}</button>
