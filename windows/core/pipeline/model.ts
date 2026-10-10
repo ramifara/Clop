@@ -150,17 +150,21 @@ export const kindForTextName = (name: string): StepKind | undefined => name === 
 export const stepKind = (step: PipelineStep) => Object.keys(step)[0] as StepKind;
 export const stepEntry = (step: PipelineStep) => { const kind = stepKind(step); return [kind, (step as Record<string, unknown>)[kind]] as StepEntry; };
 
-/** A step in canonical form: keys in declaration order, defaults filled in, unset optionals dropped. */
+/** `known` keys in their order, then any other defined keys: values a newer macOS added are kept so they sync back. */
+export function ordered(value: Record<string, unknown>, known: readonly string[], map: (key: string, item: unknown) => unknown = (_, item) => item) {
+  const out: Record<string, unknown> = {};
+  for (const key of [...known, ...Object.keys(value).filter(key => !known.includes(key))]) if (value[key] !== undefined) out[key] = map(key, value[key]);
+  return out;
+}
+const SHORTCUT_KEYS = ['name', 'identifier'], FILTER_KEYS = () => FILTER_FIELDS.map(({ key }) => key);
+
+/** A step in canonical form: keys in declaration order, defaults filled in, unset optionals dropped, unknown values kept last. */
 export function makeStep<K extends StepKind>(kind: K, params: Partial<StepParamMap[K]>): PipelineStep {
-  const values = params as Record<string, unknown>, out: Record<string, unknown> = {};
-  for (const { key, default: fallback } of STEP_FIELDS[kind]) {
-    const value = values[key] ?? fallback;
-    if (value === undefined) continue;
-    out[key] = key !== '_0' ? value : kind === 'runShortcut' ? { name: (value as Shortcut).name, identifier: (value as Shortcut).identifier } : orderFilter(value as FilterCondition);
-  }
+  const fields = STEP_FIELDS[kind], values: Record<string, unknown> = { ...params };
+  for (const { key, default: fallback } of fields) values[key] ??= fallback;
+  const out = ordered(values, fields.map(({ key }) => key), (key, item) => key !== '_0' ? item : ordered(item as Record<string, unknown>, kind === 'runShortcut' ? SHORTCUT_KEYS : FILTER_KEYS()));
   return { [kind]: out } as PipelineStep;
 }
-const orderFilter = (condition: FilterCondition) => Object.fromEntries(FILTER_FIELDS.flatMap(({ key }) => condition[key] === undefined ? [] : [[key, condition[key]]])) as FilterCondition;
 
 /** `CropSize(aspectRatio:)`: `W:H` with optional decimals, scaled to whole numbers (`1.91:1` is 191:100). */
 export function parseAspectRatio(text: string): { width: number; height: number } | undefined {
@@ -190,7 +194,11 @@ const FILTER_COUNTS = ['fileSizeGreaterThan', 'fileSizeLowerThan', 'widthGreater
 /** `a, b or c`, for messages. */
 export const orList = (values: readonly string[]) => values.length < 3 ? values.join(' or ') : `${values.slice(0, -1).join(', ')} or ${values.at(-1)}`;
 
-/** Values a step can hold structurally but that cannot work: out-of-range numbers, empty paths, unknown names, a filter without a condition. */
+/**
+ * Values a step can hold structurally but that cannot work on Windows: out-of-range numbers, empty paths, unknown names, a
+ * filter without a condition. The text parser refuses them; stored pipelines keep them (see `pipelineProblems`). Regexes
+ * are not checked here: macOS writes ICU syntax, which the executor reads.
+ */
 export function stepProblems(step: PipelineStep): StepProblem[] {
   const problems: StepProblem[] = [];
   const number = (param: string, value: number | undefined, rule: NumberRule) => { if (value !== undefined && breaks(value, rule)) problems.push({ param, message: `${param} must be ${describe(rule)}, got ${value}` }); };
@@ -199,7 +207,10 @@ export function stepProblems(step: PipelineStep): StepProblem[] {
   const [kind, p] = stepEntry(step);
   if ('location' in p) filled('location', p.location);
   switch (kind) {
-    case 'optimise': number('dpi', p.dpi, POSITIVE_INT); if (p.compression) number('compression', p.compression.factor, { integer: true, min: 0, max: 100 }); break;
+    case 'optimise':
+      number('dpi', p.dpi, POSITIVE_INT);
+      if (p.compression && JSON.stringify(effectiveCompression(p.compression)) !== JSON.stringify({ tier: p.compression.tier, factor: p.compression.factor })) problems.push({ param: 'compression', message: `compression ${JSON.stringify(p.compression)} is not a tier Clop knows with a factor from 0 to 100` });
+      break;
     case 'downscale': number('factor', p.factor, { above: 0, max: 1 }); break;
     case 'lowerBitrate': number('kbps', p.kbps, POSITIVE_INT); break;
     case 'convert': filled('to', p.to); if (p.to.trim() && !/^[a-z0-9]+$/i.test(p.to)) problems.push({ param: 'to', message: `to must be a format extension such as webp or mp4, got "${p.to}"` }); break;
@@ -219,7 +230,6 @@ export function stepProblems(step: PipelineStep): StepProblem[] {
       for (const key of FILTER_COUNTS) number(key, condition[key], COUNT);
       for (const key of ['regex', 'nameContains', 'nameIs', 'copiedBy'] as const) filled(key, condition[key]);
       if (condition.types && (!condition.types.length || condition.types.some(type => !type.trim()))) problems.push({ param: 'types', message: 'types needs one or more file types, such as png jpeg' });
-      if (condition.regex?.trim()) try { new RegExp(condition.regex); } catch (error) { problems.push({ param: 'regex', message: `regex is not a valid regular expression: ${(error as Error).message}` }); }
       break;
     }
     case 'changeSpeed': number('factor', p.factor, { above: 0 }); break;
@@ -262,6 +272,17 @@ export function typeProblems(step: PipelineStep, fileType: ClopFileType): StepPr
   if (kind === 'copyToClipboard' && p.format === 'imageData' && fileType !== 'image') problems.push({ param: 'format', message: 'format imageData only works on image files; use path or markdown' });
   return problems;
 }
+
+const TIERS: Record<CompressionQuality['tier'], true> = { adaptive: true, lossless: true, fast: true, smaller: true, custom: true };
+/** The compression a stored `optimise(compression:)` means, read the way the tolerant Swift decoder reads it: an unknown tier is custom, a factor that is not a whole number 50, and the factor clamped to 0–100. Stored values are kept as written. */
+export function effectiveCompression(value: CompressionQuality): CompressionQuality {
+  const tier = typeof value.tier === 'string' && Object.hasOwn(TIERS, value.tier) ? value.tier : 'custom';
+  return { tier, factor: Number.isInteger(value.factor) ? Math.max(0, Math.min(100, value.factor)) : 50 };
+}
+
+/** What would stop a stored pipeline from running here, per step. Warnings only: a stored pipeline is kept and synced back whatever they say. */
+export const pipelineProblems = (pipeline: Pipeline): (StepProblem & { step: number })[] => pipeline.steps.flatMap((step, index) =>
+  [...stepProblems(step), ...(pipeline.fileType ? typeProblems(step, pipeline.fileType) : [])].map(problem => ({ ...problem, step: index })));
 
 /** Built-in library pipelines have a stable `builtin-` id and show a "Built-in" badge. */
 export const isBuiltin = (pipeline: Pipeline) => pipeline.id.startsWith('builtin-');

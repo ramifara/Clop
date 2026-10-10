@@ -1,6 +1,6 @@
 import type { CompressionQuality } from '../settings/schema';
 import {
-  CLIPBOARD_FORMATS, ENCODER_QUALITIES, FILTER_FIELDS, LOCATION_KEYWORDS, PAGE_FORMATS, PAGE_QUALITIES, SHELF_APPS, UPLOAD_APPS, VIDEO_ENCODER_PRESETS, WATERMARK_POSITIONS,
+  CLIPBOARD_FORMATS, ENCODER_QUALITIES, FILTER_FIELDS, LOCATION_KEYWORDS, SHELF_APPS, UPLOAD_APPS, VIDEO_ENCODER_PRESETS,
   kindForTextName, makeStep, orList, resolvePipeline, stepEntry, stepProblems, textName, typeProblems,
   type ClopFileType, type FilterCondition, type FrameBehaviour, type Pipeline, type PipelineStep, type StepKind, type StepParamMap, type StepProblem,
 } from './model';
@@ -33,6 +33,8 @@ export interface ParseOptions {
   fileType?: ClopFileType;
   /** The home folder: paths inside it are stored as `~/…` (`portablePathsInText`). */
   home?: string;
+  /** Refuse values that cannot work on Windows (`stepProblems`). Off for text stored by macOS, which is kept as written. */
+  checkValues?: boolean;
 }
 
 const QUOTES = new Set(['"', "'"]);
@@ -115,15 +117,40 @@ function segments(text: string): Segment[] {
   return out;
 }
 
+/**
+ * Splits parameters on commas. As on macOS, a quote opens a quoted value only as the first character of a value; anywhere
+ * else it is a literal character (`rename(to: Rami's copy)`). `open` is where an unterminated quoted value starts.
+ */
+function splitParams(text: string): { parts: { text: string; at: number }[]; open?: number } {
+  const parts: { text: string; at: number }[] = [];
+  for (let start = 0; ; ) {
+    let i = start;
+    while (i < text.length && text[i] !== ':' && text[i] !== ',') i++;
+    if (text[i] === ':') {
+      i++;
+      while (text[i] === ' ' || text[i] === '\t') i++;
+      if (QUOTES.has(text[i])) {
+        const close = text.indexOf(text[i], i + 1);
+        if (close < 0) return { parts, open: i };
+        i = close + 1;
+      }
+      while (i < text.length && text[i] !== ',') i++;
+    }
+    parts.push({ text: text.slice(start, i), at: start });
+    if (i >= text.length) return { parts };
+    start = i + 1;
+  }
+}
+
 class Args {
   private reported = false;
-  constructor(private readonly params: Map<string, Param>, private readonly step: string, private readonly report: (message: string, param?: Param) => void, private readonly home?: string) {}
+  constructor(private readonly params: Map<string, Param>, private readonly step: string, private readonly report: (message: string, param?: Param) => void, private readonly home?: string, private readonly checkValues = true) {}
   get failed() { return this.reported; }
   fail(message: string, param?: Param) { this.reported = true; this.report(message, param); }
   string(key: string, required = false): string | undefined {
     const param = this.params.get(key);
     if (!param) { if (required) this.fail(`${this.step} needs ${key}`); return undefined; }
-    if (!param.value.trim()) { this.fail(`${key} needs a value`, param); return undefined; }
+    if (!param.value.trim() && (required || this.checkValues)) { this.fail(`${key} needs a value`, param); return undefined; }
     return portablePathsInText(param.value, this.home);
   }
   convert<T>(key: string, convert: (value: string) => T | undefined, expected: string, required = false): T | undefined {
@@ -157,10 +184,10 @@ const READERS: { [K in StepKind]: (a: Args) => Partial<StepParamMap[K]> } = {
   lowerBitrate: a => ({ kbps: a.int('kbps', true), location: a.string('location') }),
   convert: a => ({ to: a.string('to', true), location: a.string('location') }),
   crop: a => ({ width: a.int('width'), height: a.int('height'), longEdge: a.int('longEdge'), aspectRatio: a.string('aspectRatio'), smartCrop: a.bool('smartCrop'), location: a.string('location') }),
-  extractPagesAsImages: a => ({ format: a.choice('format', PAGE_FORMATS), quality: a.choice('quality', PAGE_QUALITIES), location: a.string('location') }),
+  extractPagesAsImages: a => ({ format: a.string('format'), quality: a.string('quality'), location: a.string('location') }),
   targetSize: a => ({ bytes: a.convert('size', parseByteSize, 'a size such as 500KB or 10MB', true), location: a.string('location') }),
   stripExif: () => ({}),
-  watermark: a => ({ image: a.string('image', true), position: a.choice('position', WATERMARK_POSITIONS), opacity: a.number('opacity'), scale: a.number('scale'), location: a.string('location') }),
+  watermark: a => ({ image: a.string('image', true), position: a.string('position'), opacity: a.number('opacity'), scale: a.number('scale'), location: a.string('location') }),
   copy: a => ({ to: a.string('to', true) }),
   move: a => ({ to: a.string('to', true) }),
   rename: a => ({ to: a.string('to', true) }),
@@ -186,7 +213,7 @@ const READERS: { [K in StepKind]: (a: Args) => Partial<StepParamMap[K]> } = {
 };
 
 /** Every step the text describes, plus every problem found. Steps with problems are left out, so an editor can still preview the rest. */
-export function parsePipelineText(text: string, { fileType, home }: ParseOptions = {}): { steps: PipelineStep[]; issues: PipelineIssue[] } {
+export function parsePipelineText(text: string, { fileType, home, checkValues = true }: ParseOptions = {}): { steps: PipelineStep[]; issues: PipelineIssue[] } {
   const lineStarts = [0, ...[...text.matchAll(/\n/g)].map(match => match.index + 1)];
   const issues: PipelineIssue[] = [], steps: PipelineStep[] = [];
   const issue = (step: number, message: string, offset: number, length: number) => {
@@ -207,31 +234,28 @@ export function parsePipelineText(text: string, { fileType, home }: ParseOptions
     const atName = (message: string) => fail(message, segment.offset, name.length);
 
     const rest = segment.text.slice(name.length), restOffset = segment.offset + name.length;
-    let quote: { char: string; at: number } | undefined;
-    const commas: number[] = [];
-    for (let i = 0; i < rest.length; i++) {
-      const char = rest[i];
-      if (QUOTES.has(char)) quote = quote?.char === char ? undefined : quote ?? { char, at: i };
-      else if (char === ',' && !quote) commas.push(i);
-    }
-    if (quote && segment.arrow !== undefined) {
-      const close = text.indexOf(quote.char, segment.arrow);
-      skipUntil = close < 0 ? text.length : close;
+    if (rest && !rest.startsWith('(')) return fail(`Expected "(" right after ${name}`, restOffset, rest.length);
+    // macOS reads removeAudio only bare.
+    if (rest && kind === 'removeAudio') return fail('removeAudio takes no parameters; write it without parentheses', restOffset, rest.length);
+    const body = rest.slice(1), bodyOffset = restOffset + 1, { parts, open } = splitParams(body);
+    if (open !== undefined && segment.arrow !== undefined) {
+      // Carry on after the step holding the rest of the value, or at the next step when the quote never closes.
+      const close = text.indexOf(body[open], segment.arrow);
+      if (close >= 0) skipUntil = close;
       return fail('"->" always separates steps, so it cannot appear inside a quoted value', segment.arrow, 2);
     }
-    if (quote) return fail(`Unterminated ${quote.char} quote`, restOffset + quote.at, rest.length - quote.at);
-    if (rest && !rest.startsWith('(')) return fail(`Expected "(" right after ${name}`, restOffset, rest.length);
+    if (open !== undefined) return fail(`Unterminated ${body[open]} quote`, bodyOffset + open, body.length - open);
     if (rest && !rest.endsWith(')')) return fail(`${name}(…) is missing its closing ")"`, restOffset, rest.length);
+    if (parts.length) parts[parts.length - 1].text = parts[parts.length - 1].text.slice(0, -1);
 
     const params = new Map<string, Param>();
     const template = stepTemplate(textName(kind))!;
     const allowed = kind === 'filterIf' || kind === 'filterIfNot' ? FILTER_FIELDS.map(({ key }) => key) : stepParams(template).map(param => param.name);
     let bad = false;
-    const bounds = [0, ...commas, rest.length - 1];
-    for (let i = 0; i + 1 < bounds.length && rest; i++) {
-      const from = bounds[i] + 1, raw = rest.slice(from, bounds[i + 1]), part = raw.trim();
+    for (const { text: raw, at: from } of rest ? parts : []) {
+      const part = raw.trim();
       if (!part) continue;
-      const at = restOffset + from + raw.length - raw.trimStart().length, colon = part.indexOf(':');
+      const at = bodyOffset + from + raw.length - raw.trimStart().length, colon = part.indexOf(':');
       const key = colon < 0 ? '' : part.slice(0, colon).trim();
       if (!/^\w+$/.test(key)) {
         const only = allowed.includes(part) ? `; give it a value, as in ${part}: …` : template.mandatoryParams.length === 1 ? `; write ${name}(${template.mandatoryParams[0].name}: ${part})` : '';
@@ -241,15 +265,16 @@ export function parsePipelineText(text: string, { fileType, home }: ParseOptions
       if (params.has(key)) { fail(`${key} is given twice`, at, part.length); bad = true; continue; }
       const rawValue = part.slice(colon + 1), value = rawValue.trim(), valueAt = at + colon + 1 + rawValue.length - rawValue.trimStart().length;
       if (QUOTES.has(value[0]) && (value.length < 2 || !value.endsWith(value[0]))) { fail(`Unexpected text after the closing ${value[0]} quote`, valueAt, value.length); bad = true; continue; }
-      params.set(key, { key, value: QUOTES.has(value[0]) ? value.slice(1, -1) : value, offset: valueAt, length: value.length });
+      // macOS trims quote characters off both ends of a value; inside a bare value they are literal.
+      params.set(key, { key, value: QUOTES.has(value[0]) ? value.slice(1, -1) : value.replace(/["']+$/, ''), offset: valueAt, length: value.length });
     }
     if (bad) return;
 
-    const args = new Args(params, name, (message, param) => param ? fail(message, param.offset, param.length) : atName(message), home);
+    const args = new Args(params, name, (message, param) => param ? fail(message, param.offset, param.length) : atName(message), home, checkValues);
     const values = (READERS[kind] as (a: Args) => object)(args);
     if (args.failed) return;
     const step = makeStep(kind, values as Partial<StepParamMap[StepKind]>);
-    const problems: StepProblem[] = [...stepProblems(step), ...(fileType ? typeProblems(step, fileType) : [])];
+    const problems: StepProblem[] = checkValues ? [...stepProblems(step), ...(fileType ? typeProblems(step, fileType) : [])] : [];
     for (const problem of problems) {
       const param = problem.param ? params.get(problem.param) : undefined;
       if (param) fail(problem.message, param.offset, param.length); else atName(problem.message);
@@ -277,10 +302,11 @@ export function displayText(pipeline: Pipeline, saved: readonly Pipeline[] = [])
   return pipeline.rawText ?? formatSteps(pipeline.steps);
 }
 
-// Writing steps as text. Defaults are left out, paths, names and patterns are quoted, and every value is written so it
-// parses back to the same step. A value holding both quote characters, `->` or a line break cannot be written losslessly.
+// Writing steps as text. Defaults are left out and paths, names and patterns are quoted. Some stored steps have no exact
+// text form: a value holding `->`, a line break or both quote characters, a Shortcut identifier, a value only macOS
+// accepts, or a value from a newer macOS. `canFormat` tells, so an editor can show those as JSON instead.
 const decimal = (value: number) => Number.isInteger(value) && Math.abs(value) < 1e15 ? value.toFixed(1) : String(value);
-const quoted = (value: string) => value.includes('"') && !value.includes("'") ? `'${value}'` : `"${value}"`;
+const quoted = (value: string) => !value.includes('"') ? `"${value}"` : !value.includes("'") ? `'${value}'` : value;
 const bare = (value: string) => !value || value !== value.trim() || /[,"'()\n]|->/.test(value) ? quoted(value) : value;
 const locationText = (value: string) => (LOCATION_KEYWORDS as readonly string[]).includes(value) ? value : quoted(value);
 /** A byte count in the shortest unit that parses back to exactly the same number. */
@@ -302,7 +328,7 @@ export function formatExpiration(seconds: number): string {
 }
 const compressionText = ({ tier, factor }: CompressionQuality) => tier === 'adaptive' ? 'adaptive' : tier === 'custom' && factor === 0 ? 'auto' : String(factor);
 
-/** One step as DSL text, the inverse of the parser: `parseSteps(formatStep(step))` gives back `[step]`, except for a Shortcut's identifier, which text does not carry (macOS looks shortcuts up by name). */
+/** One step as DSL text, for display. When `canFormat(step)`, `parseSteps(formatStep(step))` gives back exactly `[step]`. */
 export function formatStep(step: PipelineStep): string {
   const [kind, p] = stepEntry(step), args: string[] = [];
   const add = (key: string, value: string | undefined) => { if (value !== undefined) args.push(`${key}: ${value}`); };
@@ -363,3 +389,16 @@ export function formatStep(step: PipelineStep): string {
 }
 
 export const formatSteps = (steps: readonly PipelineStep[]) => steps.map(formatStep).join(' -> ');
+
+/** Whether the step's text parses back to exactly this step, so editing it as text loses nothing. */
+export function canFormat(step: PipelineStep): boolean {
+  const { steps, issues } = parsePipelineText(formatStep(step));
+  const [kind, params] = stepEntry(step);
+  return !issues.length && steps.length === 1 && JSON.stringify(steps[0]) === JSON.stringify(makeStep(kind, params));
+}
+/** The steps as text that parses back to exactly them. Throws a `PipelineError` naming each step that has no such text. */
+export function formatStepsExactly(steps: readonly PipelineStep[]): string {
+  const issues = steps.flatMap((step, index) => canFormat(step) ? [] : [{ step: index, message: `${textName(stepEntry(step)[0])} cannot be written as text without changing it; edit it as JSON` }]);
+  if (issues.length) throw new PipelineError(issues);
+  return formatSteps(steps);
+}

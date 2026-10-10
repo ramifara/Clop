@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { STEP_KINDS, makeStep, parseAspectRatio, referenceTo, stepKind, textName, type Pipeline } from './model';
 import {
-  PipelineError, cleanupPipelineText, displayText, formatByteSize, formatExpiration, formatStep, formatSteps,
+  PipelineError, canFormat, cleanupPipelineText, displayText, formatByteSize, formatExpiration, formatStep, formatSteps, formatStepsExactly,
   parseByteSize, parseExpiration, parsePipelineText, parseSteps, portablePathsInText, updateFromText,
 } from './parser';
 import { STEP_TEMPLATES } from './templates';
@@ -105,10 +105,12 @@ test('errors name the problem and point at it', () => {
   assert.deepEqual(issues('downscale(factor: 2) -> downscale(factor: half)'), ['1:19 factor must be a number above 0 and at most 1, got 2', '1:43 factor must be a number, got "half"']);
   assert.deepEqual(issues('downscale -> capFps(fps: 0) -> lowerBitrate(kbps: 12.5)'), ['1:1 downscale needs factor', '1:26 fps must be a whole number above 0, got 0', '1:51 kbps must be a whole number, got "12.5"']);
   assert.deepEqual(issues('optimise(encoder: ultra, adaptive: yes, compression: 3)'), ['1:19 encoder must be aggressive, medium, lossless, fast, slowHighQuality or visuallyLossless, got "ultra"', '1:36 adaptive must be true or false, got "yes"', '1:54 compression must be 5 to 100, adaptive or auto, got "3"']);
-  assert.deepEqual(issues('watermark(image: "", opacity: 2, position: middle)'), ['1:18 image needs a value', '1:44 position must be bottomRight, bottomLeft, topRight, topLeft or center, got "middle"']);
+  assert.deepEqual(issues('watermark(image: "", opacity: 2, position: middle)'), ['1:18 image needs a value']);
+  assert.deepEqual(issues('watermark(image: w.png, position: middle)'), ['1:35 position must be bottomRight, bottomLeft, topRight, topLeft or center, got "middle"']);
   assert.deepEqual(issues('watermark(image: "w.png", opacity: 2)'), ['1:36 opacity must be a number from 0 to 1, got 2']);
   assert.deepEqual(issues('crop(smartCrop: true) -> crop(aspectRatio: wide)'), ['1:1 crop needs width, height, longEdge or aspectRatio', '1:44 aspectRatio must look like 16:9 or 1.91:1, got "wide"']);
-  assert.deepEqual(issues('if() -> ifNot(regex: "(") -> if(fileSizeGreaterThan: -1)'), ['1:1 if needs at least one condition', '1:22 regex is not a valid regular expression: Invalid regular expression: /(/: Unterminated group', '1:54 fileSizeGreaterThan must be a whole number of at least 0, got -1']);
+  // Regexes are ICU syntax on macOS (`(?i)`, `a++`), so they are left to the executor.
+  assert.deepEqual(issues('if() -> ifNot(regex: "(?i)screenshot") -> if(fileSizeGreaterThan: -1)'), ['1:1 if needs at least one condition', '1:67 fileSizeGreaterThan must be a whole number of at least 0, got -1']);
   assert.deepEqual(issues('normalize(lufs: 3) -> changeSpeed(factor: 0) -> changeSpeed(factor: 2, frames: half)'), ['1:17 lufs must be a number from -70 to -5, got 3', '1:43 factor must be a number above 0, got 0', '1:80 frames must be keep or drop, got "half"']);
   assert.deepEqual(issues('runScript -> runScript(path: "a", code: "b") -> shelveWith(app: finder) -> copyLinkForSending(expiration: soon)'), ['1:1 runScript needs a path or code', '1:14 runScript takes a path or code, not both', '1:65 app must be yoink, dockside, dropover or atoll, got "finder"', '1:107 expiration must be a duration such as 15m, 1h, 3d or never, got "soon"']);
   assert.deepEqual(issues('optimise (encoder: fast) -> convert(to: webp -> stripExif('), ['1:9 Expected "(" right after optimise', '1:36 convert(…) is missing its closing ")"', '1:58 stripExif(…) is missing its closing ")"']);
@@ -165,4 +167,41 @@ test('display text is the written text, the steps, or the referenced pipeline', 
   assert.deepEqual({ ...reference, id: '' }, { id: '', steps: [], skipOptimisation: false, hideResult: false, libraryID: 'lib' });
   assert.equal(displayText(reference, [saved]), 'Clean');
   assert.equal(displayText(reference, []), '');
+});
+
+test('a quote opens a value only as its first character, as on macOS', () => {
+  assert.deepEqual(one("rename(to: Rami's copy)"), { rename: { to: "Rami's copy" } });
+  assert.deepEqual(one("watermark(image: ~/Rami's.png, position: center)"), { watermark: { image: "~/Rami's.png", position: 'center', opacity: 1, scale: 0.15, location: 'inPlace' } });
+  // macOS trims quote characters off the ends of a value.
+  assert.deepEqual(one("rename(to: Ramis')"), { rename: { to: 'Ramis' } });
+  assert.deepEqual(parsePipelineText("move(to: ~/Rami's Files/) -> stripExif -> teleport").steps, [{ move: { to: "~/Rami's Files/" } }, { stripExif: {} }]);
+  assert.deepEqual(issues("move(to: ~/Rami's Files/) -> stripExif -> teleport"), ['1:43 Unknown step "teleport"']);
+  assert.equal(formatStep(one("rename(to: Rami's copy)")), `rename(to: "Rami's copy")`);
+  // After a value cut by "->", parsing resumes with the next step: past the rest of the value, or right away when it never closes.
+  assert.deepEqual(issues('copy(to: "~/a) -> stripExif -> teleport'), ['1:16 "->" always separates steps, so it cannot appear inside a quoted value', '1:32 Unknown step "teleport"']);
+  assert.deepEqual(issues('runScript(code: "a -> b") -> stripExif -> teleport'), ['1:20 "->" always separates steps, so it cannot appear inside a quoted value', '1:43 Unknown step "teleport"']);
+  assert.deepEqual(parsePipelineText('runScript(code: "a -> b") -> stripExif -> teleport').steps, [{ stripExif: {} }]);
+});
+
+test('removeAudio is written bare, the only way macOS reads it', () => {
+  assert.deepEqual(issues('removeAudio()'), ['1:12 removeAudio takes no parameters; write it without parentheses']);
+  assert.deepEqual(issues('stripExif() -> normalize() -> copyToClipboard() -> fork() -> copyLinkForSending()'), []);
+});
+
+test('canFormat tells which steps have exact text, and formatStepsExactly refuses the rest', () => {
+  const exact = parseSteps('if(regex: "^IMG_(\\d+)", types: png jpeg) -> optimise(encoder: fast, compression: auto) -> rename(to: "Rami\'s") -> runShortcut(name: "Make GIF")');
+  assert.ok(exact.every(canFormat));
+  assert.equal(formatStepsExactly(exact), formatSteps(exact));
+  assert.ok(canFormat(makeStep('filterIf', { _0: { regex: `["']x` } })), 'both quotes, written bare');
+  const inexact = [
+    makeStep('runScript', { code: 'a -> b' }),
+    makeStep('runScript', { code: 'line one\nline two' }),
+    makeStep('filterIf', { _0: { nameIs: `it's "a", b` } }),
+    makeStep('runShortcut', { _0: { name: 'Make GIF', identifier: '0B6D3C1E-7A2F-4E8B-9D5C-3F1A2B4C6D8E' } }),
+    makeStep('normalize', { lufs: -3 }),
+    makeStep('convert', { to: 'webp', location: '' }),
+    makeStep('optimise', { preset: 'web' } as never),
+  ];
+  assert.deepEqual(inexact.map(canFormat), inexact.map(() => false));
+  assert.throws(() => formatStepsExactly([{ stripExif: {} }, inexact[0]]), (error: unknown) => error instanceof PipelineError && error.message === 'Step 2: runScript cannot be written as text without changing it; edit it as JSON');
 });
