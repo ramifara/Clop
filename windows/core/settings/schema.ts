@@ -1,6 +1,8 @@
 import path from 'node:path';
 import { DEFAULT_CROP_SIZES } from '../data/cropSizes';
 import { defaultPaths, portablePath, type DefaultPaths } from './paths';
+import { decodePipelineSources, decodePipelines, decodePresetZones } from '../pipeline/codec';
+import type { Pipeline, PresetZone } from '../pipeline/model';
 
 // Every key from Clop/Settings.swift keeps its macOS name, so `clop settings get/set` and the MCP
 // settings tools speak the same names on both platforms. Defaults are copied from the Swift
@@ -45,7 +47,7 @@ function list(value: Default<string[]>, description: string, { values, item, uni
   const valid = (v: unknown) => typeof v === 'string' && (!values || values.includes(v)) && (!item || item.test(v));
   return spec('list', value, description, v => Array.isArray(v) && v.every(valid) ? unique ? [...new Set(v as string[])] : [...v as string[]] : undefined, { values, ...flags });
 }
-/** Values whose model belongs to a later module (pipelines, preset zones). Stored as plain JSON and only shallow-checked (an array, or a map of arrays) until the pipeline model (Task 11) validates them. */
+/** Structured values checked by `check` and stored as a deep copy. */
 function json<T>(value: T, description: string, check: (value: unknown) => boolean, flags?: Flags) {
   return spec<T>('object', value, description, v => check(v) ? JSON.parse(JSON.stringify(v)) as T : undefined, flags);
 }
@@ -89,7 +91,8 @@ const UNSUPPORTED = { unsupportedOnWindows: true } as const;
 const EXE = { encoding: 'Path to an .exe; empty uses the Windows default app. macOS stores an app path.' } as const;
 const DIRS = { encoding: 'Folder paths; a leading `~` or `$HOME` means the user profile folder. Defaults are stored that way (`~/Desktop`).' } as const;
 const NORMAL = 30, AGGRESSIVE = 64; // COMPRESSION_FACTOR_NORMAL and _AGGRESSIVE in Shared.swift
-const isPipelineMap = (v: unknown) => isRecord(v) && Object.values(v).every(Array.isArray);
+/** Pipeline values in the macOS Codable shape (`core/pipeline/codec.ts`). Each entry may also be the JSON string macOS keeps in its defaults. Entries that cannot be read are dropped, as the Defaults bridges drop them. */
+const pipelines = <T>(value: T, description: string, parse: (value: unknown) => T | undefined) => spec<T>('object', value, description, parse);
 
 export const settingsSchema = {
   finishedOnboarding: bool(false, 'The first-run introduction has been shown.'),
@@ -242,16 +245,17 @@ export const settingsSchema = {
   enabledKeys: shortcutKeys(['-', '=', 'Backspace', 'Space', 'Z', 'P', 'C', 'A', 'X', 'R', 'K', 'Escape'], 'Action keys with a global shortcut.'),
   savedCropSizes: json<CropSize[]>([...DEFAULT_CROP_SIZES], 'Saved crop sizes. macOS: `[CropSize]`.', v => Array.isArray(v) && v.every(isCropSize)),
   pauseAutomaticOptimisations: bool(false, 'Pause clipboard and watched-folder optimisation.'),
-  presetZones: json<unknown[]>([], 'Preset drop zones, each running a pipeline. macOS: `[PresetZone]`.', v => Array.isArray(v) && v.every(isRecord)),
+  presetZones: pipelines<PresetZone[]>([], 'Preset drop zones, each running a pipeline. macOS: `[PresetZone]`.', decodePresetZones),
   syncSettingsCloud: bool(true, 'Sync settings through iCloud.', UNSUPPORTED),
   allowClopToAppearInScreenshots: bool(false, 'Let screenshots capture Clop\'s windows.'),
 
-  // Declared in Clop/Automation.swift rather than Settings.swift. Plain JSON until the pipeline model is ported.
-  pipelinesToRunOnImage: json<Record<string, unknown[]>>({}, 'Pipelines per watched folder path or `clipboard`, for images. macOS: `[String: [Pipeline]]` (Automation.swift).', isPipelineMap),
-  pipelinesToRunOnVideo: json<Record<string, unknown[]>>({}, 'Pipelines per watched folder path or `clipboard`, for videos. macOS: `[String: [Pipeline]]` (Automation.swift).', isPipelineMap),
-  pipelinesToRunOnPdf: json<Record<string, unknown[]>>({}, 'Pipelines per watched folder path or `clipboard`, for PDFs. macOS: `[String: [Pipeline]]` (Automation.swift).', isPipelineMap),
-  pipelinesToRunOnAudio: json<Record<string, unknown[]>>({}, 'Pipelines per watched folder path or `clipboard`, for audio. macOS: `[String: [Pipeline]]` (Automation.swift).', isPipelineMap),
-  savedPipelines: json<unknown[]>([], 'The saved pipeline library. macOS: `[Pipeline]` (Automation.swift).', v => Array.isArray(v) && v.every(isRecord)),
+  // Declared in Clop/Automation.swift rather than Settings.swift.
+  pipelinesToRunOnImage: pipelines<Record<string, Pipeline[]>>({}, 'Pipelines per watched folder path or `clipboard`, for images. macOS: `[String: [Pipeline]]` (Automation.swift).', decodePipelineSources),
+  pipelinesToRunOnVideo: pipelines<Record<string, Pipeline[]>>({}, 'Pipelines per watched folder path or `clipboard`, for videos. macOS: `[String: [Pipeline]]` (Automation.swift).', decodePipelineSources),
+  pipelinesToRunOnPdf: pipelines<Record<string, Pipeline[]>>({}, 'Pipelines per watched folder path or `clipboard`, for PDFs. macOS: `[String: [Pipeline]]` (Automation.swift).', decodePipelineSources),
+  pipelinesToRunOnAudio: pipelines<Record<string, Pipeline[]>>({}, 'Pipelines per watched folder path or `clipboard`, for audio. macOS: `[String: [Pipeline]]` (Automation.swift).', decodePipelineSources),
+  savedPipelines: pipelines<Pipeline[]>([], 'The saved pipeline library. macOS: `[Pipeline]` (Automation.swift).', decodePipelines),
+  builtinPipelinesSeededVersion: int(0, 'The built-in pipeline library version already added to `savedPipelines`, so a deleted built-in stays deleted.'),
 
   // Windows only.
   keepDropZoneVisible: bool(false, 'Keep the drop zone visible without dragging. Legacy Windows key: `pinned`.', { windowsOnly: true }),
