@@ -22,8 +22,9 @@ export function ffmpegEncoders() {
 }
 
 /**
- * Whether an encoder works on this machine: builds list NVENC, Quick Sync and AMF whether or not the
- * GPU and driver exist, so each is tried on one frame, with the arguments a real encode uses. Asked once per process.
+ * Whether an encoder works on this machine. ffmpeg builds list NVENC, Quick Sync and AMF in `-encoders`
+ * whether or not the GPU and driver exist, so each is tried on one frame with the arguments a real
+ * encode uses. Asked once per process.
  */
 export function encoderWorks(encoder: string): Promise<boolean> {
   let result = tested.get(encoder);
