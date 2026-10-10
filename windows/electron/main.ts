@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ImageEngine, message } from './engine';
+import { ItemEngine, message } from './items';
 import { clipboardPNG } from '../core/media/image-codecs';
 import { imageDefaults, rendererSettings } from './settings';
 import { defaultSettings } from '../core/settings/schema';
@@ -11,12 +11,12 @@ import { SettingsStore } from '../core/settings/store';
 import { Workdir } from '../core/workdir';
 import { WindowsBridge } from './native';
 import { ClipboardPickup } from './pickup';
-import type { AppState, ImageOptions, ImageResult } from '../src/types';
+import type { AppState, ImageOptions, ItemResult } from '../src/types';
 /** Image files the engine accepts, by extension, from the command line. */
 const IMAGE_FILE = /\.(png|jpe?g|webp|gif|avif|tiff?|heic|heif|jxl|bmp|svg)$/i;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-let main: BrowserWindow, floating: BrowserWindow, tray: Tray, engine: ImageEngine;
+let main: BrowserWindow, floating: BrowserWindow, tray: Tray, engine: ItemEngine;
 let settings = defaultSettings(), notice: string | undefined, quitting = false, bridgeReady = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let dropActive = false, dragging = false, importsRunning = 0, hovered = false;
@@ -135,7 +135,7 @@ async function copy(id: string, expectedSequence?: number, files?: string[]) {
     lastOwnFingerprint = fingerprint(item ? Buffer.from(await (await item.getType('image/png')).arrayBuffer()) : png);
   }
 }
-async function importPaths(files: string[], source: ImageResult['source'] = 'drop', expectedSequence?: number, aggressive = false) {
+async function importPaths(files: string[], source: ItemResult['source'] = 'drop', expectedSequence?: number, aggressive = false) {
   if (!Array.isArray(files) || files.length > 20 || files.some(p => typeof p !== 'string' || !path.isAbsolute(p))) throw new Error('Drop up to 20 local image files at a time.');
   dropActive = false; importsRunning++; broadcast();
   try {
@@ -307,7 +307,7 @@ else {
     const session = path.join(workdir.temp, `session-${Date.now()}`);
     workdir.protect(session);
     stopCleaner = workdir.startCleaner(() => store.get('workdirCleanupInterval'));
-    engine = new ImageEngine(session, () => settings);
+    engine = new ItemEngine(session, () => settings);
     engine.on('change', () => { syncFloating(); broadcast(); });
     engine.on('ready', (id: string) => { hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
     await createWindows();
@@ -333,7 +333,7 @@ else {
     const files = process.argv.slice(1).filter(arg => IMAGE_FILE.test(arg) && path.isAbsolute(arg));
     if (files.length) await importPaths(files, 'file');
   }).catch(error => { dialog.showErrorBox('Clop could not start', message(error)); app.quit(); });
-  app.on('before-quit', () => { quitting = true; stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
+  app.on('before-quit', () => { quitting = true; engine?.abort(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });
   app.on('activate', () => { if (engine) showLatest(); });
 }

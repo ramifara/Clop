@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
 import { api } from './api';
 import { Icon } from './icons';
-import type { AppState, ClopSettings, ImageOptions, ImageResult } from './types';
+import type { AppState, ClopSettings, ImageOptions, ItemResult } from './types';
 
 const preferences = new URLSearchParams(location.search).has('preferences');
 const humanSize = (value: number) => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(value / 1000))} KB`;
@@ -84,7 +84,7 @@ export function App() {
   </div>;
 }
 
-function ResultCard({ item, native, run, onSelect }: { item: ImageResult; native: boolean; run: Run; onSelect: () => void }) {
+function ResultCard({ item, native, run, onSelect }: { item: ItemResult; native: boolean; run: Run; onSelect: () => void }) {
   const [panel, setPanel] = useState<'scale' | 'compression' | 'dimensions' | 'menu' | null>(null);
   const [scale, setScale] = useState(Math.round(item.width / item.originalWidth * 100));
   const [edge, setEdge] = useState(Math.max(item.width, item.height).toString());

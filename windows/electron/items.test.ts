@@ -1,19 +1,23 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { run } from '../core/run';
 import { needTools } from '../core/testing';
 import { defaultSettings } from '../core/settings/schema';
-import { ImageEngine, sampleImage } from './engine';
+import { clip } from '../core/media/video.fixtures';
+import { coverImage, tone } from '../core/media/audio.fixtures';
+import { photoPDF } from '../core/media/pdf.fixtures';
+import { ItemEngine, sampleImage } from './items';
+import { placeholder } from './thumbnails';
 const balanced = { mode: 'balanced', format: 'auto', scale: 1 } as const;
 async function fixture(t: TestContext) {
   if (!needTools(t, 'jpegoptim', 'pngquant', 'gifsicle', 'ffmpeg', 'exiftool')) return;
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-engine-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  return { engine: new ImageEngine(dir), dir };
+  return { engine: new ItemEngine(dir), dir };
 }
 test('optimises an image, resizes from the original and restores exact source bytes', async t => {
   const f = await fixture(t); if (!f) return;
@@ -139,7 +143,7 @@ test('serialises resize operations and serves the last requested result', async 
 test('reads the compression and metadata settings for every job', async t => {
   const f = await fixture(t); if (!f) return;
   let settings = { ...defaultSettings(), stripMetadata: false };
-  const engine = new ImageEngine(f.dir, () => settings);
+  const engine = new ItemEngine(f.dir, () => settings);
   const original = await sharp(await sampleImage()).withExif({ IFD0: { Artist: 'Someone' } }).jpeg({ quality: 95 }).toBuffer();
   const id = await engine.importBuffer(original, 'photo.jpg', 'drop', balanced);
   assert.equal((await sharp(engine.output(id)).metadata()).exif?.includes('Someone'), true);
@@ -149,4 +153,90 @@ test('reads the compression and metadata settings for every job', async t => {
   settings = { ...settings, imageCompression: { tier: 'custom', factor: 90 } };
   await engine.apply(id, { ...balanced, mode: 'aggressive' });
   assert.ok(engine.get(id).result.outputBytes < aggressive);
+});
+const previewSize = async (dataURL: string) => { const meta = await sharp(Buffer.from(dataURL.split(',')[1], 'base64')).metadata(); return [meta.width, meta.height]; };
+async function media(t: TestContext, ...tools: Parameters<typeof needTools>[1][]) {
+  if (!needTools(t, 'ffmpeg', 'ffprobe', ...tools)) return;
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-items-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  return { engine: new ItemEngine(path.join(dir, 'session')), dir };
+}
+test('optimises a video with a frame preview and its duration, names the result like its source and restores it', async t => {
+  const f = await media(t); if (!f) return;
+  const { engine, dir } = f;
+  const source = await clip(path.join(dir, 'clip.mp4'), { width: 320, height: 240, seconds: 1 }), original = await readFile(source);
+  const id = await engine.importPath(source, 'clipboard', balanced);
+  const { result } = engine.get(id);
+  assert.equal(result.status, 'ready', result.error);
+  assert.deepEqual([result.kind, result.format, result.width, result.height], ['video', 'mp4', 320, 240]);
+  assert.ok(Math.abs(result.durationMs! - 1000) < 100, `${result.durationMs}`);
+  assert.ok(result.outputBytes < result.originalBytes);
+  assert.equal(path.basename(engine.output(id)), 'clip.mp4');
+  assert.notEqual(engine.output(id), source);
+  assert.deepEqual(await previewSize(result.preview), [320, 240]);
+  assert.throws(() => engine.apply(id, { ...balanced, scale: .5 }), /Only images/);
+  await engine.restore(id);
+  assert.deepEqual(await readFile(engine.output(id)), original);
+  assert.deepEqual(await readFile(source), original);
+});
+test('optimises a PDF with its first page as the preview and reports its pages', async t => {
+  const f = await media(t, 'gs'); if (!f) return;
+  const { engine } = f, original = Buffer.from(await photoPDF());
+  const id = await engine.importBuffer(original, 'scan.pdf', 'drop', balanced), { result } = engine.get(id);
+  assert.equal(result.status, 'ready', result.error);
+  assert.deepEqual([result.kind, result.format, result.pages], ['pdf', 'pdf', 4]);
+  assert.ok(result.outputBytes < original.length);
+  assert.deepEqual(await previewSize(result.preview), [288, 216]);
+  await engine.restore(id);
+  assert.deepEqual(await readFile(engine.output(id)), original);
+});
+test('optimises audio, previewing its cover art or a drawn placeholder', async t => {
+  const f = await media(t, 'jpegoptim'); if (!f) return;
+  const { engine, dir } = f;
+  const cover = await coverImage(path.join(dir, 'cover.jpg'), 300, 200);
+  const song = await tone(path.join(dir, 'song.mp3'), { codec: ['-c:a', 'libmp3lame', '-b:a', '320k'], cover });
+  const id = await engine.importPath(song, 'drop', balanced), { result } = engine.get(id);
+  assert.equal(result.status, 'ready', result.error);
+  assert.deepEqual([result.kind, result.format, result.width], ['audio', 'mp3', 0]);
+  assert.ok(Math.abs(result.durationMs! - 2000) < 100, `${result.durationMs}`);
+  assert.ok(result.outputBytes < result.originalBytes);
+  assert.deepEqual(await previewSize(result.preview), [300, 200]);
+  // WAV becomes MP3 by the default formatsToConvertToMP3.
+  const wav = await engine.importPath(await tone(path.join(dir, 'take.wav')), 'drop', balanced), take = engine.get(wav).result;
+  assert.equal(take.status, 'ready', take.error);
+  assert.deepEqual([take.format, path.extname(engine.output(wav))], ['mp3', '.mp3']);
+  assert.equal(take.preview, await placeholder('audio'));
+  await engine.restore(wav);
+  assert.equal(engine.get(wav).result.format, 'wav');
+});
+test('a long video does not hold up an image, and aborting stops the video', async t => {
+  const f = await media(t, 'jpegoptim', 'pngquant', 'gifsicle', 'exiftool'); if (!f) return;
+  const { dir } = f;
+  const engine = new ItemEngine(path.join(dir, 'session'), () => ({ ...defaultSettings(), videoCompression: { tier: 'smaller', factor: 90 } }));
+  const source = await clip(path.join(dir, 'long.mp4'), { width: 1280, height: 720, seconds: 6 });
+  const started = new Promise<void>(resolve => engine.on('change', () => { if (engine.list().some(item => item.kind === 'video' && item.status === 'processing')) resolve(); }));
+  const video = engine.importPath(source, 'drop', { ...balanced, mode: 'aggressive' });
+  await started;
+  const image = await engine.importBuffer(await sharp({ create: { width: 64, height: 64, channels: 3, background: '#336699' } }).png().toBuffer(), 'small.png', 'clipboard', balanced);
+  assert.equal(engine.get(image).result.status, 'ready');
+  assert.equal(engine.list().find(item => item.kind === 'video')!.status, 'processing', 'the video should still be encoding');
+  const before = Date.now();
+  engine.abort();
+  const id = await video;
+  assert.ok(Date.now() - before < 5000);
+  assert.equal(engine.get(id).result.status, 'error');
+  await assert.rejects(engine.importBuffer(Buffer.from('x'), 'late.png', 'drop', balanced), { name: 'AbortError' });
+});
+test('names an imported file as asked and reports files it cannot read', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine, dir } = f;
+  const file = path.join(dir, 'source.png'); await writeFile(file, await sharp({ create: { width: 40, height: 30, channels: 3, background: '#a06040' } }).png().toBuffer());
+  const id = await engine.importPath(file, 'clipboard', balanced, 'clop_2026-10-10_7.png');
+  assert.equal(engine.get(id).result.name, 'clop_2026-10-10_7.png');
+  assert.match(path.basename(engine.output(id)), /^clop_2026-10-10_7\.png$/);
+  await assert.rejects(engine.importPath(path.join(dir, 'missing.mp4'), 'drop', balanced), { code: 'ENOENT' });
+  if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+    await chmod(file, 0o000);
+    await assert.rejects(engine.importPath(file, 'drop', balanced), /Could not read source\.png/);
+  }
 });

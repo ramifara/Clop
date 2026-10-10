@@ -1,14 +1,20 @@
 import type { ClopSettings } from '../core/settings/schema';
+import type { MediaKind } from '../core/media/types';
 export type OutputFormat = 'auto' | 'png' | 'jpeg' | 'webp' | 'avif' | 'gif';
 export interface ImageOptions { mode: 'balanced' | 'aggressive' | 'lossless'; scale: number; maxEdge?: number; format: OutputFormat }
-export interface ImageResult {
-  id: string; name: string; source: 'clipboard' | 'drop' | 'file' | 'sample'; status: 'processing' | 'ready' | 'error';
+/**
+ * A result card's item. Video, PDF and audio items have no pixel size of their own (0 for PDF and audio), keep their
+ * original's preview and report `durationMs` or `pages`; `options` only matters for images. `progress` runs 0 to 1 while processing, when known.
+ */
+export interface ItemResult {
+  id: string; kind: MediaKind; name: string; source: 'clipboard' | 'drop' | 'file' | 'sample'; status: 'processing' | 'ready' | 'error';
   originalBytes: number; outputBytes: number; originalWidth: number; originalHeight: number;
   width: number; height: number; format: string; originalPreview: string; preview: string;
   options: ImageOptions; error?: string; unchanged?: boolean; restored?: boolean; animated: boolean; createdAt: number;
+  durationMs?: number; pages?: number; progress?: number;
 }
 export type { ClopSettings };
-export interface AppState { items: ImageResult[]; settings: ClopSettings; native: boolean; platform: string; dropActive?: boolean; notice?: string }
+export interface AppState { items: ItemResult[]; settings: ClopSettings; native: boolean; platform: string; dropActive?: boolean; notice?: string }
 export interface ClopApi {
   state(): Promise<AppState>; subscribe(callback: (state: AppState) => void): () => void;
   importFiles(files: File[], aggressive?: boolean): Promise<void>; importUrl(url: string, aggressive?: boolean): Promise<void>; clipboard(): Promise<void>;
