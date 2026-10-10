@@ -31,10 +31,12 @@ const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 /** The characters `String.safeFilename` replaces on macOS, plus the ones Windows adds (`\ ?` and control characters). */
 const UNSAFE = /[\\/:{}<>*|?$#&^;'"`\x00-\x1F]/g;
 const replaceUnsafe = (text: string) => text.replace(UNSAFE, '_');
+/** A trailing dot or space is dropped by Windows, so each one becomes `_`. */
+const fixTrailing = (text: string) => text.replace(/[. ]+$/, match => '_'.repeat(match.length));
 
 /** Port of `String.safeFilename`, extended for Windows: no trailing dot or space, and no reserved device name such as CON. Pass a file name, with or without extension, not a path. */
 export function safeFileName(name: string): string {
-  let safe = replaceUnsafe(name).replace(/[. ]+$/, match => '_'.repeat(match.length));
+  let safe = fixTrailing(replaceUnsafe(name));
   const dot = safe.indexOf('.');
   const base = dot < 0 ? safe : safe.slice(0, dot);
   if (RESERVED.test(base)) safe = `${base}_${safe.slice(base.length)}`;
@@ -84,7 +86,11 @@ export function expandPathTemplate(template: string, ctx: TemplateContext = {}):
     const value = expand(part);
     if (part === '.' || part === '..' || (index === 0 && windows && /^[A-Za-z]:$/.test(value))) return value;
     // The folders `%P` and `%F` stand for stay as they are; the literal text around them is made safe.
-    if (/%[PF]/.test(part)) return part.split(/(%[PF])/).map(piece => /^%[PF]$/.test(piece) ? expand(piece) : replaceUnsafe(expand(piece))).join('');
+    if (/%[PF]/.test(part)) {
+      const pieces = part.split(/(%[PF])/);
+      // Only text after the last folder can end the name, so only that piece gets the trailing dot and space rule.
+      return pieces.map((piece, i) => /^%[PF]$/.test(piece) ? expand(piece) : i === pieces.length - 1 ? fixTrailing(replaceUnsafe(expand(piece))) : replaceUnsafe(expand(piece))).join('');
+    }
     return safeFileName(value);
   });
   if (ctx.counter && template.includes('%i')) ctx.counter.value = start + 1;
@@ -103,6 +109,11 @@ export function isAbsoluteTemplate(template: string, ctx: Pick<TemplateContext, 
 const TOKEN_PATTERNS: Record<string, string> = {
   y: '\\d{4}', m: '\\d{2}', d: '\\d{2}', H: '\\d{2}', M: '\\d{2}', S: '\\d{2}', n: '[^/]+', w: '\\d', p: 'AM|PM', r: '[a-z]{5}', i: '\\d+', e: '[^./]+', f: '.+', P: '.+', F: '.+',
 };
+/** Literal template text as `expandTemplate` leaves it: unsafe characters become `_`. A separator stays one, and so does the colon of a leading drive letter. */
+const literal = (text: string, first: boolean) => {
+  const drive = first ? /^[A-Za-z]:/.exec(text)?.[0] ?? '' : '';
+  return drive + text.slice(drive.length).replace(/[\\:{}<>*|?$#&^;'"`\x00-\x1F]/g, '_');
+};
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
 /** Port of `nameMatchesTemplate`: whether `name` could have come out of `template`, so a template is never applied twice to one file. On Windows both sides are compared with `/` separators and ignoring case. */
@@ -111,9 +122,10 @@ export function nameMatchesTemplate(name: string, template: string, { allowPathP
   const windows = platform === 'win32';
   if (windows) { name = name.replaceAll('\\', '/'); template = template.replaceAll('\\', '/'); }
   let pattern = allowPathPrefix ? '^(?:.*/)?' : '^';
-  for (const part of template.split(/(%.)/)) {
+  const parts = template.split(/(%.)/);
+  for (const [index, part] of parts.entries()) {
     const token = /^%(.)$/.exec(part)?.[1];
-    pattern += token && TOKEN_PATTERNS[token] ? `(?:${TOKEN_PATTERNS[token]})` : escape(part);
+    pattern += token && TOKEN_PATTERNS[token] ? `(?:${TOKEN_PATTERNS[token]})` : escape(literal(part, index === 0 && windows));
   }
   return new RegExp(`${pattern}$`, windows ? 'iu' : 'u').test(name);
 }

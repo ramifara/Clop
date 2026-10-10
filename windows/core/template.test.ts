@@ -218,3 +218,22 @@ test('on Windows names compare with / separators and ignoring case', () => {
   assert.equal(match('C:\\Users\\x\\Out\\img', 'out/%f', true), true);
   assert.equal(match('Kitty-OPT', '%f-opt'), true);
 });
+
+test('a template with unsafe literal characters recognises the name it produced', () => {
+  const name = expandTemplate('%f:small', { path: posix });
+  assert.equal(name, 'shot_small.png');
+  assert.equal(nameMatchesTemplate('shot_small', '%f:small', { platform: 'linux' }), true);
+  assert.equal(nameMatchesTemplate('shot_small', '%f:small', { platform: 'win32' }), true);
+  assert.equal(nameMatchesTemplate('shot:small', '%f:small', { platform: 'linux' }), false);
+  assert.equal(nameMatchesTemplate('a_b', "a?b", { platform: 'linux' }), true);
+  // Separators and a leading drive letter keep their meaning in path templates.
+  assert.equal(nameMatchesTemplate('C:\\Users\\x\\out\\img', 'C:/Users/x/out/%f', { platform: 'win32' }), true);
+  assert.equal(nameMatchesTemplate('/a/b_c/img', '/a/b&c/%f', { platform: 'linux' }), true);
+  assert.equal(nameMatchesTemplate('/a/b/img', '/a/b/%f', { platform: 'linux' }), true);
+});
+
+test('text after %P or %F gets the trailing dot and space rule too', () => {
+  const win = { ...fixed, path: 'C:\\Users\\Rami\\Pics\\shot.png', platform: 'win32' as const };
+  assert.equal(expandPathTemplate('%P-copy.\\%f', win), 'C:\\Users\\Rami\\Pics-copy_\\shot.png');
+  assert.equal(expandPathTemplate('%P-copy \\%f', win), 'C:\\Users\\Rami\\Pics-copy_\\shot.png');
+});
