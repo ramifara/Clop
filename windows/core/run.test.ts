@@ -35,6 +35,13 @@ test('reports stderr progress line by line, including carriage-return updates sp
   assert.deepEqual(lines, ['frame=1', 'frame=2', 'frame=3', 'Done']);
 });
 
+test('a progress callback that throws stops the tool and fails the run with its error', async () => {
+  const started = Date.now();
+  await assert.rejects(run(node, ['-e', 'console.error("frame=1"); setInterval(() => {}, 1000)'], { onStderrLine: () => { throw new Error('bad progress line'); } }), /bad progress line/);
+  assert.ok(Date.now() - started < 5000);
+  await assert.rejects(run(node, ['-e', 'process.stderr.write("last line without newline")'], { onStderrLine: () => { throw new Error('bad final line'); } }), /bad final line/);
+});
+
 test('aborting kills the whole process tree', async () => {
   const controller = new AbortController();
   let grandchild = 0;

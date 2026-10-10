@@ -38,6 +38,8 @@ export function run(tool: ToolName | string, args: string[], opts: RunOptions = 
     const stop = (error: Error) => { failure ??= error; killTree(child); };
     const onAbort = () => stop(abortError(signal!));
     signal?.addEventListener('abort', onAbort, { once: true });
+    // A throwing progress callback fails the run instead of escaping as an uncaught exception from the stream.
+    const emit = (line: string) => { if (failure) return; try { onStderrLine?.(line); } catch (error) { stop(error instanceof Error ? error : new Error(String(error))); } };
     if (timeoutMs) timer = setTimeout(() => stop(new ToolError(`${name} took too long and was stopped.`, null, lastLines(stderr, 5))), timeoutMs);
     child.stdout!.on('data', (chunk: Buffer) => stdout.push(chunk));
     child.stderr!.setEncoding('utf8').on('data', (chunk: string) => {
@@ -46,14 +48,14 @@ export function run(tool: ToolName | string, args: string[], opts: RunOptions = 
       // Progress output such as ffmpeg's ends lines with a bare carriage return.
       const lines = (pending + chunk).split(/\r\n|\r|\n/);
       pending = lines.pop()!;
-      for (const line of lines) if (line) onStderrLine(line);
+      for (const line of lines) if (line) emit(line);
     });
     child.stdin?.on('error', () => {}).end(opts.input);
     child.on('error', error => { failure ??= error; });
     child.on('close', (code, killedBy) => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
-      if (pending && onStderrLine) onStderrLine(pending);
+      if (pending) emit(pending);
       if (failure) return reject(failure);
       if (code === 0) return resolve({ code, stdout: Buffer.concat(stdout), stderr });
       const detail = lastLines(stderr, 5);
