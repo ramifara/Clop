@@ -4,15 +4,17 @@
 import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync } from 'node:fs';
 import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import https from 'node:https';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
 import SevenZip from '7z-wasm';
 
 const root = path.resolve(import.meta.dirname, '..');
-const { values: options } = parseArgs({ options: { platform: { type: 'string', default: process.platform }, arch: { type: 'string', default: process.arch } } });
+// x64 is the only Windows set; ARM64 Windows runs it under emulation.
+const { values: options } = parseArgs({ options: { platform: { type: 'string', default: process.platform }, arch: { type: 'string', default: 'x64' } } });
 if (options.platform !== 'win32') {
   console.log(`Clop bundles tools only for Windows. On ${options.platform}, development uses ffmpeg, gs and the other tools from PATH. Pass --platform win32 to prepare the Windows set here.`);
   process.exit(0);
@@ -36,20 +38,39 @@ async function uninstall(name) {
   await rm(path.join(stamps, `${name}.json`), { force: true });
 }
 
+// node:https rather than fetch: undici's fetch body crashed the process with an internal assertion when a paused
+// download's socket ended, during parallel downloads on the Windows runner.
+function get(url, signal, redirects = 5) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { signal }, response => {
+      const { statusCode = 0, headers } = response;
+      if (statusCode >= 300 && statusCode < 400 && headers.location && redirects) {
+        response.resume();
+        resolve(get(new URL(headers.location, url).href, signal, redirects - 1));
+      } else if (statusCode !== 200) {
+        response.resume();
+        reject(new Error(`HTTP ${statusCode}`));
+      } else resolve(response);
+    }).on('error', reject);
+  });
+}
+
 async function download(pkg, file) {
   for (let attempt = 1; ; attempt++) {
+    const hash = createHash('sha256');
     try {
-      const response = await fetch(pkg.url);
-      if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
-      const hash = createHash('sha256');
-      await pipeline(Readable.fromWeb(response.body), async function* (chunks) { for await (const chunk of chunks) { hash.update(chunk); yield chunk; } }, createWriteStream(file));
-      const actual = hash.digest('hex');
-      if (actual !== pkg.sha256) throw new Error(`sha256 is ${actual}, expected ${pkg.sha256}`);
-      return;
+      const signal = AbortSignal.timeout(10 * 60_000);
+      await pipeline(await get(pkg.url, signal), new Transform({ transform(chunk, _, done) { hash.update(chunk); done(null, chunk); } }), createWriteStream(file), { signal });
     } catch (error) {
       if (attempt === 3) throw new Error(`${pkg.name}: could not download ${pkg.url}: ${error.message}`);
+      console.warn(`${pkg.name}: download failed (${error.message}), retrying`);
       await delay(2000 * attempt);
+      continue;
     }
+    // A complete download with the wrong hash will not change on retry.
+    const actual = hash.digest('hex');
+    if (actual !== pkg.sha256) throw new Error(`${pkg.name}: sha256 of ${pkg.url} is ${actual}, expected ${pkg.sha256}.`);
+    return;
   }
 }
 

@@ -14,10 +14,13 @@ export function executableName(name: ToolName) {
   return name === 'gs' ? 'gswin64c.exe' : `${name}.exe`;
 }
 
+// fetch-tools.mjs prepares only the x64 Windows set; ARM64 Windows runs it under emulation.
+const devTarget = () => `${process.platform}-${process.platform === 'win32' ? 'x64' : process.arch}`;
+
 /** Bundled tool directories in resolution order: CLOP_TOOLS_DIR, the packaged app's resources, then the development cache. */
 export function toolDirs() {
   const resources = (process as { resourcesPath?: string }).resourcesPath;
-  return [process.env.CLOP_TOOLS_DIR, resources && path.join(resources, 'bin'), path.join(devTools, `${process.platform}-${process.arch}`, 'bin')].filter((dir): dir is string => !!dir);
+  return [process.env.CLOP_TOOLS_DIR, resources && path.join(resources, 'bin'), path.join(devTools, devTarget(), 'bin')].filter((dir): dir is string => !!dir);
 }
 
 export function toolsDir(): string | undefined {

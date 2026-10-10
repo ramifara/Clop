@@ -65,7 +65,7 @@ test('resolves tools from CLOP_TOOLS_DIR, then the packaged resources, then the 
   const override = path.join(root, 'override'), resources = path.join(root, 'resources'), onPath = path.join(root, 'path');
   for (const dir of [override, path.join(resources, 'bin'), onPath]) await mkdir(dir, { recursive: true });
   useEnvironment(t, { CLOP_TOOLS_DIR: override, resourcesPath: resources, PATH: onPath });
-  assert.deepEqual(toolDirs(), [override, path.join(resources, 'bin'), path.join(windowsRoot, '.tools', `${process.platform}-${process.arch}`, 'bin')]);
+  assert.deepEqual(toolDirs(), [override, path.join(resources, 'bin'), path.join(windowsRoot, '.tools', `${process.platform}-${process.platform === 'win32' ? 'x64' : process.arch}`, 'bin')]);
   assert.equal(toolsDir(), override);
 
   // A name no real bundle contains, so the development cache never answers first.
