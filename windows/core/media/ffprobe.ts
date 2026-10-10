@@ -13,9 +13,9 @@ export interface FFprobeStream {
 export interface FFprobeFormat { filename: string; nb_streams: number; format_name: string; format_long_name?: string; duration?: string; size?: string; bit_rate?: string; tags?: Record<string, string> }
 export interface FFprobeResult { format: FFprobeFormat; streams: FFprobeStream[] }
 
-/** Runs ffprobe on a file and returns its container and stream descriptions. Rejects when ffprobe cannot read the file. */
-export async function ffprobe(file: string, { signal }: { signal?: AbortSignal } = {}): Promise<FFprobeResult> {
-  const { stdout } = await run('ffprobe', ['-v', 'error', '-hide_banner', '-show_format', '-show_streams', '-of', 'json', file], { signal });
+/** Runs ffprobe on a file and returns its container and stream descriptions. Rejects when ffprobe cannot read the file. `file` is relative to `cwd` when that is given. */
+export async function ffprobe(file: string, { signal, cwd }: { signal?: AbortSignal; cwd?: string } = {}): Promise<FFprobeResult> {
+  const { stdout } = await run('ffprobe', ['-v', 'error', '-hide_banner', '-show_format', '-show_streams', '-of', 'json', file], { signal, cwd });
   const parsed = JSON.parse(stdout.toString('utf8')) as Partial<FFprobeResult>;
   if (!parsed.format) throw new Error(`ffprobe could not read ${file}.`);
   return { format: parsed.format, streams: parsed.streams ?? [] };

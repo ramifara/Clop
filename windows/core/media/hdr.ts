@@ -1,16 +1,15 @@
 import sharp from 'sharp';
 import path from 'node:path';
-import { run } from '../run';
+import { ffprobe } from './ffprobe';
 
 /** The colour description ffprobe reads from an image's nclx box (HEIC, AVIF), cICP chunk (PNG) or JXL header. */
 export interface Colour { transfer?: string; primaries?: string }
 
 /** Runs on the bare file name in its folder, like the other tools (see `readableImage`). */
 export async function probeColour(file: string, signal?: AbortSignal): Promise<Colour> {
-  const args = ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_transfer,color_primaries', '-of', 'json', path.basename(file)];
-  const { stdout } = await run('ffprobe', args, { signal, cwd: path.dirname(file) });
-  const stream = (JSON.parse(stdout.toString()).streams ?? [])[0] ?? {};
-  return { transfer: stream.color_transfer, primaries: stream.color_primaries };
+  const { streams } = await ffprobe(path.basename(file), { signal, cwd: path.dirname(file) });
+  const stream = streams.find(s => s.codec_type === 'video');
+  return { transfer: stream?.color_transfer, primaries: stream?.color_primaries };
 }
 
 /** PQ (HDR10, iPhone and Android HDR photos) or HLG pixels. Gain-map HDR has an SDR base image and needs nothing. */

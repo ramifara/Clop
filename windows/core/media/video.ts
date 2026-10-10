@@ -2,15 +2,16 @@ import { mkdir, mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 import { queue, retryBusy, run, ToolError, type RunOptions } from '../run';
-import type { CompressionQuality, CropSize } from '../settings/schema';
+import type { CompressionQuality } from '../settings/schema';
+import { clampRect, computedSize, even, isFullFrame, pixelRect, type CropSpec } from './crop-size';
 import { videoInfo, type VideoInfo } from './detect';
 import { ffprobe } from './ffprobe';
-import { encoderFamily, videoConversionArgs, videoEncoderArgs, type VideoCodecConversion, type VideoEncoderSetting } from './videoCompression';
+import { CONVERSION_EXTENSIONS, encoderFamily, videoConversionArgs, videoEncoderArgs, type VideoCodecConversion, type VideoEncoderSetting } from './videoCompression';
 import { chooseEncoder, hevcHardware } from './videoEncoders';
 import type { MediaJobOptions, MediaOutput } from './types';
 
-/** A crop or resize target: the `CropSize` of the settings, of which only the size fields matter here. */
-export type VideoCrop = Pick<CropSize, 'width' | 'height'> & Partial<Pick<CropSize, 'longEdge' | 'isAspectRatio' | 'cropRect'>>;
+/** A crop or resize target; `smartCrop` does not apply to video. */
+export type VideoCrop = CropSpec;
 export interface VideoOptimiseOptions {
   /** The `videoCompression` setting, or a result's own compression. */
   compression: CompressionQuality;
@@ -48,7 +49,6 @@ const TONE_MAP = ['zscale=t=linear:npl=100', 'format=gbrpf32le', 'zscale=p=bt709
 const SDR_TAGS = ['-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709'];
 
 const extension = (file: string) => path.extname(file).slice(1).toLowerCase();
-const even = (value: number) => { const x = Math.round(value); return x + (x % 2); };
 const int = Math.trunc;
 
 /**
@@ -76,30 +76,12 @@ export function atempoChain(factor: number) {
   return filters.join(',');
 }
 
-/** `CropSize.computedSize`: the size a crop or aspect-ratio target gives a source of this size. Aspect-ratio sizes are rounded to even, as encoded. */
+/** `CropSize.computedSize`, or a crop rectangle's pixel size. Aspect-ratio sizes are rounded to even, as encoders need. */
 export function croppedSize(crop: VideoCrop, width: number, height: number): [number, number] {
-  if (crop.cropRect) {
-    const r = clampRect(crop.cropRect);
-    const x = Math.min(Math.max(Math.round(r.x * width), 0), Math.max(width - 1, 0)), y = Math.min(Math.max(Math.round(r.y * height), 0), Math.max(height - 1, 0));
-    return [Math.min(Math.max(Math.round(r.width * width), 1), width - x), Math.min(Math.max(Math.round(r.height * height), 1), height - y)];
-  }
-  if (crop.width && crop.height && !crop.longEdge && !crop.isAspectRatio) return [crop.width, crop.height];
-  if (crop.isAspectRatio) {
-    const ratio = Math.min(crop.width, crop.height) / Math.max(crop.width, crop.height);
-    const portrait = !crop.longEdge && crop.width < crop.height ? true : !crop.longEdge && crop.height < crop.width ? false : width <= height;
-    // cropToPortrait / cropToLandscape (Shared.swift): the largest centred area of that ratio.
-    const [w, h] = portrait ? (width / height > ratio ? [height * ratio, height] : [width, width / ratio]) : (height / width > ratio ? [width, width * ratio] : [height / ratio, height]);
-    return [even(w), even(h)];
-  }
-  const factor = crop.longEdge ? (crop.width || crop.height) / Math.max(width, height) : !crop.width ? crop.height / height : crop.width / width;
-  return [even(width * factor), even(height * factor)];
+  if (crop.cropRect) { const r = pixelRect(crop.cropRect, width, height); return [r.width, r.height]; }
+  const size = computedSize(crop, width, height);
+  return crop.isAspectRatio ? [even(size.width), even(size.height)] : [size.width, size.height];
 }
-
-function clampRect({ x, y, width, height }: NonNullable<CropSize['cropRect']>) {
-  const w = Math.min(Math.max(width, 0.001), 1), h = Math.min(Math.max(height, 0.001), 1);
-  return { x: Math.min(Math.max(x, 0), 1 - w), y: Math.min(Math.max(y, 0), 1 - h), width: w, height: h };
-}
-const isFullFrame = (r: NonNullable<CropSize['cropRect']>) => r.x <= 0.005 && r.y <= 0.005 && r.width >= 0.995 && r.height >= 0.995;
 
 /** `getScaleFilters` (Video.swift): crop and scale filters for a crop target or a plain resize. */
 export function scaleFilters(source: { width: number; height: number } | undefined, crop?: VideoCrop, size?: [number, number]): string[] {
@@ -200,8 +182,7 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
   const info = videoInfo(await ffprobe(input, { signal }));
   const inputBytes = (await stat(input)).size, inputExt = extension(input);
   const convert = opts.convert, wantsHardwareHEVC = convert?.codec === 'hevc' && (!convert.compression || convert.compression.tier === 'fast');
-  const conversionExt = convert && { hevc: 'mp4', x265: 'mp4', av1: 'mkv', webm: 'webm' }[convert.codec];
-  const ext = conversionExt ?? (opts.format ?? (inputExt || 'mp4')).toLowerCase();
+  const ext = (convert && CONVERSION_EXTENSIONS[convert.codec]) ?? (opts.format ?? (inputExt || 'mp4')).toLowerCase();
   const useEncoder = !!convert || ENCODED_CONTAINERS.has(ext);
   const family = encoderFamily(opts.encoder ?? 'auto');
   const outputCodec = convert?.codec ?? (useEncoder ? family : ext === 'webm' ? 'vp9' : 'h264');
