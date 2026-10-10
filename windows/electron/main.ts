@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { ImageEngine, message } from './engine';
-import { imageDefaults } from './settings';
+import { imageDefaults, rendererSettings } from './settings';
 import { defaultSettings } from '../core/settings/schema';
 import { SettingsStore } from '../core/settings/store';
 import { WindowsBridge } from './native';
@@ -262,7 +262,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     }
     case 'reveal': shell.showItemInFolder(engine.output(id)); break;
     case 'dismiss': { const timer = hideTimers.get(id); if (timer) clearTimeout(timer); hideTimers.delete(id); hidden.delete(id); await engine.dismiss(id); break; }
-    case 'settings': await updateSettings(args[0]); break;
+    case 'settings': await updateSettings(rendererSettings(args[0])); break;
     case 'window':
       switch (args[0]) {
         case 'hide': BrowserWindow.fromWebContents(event.sender)?.hide(); break;

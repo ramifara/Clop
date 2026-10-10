@@ -1,4 +1,4 @@
-import type { ClopSettings, CompressionQuality } from '../core/settings/schema';
+import type { ClopSettings, CompressionQuality, SettingKey } from '../core/settings/schema';
 import type { ImageOptions } from '../src/types';
 export const modes = ['balanced', 'aggressive', 'lossless'] as const;
 export const formats = ['auto', 'png', 'jpeg', 'webp', 'avif', 'gif'] as const;
@@ -15,4 +15,12 @@ export function imageMode({ tier, factor }: CompressionQuality): ImageOptions['m
 }
 export function imageDefaults(settings: ClopSettings): ImageOptions {
   return { mode: imageMode(settings.imageCompression), format: settings.defaultImageFormat, scale: 1 };
+}
+/** The settings the renderer may change: exactly what the settings window writes. Everything else (app paths, the work folder, MCP switches, pipelines) only changes from the main process. */
+export const RENDERER_SETTINGS = ['enableClipboardOptimiser', 'autoCopyToClipboard', 'enableDragAndDrop', 'keepDropZoneVisible', 'floatingResultsAlwaysOnTop', 'launchAtLogin', 'floatingResultsCorner', 'defaultImageFormat'] as const satisfies readonly SettingKey[];
+export function rendererSettings(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Choose a setting to change.');
+  const blocked = Object.keys(value).filter(key => !(RENDERER_SETTINGS as readonly string[]).includes(key));
+  if (blocked.length) throw new Error(`${blocked.join(', ')} cannot be changed from this window.`);
+  return value as Record<string, unknown>;
 }

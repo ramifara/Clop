@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 import { ImageEngine, message } from './electron/engine';
-import { imageDefaults } from './electron/settings';
+import { imageDefaults, rendererSettings } from './electron/settings';
 import { defaultSettings, parseSettings } from './core/settings/schema';
 import type { ImageOptions } from './src/types';
 
@@ -46,7 +46,7 @@ function localImagePreview(): Plugin {
               case '/api/apply': await engine.apply(body.id, body.options as ImageOptions); break;
               case '/api/restore': await engine.restore(body.id); break;
               case '/api/dismiss': await engine.dismiss(body.id); break;
-              case '/api/settings': settings = parseSettings(body, settings); break;
+              case '/api/settings': settings = parseSettings(rendererSettings(body), settings); break;
               default: throw new Error('Unknown image operation.');
             }
           }
