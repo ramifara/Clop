@@ -91,7 +91,7 @@ async function edit(input: string, outputDir: string, opts: PDFEditOptions, suff
  * Crops every page's CropBox to a region of the displayed page, or to the largest centred area of an aspect ratio
  * (PDFPipeline.swift uses `rect` unless it covers the whole page).
  */
-export function cropPDF(input: string, outputDir: string, opts: PDFEditOptions & ({ rect: CropRect } | PageFit)): Promise<MediaOutput> {
+export async function cropPDF(input: string, outputDir: string, opts: PDFEditOptions & ({ rect: CropRect } | PageFit)): Promise<MediaOutput> {
   const rect = 'rect' in opts && !isFullFrame(opts.rect) ? opts.rect : undefined;
   if (!rect && !('aspectRatio' in opts && opts.aspectRatio > 0)) throw new Error('Choose a crop region or a positive aspect ratio.');
   return edit(input, outputDir, opts, 'cropped', page => {
@@ -107,7 +107,7 @@ export function cropPDF(input: string, outputDir: string, opts: PDFEditOptions &
 }
 
 /** Resets every page's CropBox to its MediaBox, undoing `cropPDF`. */
-export function uncropPDF(input: string, outputDir: string, opts: PDFEditOptions = {}): Promise<MediaOutput> {
+export async function uncropPDF(input: string, outputDir: string, opts: PDFEditOptions = {}): Promise<MediaOutput> {
   return edit(input, outputDir, opts, 'uncropped', page => {
     const media = page.getMediaBox();
     page.setCropBox(media.x, media.y, media.width, media.height);
@@ -118,7 +118,7 @@ export function uncropPDF(input: string, outputDir: string, opts: PDFEditOptions
  * Grows each page's canvas to the aspect ratio instead of cutting content away; viewers show the added area as empty paper.
  * `rect`, normalised to the extended displayed page, then selects a part of that canvas.
  */
-export function extendPDF(input: string, outputDir: string, opts: PDFEditOptions & PageFit & { rect?: CropRect }): Promise<MediaOutput> {
+export async function extendPDF(input: string, outputDir: string, opts: PDFEditOptions & PageFit & { rect?: CropRect }): Promise<MediaOutput> {
   if (!(opts.aspectRatio > 0)) throw new Error('Choose a positive aspect ratio.');
   return edit(input, outputDir, opts, 'extended', page => {
     const visible = page.getCropBox(), rotated = rotation(page) % 180 !== 0;

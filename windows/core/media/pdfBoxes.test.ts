@@ -47,3 +47,11 @@ test('extending grows the page to the aspect ratio around the visible area', asy
   const rotated = await extendPDF(await w.file('rotated.pdf', await textPDF(1, { rotate: 90 })), w.out, { aspectRatio: 0.5 });
   assert.deepEqual(round((await boxes(rotated.path))[0].media), { x: 0, y: -216, width: 612, height: 1224 });
 });
+
+test('invalid crop and extend options reject instead of throwing', async () => {
+  const crop = cropPDF('missing.pdf', 'out', { aspectRatio: 0 });
+  const extend = extendPDF('missing.pdf', 'out', { aspectRatio: -1 });
+  assert.ok(crop instanceof Promise && extend instanceof Promise);
+  await assert.rejects(crop, /positive aspect ratio/);
+  await assert.rejects(extend, /positive aspect ratio/);
+});
