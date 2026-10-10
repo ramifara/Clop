@@ -297,7 +297,7 @@ else {
     let settingsError: unknown;
     settings = await store.load().catch(error => { settingsError = error; return store.get(); });
     // Earlier versions kept originals in `images`. It ages out with the cleanup interval instead of being migrated.
-    const open = (root: string) => new Workdir(root, { home: app.getPath('home'), legacy: [path.join(userData, 'images')] }).ensure();
+    const open = async (root: string) => new Workdir(root, { home: app.getPath('home'), legacy: [path.join(userData, 'images')] }).ensure();
     workdir = await open(settings.workdir).catch(async error => {
       workdirProblem = `Clop cannot use the working directory ${settings.workdir}: ${message(error)} Using the default folder instead.`;
       return open(path.join(userData, 'work'));

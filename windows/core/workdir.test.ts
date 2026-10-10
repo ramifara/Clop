@@ -25,6 +25,12 @@ test('lays out backups, batch-backups and temp under the root, expanding ~', asy
   assert.equal(new Workdir('$HOME/work', { home: dir }).root, path.join(dir, 'work'));
 });
 
+test('an empty or relative working directory is refused instead of resolving against the current folder', () => {
+  for (const root of ['', '   ', 'work', './work', '..\\work']) assert.throws(() => new Workdir(root), /working directory/, JSON.stringify(root));
+  assert.throws(() => new Workdir('', { home: '/home/me' }), /empty/);
+  assert.throws(() => new Workdir('relative/work'), /absolute path, not "relative\/work"/);
+});
+
 test('a copied backup restores byte for byte, including a binary file and its modification time', async t => {
   const dir = await folder(t), workdir = await new Workdir(path.join(dir, 'work')).ensure();
   const original = path.join(dir, 'photo.jpg'), bytes = Buffer.from(Array.from({ length: 4096 }, (_, i) => (i * 7) % 256));

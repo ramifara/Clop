@@ -43,7 +43,10 @@ export class Workdir {
   private readonly latest = new Map<string, string>();
   /** `legacy` lists folders from earlier versions. They are aged out like `temp` and removed once empty. */
   constructor(root: string, private readonly options: { home?: string; legacy?: string[] } = {}) {
-    this.root = path.resolve(expandHome(root, options.home ?? os.homedir()));
+    const expanded = expandHome(root.trim(), options.home ?? os.homedir());
+    // A relative folder would land wherever the process happens to run.
+    if (!path.isAbsolute(expanded)) throw new Error(root.trim() ? `The working directory must be an absolute path, not "${root}".` : 'The working directory is empty. Choose a folder.');
+    this.root = path.resolve(expanded);
     this.backups = path.join(this.root, 'backups');
     this.batchBackups = path.join(this.root, 'batch-backups');
     this.temp = path.join(this.root, 'temp');
