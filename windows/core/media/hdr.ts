@@ -37,13 +37,13 @@ const KNEE = 0.75;
  */
 export async function toneMapToSDR(input: string, output: string, colour: Colour) {
   const { data, info } = await sharp(input, { ignoreIcc: true }).autoOrient().toColourspace('rgb16').raw({ depth: 'ushort' }).toBuffer({ resolveWithObject: true });
-  const samples = new Uint16Array(data.buffer, data.byteOffset, data.length / 2), channels = info.channels, pixels = info.width * info.height;
+  const samples = new Uint16Array(data.buffer, data.byteOffset, data.length / 2), channels = info.channels;
   const pq = colour.transfer === 'smpte2084', matrix = TO_709[colour.primaries ?? ''];
   const decode = new Float64Array(65536);
   for (let v = 0; v < 65536; v++) decode[v] = pq ? pqToNits(v / 65535) / REFERENCE_WHITE : hlgToScene(v / 65535);
-  const linear = new Float32Array(pixels * 3);
-  let peak = 1;
-  for (let p = 0, i = 0; p < linear.length; p += 3, i += channels) {
+  // Linear BT.709 light of the pixel at `i`, in units of reference white. Two passes recompute it rather than hold a float copy of the image.
+  const rgb = [0, 0, 0];
+  const linear = (i: number) => {
     let r = decode[samples[i]], g = decode[samples[i + 1]], b = decode[samples[i + 2]];
     if (!pq) {
       // The HLG OOTF for a 1000-nit display: system gamma 1.2 on BT.2020 luminance.
@@ -51,12 +51,14 @@ export async function toneMapToSDR(input: string, output: string, colour: Colour
       r *= scale; g *= scale; b *= scale;
     }
     if (matrix) [r, g, b] = [matrix[0] * r + matrix[1] * g + matrix[2] * b, matrix[3] * r + matrix[4] * g + matrix[5] * b, matrix[6] * r + matrix[7] * g + matrix[8] * b];
-    linear[p] = r; linear[p + 1] = g; linear[p + 2] = b;
-    peak = Math.max(peak, r, g, b);
-  }
-  const out = Buffer.alloc(pixels * channels), span = (peak - KNEE) / (1 - KNEE);
-  for (let p = 0, i = 0; p < linear.length; p += 3, i += channels) {
-    const r = Math.max(0, linear[p]), g = Math.max(0, linear[p + 1]), b = Math.max(0, linear[p + 2]), max = Math.max(r, g, b);
+    rgb[0] = Math.max(0, r); rgb[1] = Math.max(0, g); rgb[2] = Math.max(0, b);
+    return rgb;
+  };
+  let peak = 1;
+  for (let i = 0; i < samples.length; i += channels) { const c = linear(i); peak = Math.max(peak, c[0], c[1], c[2]); }
+  const out = Buffer.alloc(samples.length), span = (peak - KNEE) / (1 - KNEE);
+  for (let i = 0; i < samples.length; i += channels) {
+    const [r, g, b] = linear(i), max = Math.max(r, g, b);
     const scale = max > KNEE ? rollOff(max, span) / max : 1;
     out[i] = srgb(r * scale); out[i + 1] = srgb(g * scale); out[i + 2] = srgb(b * scale);
     if (channels === 4) out[i + 3] = samples[i + 3] >> 8;
@@ -78,7 +80,7 @@ function rollOff(value: number, span: number) {
   return KNEE + (1 - KNEE) * (x * (1 + x / (span * span))) / (1 + x);
 }
 
-function srgb(value: number) {
-  const v = Math.min(1, value);
-  return Math.round(255 * (v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055));
-}
+/** The sRGB encoding of linear light from 0 to 1, from a table fine enough to stay within a level of the exact curve. */
+const SRGB_STEPS = 16384;
+const SRGB = Uint8Array.from({ length: SRGB_STEPS + 1 }, (_, n) => { const v = n / SRGB_STEPS; return Math.round(255 * (v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055)); });
+const srgb = (value: number) => SRGB[Math.round(Math.min(1, value) * SRGB_STEPS)];
