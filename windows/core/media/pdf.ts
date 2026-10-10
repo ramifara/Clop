@@ -11,7 +11,7 @@ import { optimiseImage } from './image';
 import { loadPDF, outputFile } from './pdfBoxes';
 import type { MediaJobOptions, MediaOutput } from './types';
 
-export { clampCropRect, cropPDF, cropToAspectRatio, extendPDF, extendToAspectRatio, isFullFrame, loadPDF, rotateCropRect, uncropPDF, type CropRect, type PageFit, type PDFEditOptions, type Rect } from './pdfBoxes';
+export { cropPDF, cropToAspectRatio, extendPDF, extendToAspectRatio, loadPDF, rotateCropRect, uncropPDF, type PageBox, type PageFit, type PDFEditOptions } from './pdfBoxes';
 
 // Shared.swift: at 300 DPI Ghostscript keeps image resolution; below it downsamples.
 export const PDF_DPI_NO_DOWNSAMPLE = 300, PDF_DPI_MIN = 48, PDF_DPI_MAX = 300;

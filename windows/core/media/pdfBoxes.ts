@@ -2,14 +2,17 @@ import { PDFDocument, type PDFPage } from '@cantoo/pdf-lib';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { retryBusy } from '../run';
+import type { CropSize } from '../settings/schema';
+import { clampRect, cutLandscape, cutPortrait, isFullFrame } from './crop-size';
 import type { MediaOutput } from './types';
 
 // Page box edits from Shared/PaperSizes.swift (the PDFDocument extension) with the size helpers from Shared.swift.
 // Cropping only sets the CropBox, so the MediaBox keeps the original page and uncropping restores it.
 
-export interface Rect { x: number; y: number; width: number; height: number }
-/** Normalised (0–1) region with a top-left origin, relative to the displayed page (CropRect in Shared/CropSize.swift). */
-export type CropRect = Rect;
+/** A page box in PDF points, with the bottom-left origin PDF uses. */
+export interface PageBox { x: number; y: number; width: number; height: number }
+/** A normalised (0–1) region with a top-left origin, relative to the displayed page. */
+type CropRect = NonNullable<CropSize['cropRect']>;
 export interface PageFit {
   /** Width over height, or short over long side with the page's own orientation (as `cropTo(aspectRatio:)` takes it). */
   aspectRatio: number;
@@ -17,12 +20,7 @@ export interface PageFit {
 }
 export interface PDFEditOptions { /** Output file name without extension; the input's name when omitted. */ name?: string }
 
-export const isFullFrame = (r: CropRect) => r.x <= 0.005 && r.y <= 0.005 && r.width >= 0.995 && r.height >= 0.995;
-export function clampCropRect(r: CropRect): CropRect {
-  const width = Math.min(Math.max(r.width, 0.001), 1), height = Math.min(Math.max(r.height, 0.001), 1);
-  return { x: Math.min(Math.max(r.x, 0), 1 - width), y: Math.min(Math.max(r.y, 0), 1 - height), width, height };
-}
-/** Maps a rect from displayed (rotated) page space into unrotated MediaBox space for a page's /Rotate. */
+/** `CropRect.rotated(by:)`: maps a rect from displayed (rotated) page space into unrotated MediaBox space for a page's /Rotate. */
 export function rotateCropRect(r: CropRect, degrees: number): CropRect {
   switch (((degrees % 360) + 360) % 360) {
     case 90: return { x: r.y, y: 1 - r.x - r.width, width: r.height, height: r.width };
@@ -32,20 +30,17 @@ export function rotateCropRect(r: CropRect, degrees: number): CropRect {
   }
 }
 
-/** The largest centred rect of the aspect ratio inside `width` × `height` (NSSize.cropTo in Shared.swift). */
-export function cropToAspectRatio(width: number, height: number, { aspectRatio, alwaysPortrait, alwaysLandscape }: PageFit): Rect {
-  const portrait = alwaysPortrait || (!alwaysLandscape && !(width > height));
-  if (portrait ? width / height > aspectRatio : height / width <= aspectRatio) {
-    const w = portrait ? height * aspectRatio : height / aspectRatio;
-    return { x: (width - w) / 2, y: 0, width: w, height };
-  }
-  const h = portrait ? width / aspectRatio : width * aspectRatio;
-  return { x: 0, y: (height - h) / 2, width, height: h };
+const isPortrait = (width: number, height: number, { alwaysPortrait, alwaysLandscape }: PageFit) => !!alwaysPortrait || (!alwaysLandscape && !(width > height));
+
+/** The largest centred box of the aspect ratio inside `width` × `height` (NSSize.cropTo in Shared.swift). */
+export function cropToAspectRatio(width: number, height: number, fit: PageFit): PageBox {
+  const size = (isPortrait(width, height, fit) ? cutPortrait : cutLandscape)(width, height, fit.aspectRatio);
+  return { x: (width - size.width) / 2, y: (height - size.height) / 2, ...size };
 }
 
-/** The smallest centred rect of the aspect ratio containing `width` × `height`; the origin can go negative (NSSize.extendTo). */
-export function extendToAspectRatio(width: number, height: number, { aspectRatio, alwaysPortrait, alwaysLandscape }: PageFit): Rect {
-  const portrait = alwaysPortrait || (!alwaysLandscape && !(width > height));
+/** The smallest centred box of the aspect ratio containing `width` × `height`; the origin can go negative (NSSize.extendTo). */
+export function extendToAspectRatio(width: number, height: number, fit: PageFit): PageBox {
+  const { aspectRatio } = fit, portrait = isPortrait(width, height, fit);
   if (portrait ? width / height > aspectRatio : height / width <= aspectRatio) {
     const h = portrait ? width / aspectRatio : width * aspectRatio;
     return { x: 0, y: (height - h) / 2, width, height: h };
@@ -97,7 +92,7 @@ export async function cropPDF(input: string, outputDir: string, opts: PDFEditOpt
   return edit(input, outputDir, opts, 'cropped', page => {
     const media = page.getMediaBox();
     if (rect) {
-      const r = clampCropRect(rotateCropRect(rect, rotation(page)));
+      const r = clampRect(rotateCropRect(rect, rotation(page)));
       page.setCropBox(media.x + media.width * r.x, media.y + media.height * (1 - r.y - r.height), media.width * r.width, media.height * r.height);
     } else {
       const r = cropToAspectRatio(media.width, media.height, opts as PageFit);
@@ -126,9 +121,9 @@ export async function extendPDF(input: string, outputDir: string, opts: PDFEditO
     const shown = rotated ? [visible.height, visible.width] : [visible.width, visible.height];
     const extended = extendToAspectRatio(shown[0], shown[1], opts);
     const [width, height] = rotated ? [extended.height, extended.width] : [extended.width, extended.height];
-    let box: Rect = { x: visible.x + visible.width / 2 - width / 2, y: visible.y + visible.height / 2 - height / 2, width, height };
+    let box: PageBox = { x: visible.x + visible.width / 2 - width / 2, y: visible.y + visible.height / 2 - height / 2, width, height };
     if (opts.rect && !isFullFrame(opts.rect)) {
-      const r = clampCropRect(rotateCropRect(opts.rect, rotation(page)));
+      const r = clampRect(rotateCropRect(opts.rect, rotation(page)));
       box = { x: box.x + box.width * r.x, y: box.y + box.height * (1 - r.y - r.height), width: box.width * r.width, height: box.height * r.height };
     }
     page.setMediaBox(box.x, box.y, box.width, box.height);
