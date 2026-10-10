@@ -3,8 +3,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import sharp from 'sharp';
 import { ImageEngine, message } from './engine';
+import { toPNG } from '../core/media/image-codecs';
 import { imageDefaults, rendererSettings } from './settings';
 import { defaultSettings } from '../core/settings/schema';
 import { SettingsStore } from '../core/settings/store';
@@ -12,6 +12,8 @@ import { Workdir } from '../core/workdir';
 import { WindowsBridge } from './native';
 import { ClipboardPickup } from './pickup';
 import type { AppState, ImageOptions, ImageResult } from '../src/types';
+/** Image files the engine accepts, by extension, from the command line. */
+const IMAGE_FILE = /\.(png|jpe?g|webp|gif|avif|tiff?|heic|heif|jxl|bmp|svg)$/i;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let main: BrowserWindow, floating: BrowserWindow, tray: Tray, engine: ImageEngine;
@@ -117,7 +119,7 @@ async function copy(id: string, expectedSequence?: number, files?: string[]) {
       const png = path.join(directory, `clipboard-${randomUUID()}.png`);
       try {
         if (format === 'png') await copyFile(file, png);
-        else await sharp(file, { limitInputPixels: 60_000_000 }).autoOrient().png().toFile(png);
+        else await toPNG(file, png, { limitInputPixels: 60_000_000 });
         const reply = await bridge.request({ type: 'copy', file, files, png, ...(expectedSequence === undefined ? {} : { expectedSequence }) });
         if (!reply.skipped) { lastClipboardSequence = Number(reply.sequence); lastOwnFingerprint = fingerprint(await readFile(png)); }
       } finally { await rm(png, { force: true }); }
@@ -288,7 +290,7 @@ ipcMain.on('clop:drag', (event, id: string) => {
 });
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', (_event, argv) => { if (engine) showLatest(); const files = argv.filter(arg => /\.(png|jpe?g|webp|gif|avif|tiff?)$/i.test(arg) && path.isAbsolute(arg)); if (files.length) void importPaths(files, 'file'); });
+  app.on('second-instance', (_event, argv) => { if (engine) showLatest(); const files = argv.filter(arg => IMAGE_FILE.test(arg) && path.isAbsolute(arg)); if (files.length) void importPaths(files, 'file'); });
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
     const userData = app.getPath('userData');
@@ -329,7 +331,7 @@ else {
       bridge.on('stopped', () => { bridgeReady = false; pickup.cancel(); startClipboardFallback(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));
     } else startClipboardFallback();
-    const files = process.argv.slice(1).filter(arg => /\.(png|jpe?g|webp|gif|avif|tiff?)$/i.test(arg) && path.isAbsolute(arg));
+    const files = process.argv.slice(1).filter(arg => IMAGE_FILE.test(arg) && path.isAbsolute(arg));
     if (files.length) await importPaths(files, 'file');
   }).catch(error => { dialog.showErrorBox('Clop could not start', message(error)); app.quit(); });
   app.on('before-quit', () => { quitting = true; stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });

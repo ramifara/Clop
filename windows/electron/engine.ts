@@ -1,19 +1,21 @@
 import sharp from 'sharp';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { ImageOptions, ImageResult } from '../src/types';
 import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { optimiseImage } from '../core/media/image';
+import { probeImage, toPNG } from '../core/media/image-codecs';
 import { imageCompression, parseOptions } from './settings';
 
 sharp.concurrency(2);
 sharp.cache({ memory: 32, files: 0, items: 32 });
-const INPUT = new Set(['jpeg', 'png', 'webp', 'avif', 'heif', 'gif', 'tiff']);
+const INPUT = new Set(['jpeg', 'png', 'webp', 'avif', 'heic', 'jxl', 'gif', 'tiff', 'bmp', 'svg']);
+/** Formats sharp cannot decode, and 16-bit images that may be HDR, are previewed from a decoded PNG. */
+const DECODED = new Set(['heic', 'jxl', 'bmp']);
 const LIMIT = 128 * 1024 * 1024;
 const PIXELS = 60_000_000;
-const inputOptions = { animated: true, limitInputPixels: PIXELS, failOn: 'error' as const };
 interface Entry { result: ImageResult; originalPath: string; outputPath: string; directory: string; inputFormat: string; revision: number }
 export type ImageSettings = Pick<ClopSettings, 'imageCompression' | 'stripMetadata' | 'preserveColorMetadata' | 'gifFrameDropBehaviour'>;
 export class ImageEngine extends EventEmitter {
@@ -35,22 +37,19 @@ export class ImageEngine extends EventEmitter {
     options = parseOptions(options);
     if (!buffer.length || buffer.length > LIMIT) throw new Error('Choose an image smaller than 128 MB.');
     return this.schedule(async () => {
-      const meta = await sharp(buffer, inputOptions).metadata();
-      if (!meta.format || !INPUT.has(meta.format) || !meta.width || !meta.height) throw new Error('Use PNG, JPEG, WebP, GIF, AVIF or TIFF. HEIC support depends on the installed codec.');
-      if (meta.format === 'heif' && meta.compression !== 'av1') throw new Error('HEIC is not supported by this build. Export it as JPEG or PNG first.');
-      const pages = meta.pages ?? 1;
-      if (meta.format === 'tiff' && pages > 1) throw new Error('Use a single-page TIFF image. Multi-page documents are not supported.');
-      const h = meta.pageHeight ?? meta.height;
-      if (pages > 250 || meta.width * h * pages > PIXELS) throw new Error('This image has too many pixels or animation frames. Use an image under 60 megapixels in total.');
-      const rotated = (meta.orientation ?? 1) >= 5;
-      const width = rotated ? h : meta.width, height = rotated ? meta.width : h;
-      const format = meta.format === 'heif' ? 'avif' : meta.format;
       const id = randomUUID(), directory = path.join(this.root, id);
       await mkdir(directory, { recursive: true });
-      const originalPath = path.join(directory, `original.${format}`);
       try {
-        await writeFile(originalPath, buffer);
-        const preview = await thumbnail(originalPath);
+        const staged = path.join(directory, 'original');
+        await writeFile(staged, buffer);
+        const info = await probeImage(staged).catch(() => undefined);
+        if (!info || !INPUT.has(info.format) || !info.width || !info.height) throw new Error('Use PNG, JPEG, WebP, GIF, AVIF, HEIC, JPEG XL, TIFF, BMP or SVG.');
+        const { format, width, height, pages } = info;
+        if (format === 'tiff' && pages > 1) throw new Error('Use a single-page TIFF image. Multi-page documents are not supported.');
+        if (pages > 250 || width * height * pages > PIXELS) throw new Error('This image has too many pixels or animation frames. Use an image under 60 megapixels in total.');
+        const originalPath = path.join(directory, `original.${format}`);
+        await rename(staged, originalPath);
+        const preview = await thumbnail(originalPath, DECODED.has(format) || info.deep);
         const result: ImageResult = {
           id, name: path.basename(name).slice(0, 160), source, status: 'processing', originalBytes: buffer.length,
           outputBytes: buffer.length, originalWidth: width, originalHeight: height, width, height, format,
@@ -83,7 +82,7 @@ export class ImageEngine extends EventEmitter {
       e.outputPath = output.path;
       for (const warning of output.warnings ?? []) console.warn(warning);
       Object.assign(r, { status: 'ready', options, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes,
-        preview: output.unchanged ? r.originalPreview : await thumbnail(output.path), unchanged: !!output.unchanged, restored: false });
+        preview: output.unchanged ? r.originalPreview : await thumbnail(output.path, DECODED.has(output.format)), unchanged: !!output.unchanged, restored: false });
       this.changed(); this.emit('ready', id);
     } catch (error) { r.status = 'error'; r.error = message(error); this.changed(); }
   }
@@ -97,9 +96,13 @@ export class ImageEngine extends EventEmitter {
   dismiss(id: string) { return this.schedule(async () => { this.get(id); this.entries.delete(id); this.changed(); }); }
   async idle() { await this.queue; }
 }
-async function thumbnail(file: string) {
-  const bytes = await sharp(file, { limitInputPixels: PIXELS }).autoOrient().resize({ width: 1000, height: 760, fit: 'inside', withoutEnlargement: true }).png().toBuffer();
-  return `data:image/png;base64,${bytes.toString('base64')}`;
+/** A PNG data URL for the card. `decode` routes formats sharp cannot read, and HDR, through the image engine's decoders. */
+async function thumbnail(file: string, decode = false) {
+  const source = decode ? await toPNG(file, path.join(path.dirname(file), 'preview.png'), { limitInputPixels: PIXELS }) : file;
+  try {
+    const bytes = await sharp(source, { limitInputPixels: PIXELS }).autoOrient().resize({ width: 1000, height: 760, fit: 'inside', withoutEnlargement: true }).png().toBuffer();
+    return `data:image/png;base64,${bytes.toString('base64')}`;
+  } finally { if (source !== file) await rm(source, { force: true }); }
 }
 export function message(error: unknown) { return error instanceof Error ? error.message : String(error); }
 export async function sampleImage() {
