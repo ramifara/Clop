@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { DEFAULT_CROP_SIZES } from '../data/cropSizes';
 import { defaultPaths, portablePath, type DefaultPaths } from './paths';
-import { decodePipelineSources, decodePipelines, decodePresetZones } from '../pipeline/codec';
+import { decodePipelineSources, decodePipelines, decodePresetZones, type Stored } from '../pipeline/codec';
 import type { Pipeline, PresetZone } from '../pipeline/model';
 
 // Every key from Clop/Settings.swift keeps its macOS name, so `clop settings get/set` and the MCP
@@ -91,7 +91,7 @@ const UNSUPPORTED = { unsupportedOnWindows: true } as const;
 const EXE = { encoding: 'Path to an .exe; empty uses the Windows default app. macOS stores an app path.' } as const;
 const DIRS = { encoding: 'Folder paths; a leading `~` or `$HOME` means the user profile folder. Defaults are stored that way (`~/Desktop`).' } as const;
 const NORMAL = 30, AGGRESSIVE = 64; // COMPRESSION_FACTOR_NORMAL and _AGGRESSIVE in Shared.swift
-/** Pipeline values in the macOS Codable shape (`core/pipeline/codec.ts`). Each entry may also be the JSON string macOS keeps in its defaults. Entries that cannot be read are dropped, as the Defaults bridges drop them. */
+/** Pipeline values in the macOS Codable shape (`core/pipeline/codec.ts`). Each entry may also be the JSON string macOS keeps in its defaults. An entry that cannot be read is kept verbatim as `Unreadable`, so saving never loses it. */
 const pipelines = <T>(value: T, description: string, parse: (value: unknown) => T | undefined) => spec<T>('object', value, description, parse);
 
 export const settingsSchema = {
@@ -245,16 +245,16 @@ export const settingsSchema = {
   enabledKeys: shortcutKeys(['-', '=', 'Backspace', 'Space', 'Z', 'P', 'C', 'A', 'X', 'R', 'K', 'Escape'], 'Action keys with a global shortcut.'),
   savedCropSizes: json<CropSize[]>([...DEFAULT_CROP_SIZES], 'Saved crop sizes. macOS: `[CropSize]`.', v => Array.isArray(v) && v.every(isCropSize)),
   pauseAutomaticOptimisations: bool(false, 'Pause clipboard and watched-folder optimisation.'),
-  presetZones: pipelines<PresetZone[]>([], 'Preset drop zones, each running a pipeline. macOS: `[PresetZone]`.', decodePresetZones),
+  presetZones: pipelines<Stored<PresetZone>[]>([], 'Preset drop zones, each running a pipeline. macOS: `[PresetZone]`.', decodePresetZones),
   syncSettingsCloud: bool(true, 'Sync settings through iCloud.', UNSUPPORTED),
   allowClopToAppearInScreenshots: bool(false, 'Let screenshots capture Clop\'s windows.'),
 
   // Declared in Clop/Automation.swift rather than Settings.swift.
-  pipelinesToRunOnImage: pipelines<Record<string, Pipeline[]>>({}, 'Pipelines per watched folder path or `clipboard`, for images. macOS: `[String: [Pipeline]]` (Automation.swift).', decodePipelineSources),
-  pipelinesToRunOnVideo: pipelines<Record<string, Pipeline[]>>({}, 'Pipelines per watched folder path or `clipboard`, for videos. macOS: `[String: [Pipeline]]` (Automation.swift).', decodePipelineSources),
-  pipelinesToRunOnPdf: pipelines<Record<string, Pipeline[]>>({}, 'Pipelines per watched folder path or `clipboard`, for PDFs. macOS: `[String: [Pipeline]]` (Automation.swift).', decodePipelineSources),
-  pipelinesToRunOnAudio: pipelines<Record<string, Pipeline[]>>({}, 'Pipelines per watched folder path or `clipboard`, for audio. macOS: `[String: [Pipeline]]` (Automation.swift).', decodePipelineSources),
-  savedPipelines: pipelines<Pipeline[]>([], 'The saved pipeline library. macOS: `[Pipeline]` (Automation.swift).', decodePipelines),
+  pipelinesToRunOnImage: pipelines<Record<string, Stored<Pipeline>[]>>({}, 'Pipelines per watched folder path or `clipboard`, for images. macOS: `[String: [Pipeline]]` (Automation.swift).', decodePipelineSources),
+  pipelinesToRunOnVideo: pipelines<Record<string, Stored<Pipeline>[]>>({}, 'Pipelines per watched folder path or `clipboard`, for videos. macOS: `[String: [Pipeline]]` (Automation.swift).', decodePipelineSources),
+  pipelinesToRunOnPdf: pipelines<Record<string, Stored<Pipeline>[]>>({}, 'Pipelines per watched folder path or `clipboard`, for PDFs. macOS: `[String: [Pipeline]]` (Automation.swift).', decodePipelineSources),
+  pipelinesToRunOnAudio: pipelines<Record<string, Stored<Pipeline>[]>>({}, 'Pipelines per watched folder path or `clipboard`, for audio. macOS: `[String: [Pipeline]]` (Automation.swift).', decodePipelineSources),
+  savedPipelines: pipelines<Stored<Pipeline>[]>([], 'The saved pipeline library. macOS: `[Pipeline]` (Automation.swift).', decodePipelines),
   builtinPipelinesSeededVersion: int(0, 'The built-in pipeline library version already added to `savedPipelines`, so a deleted built-in stays deleted.'),
 
   // Windows only.
