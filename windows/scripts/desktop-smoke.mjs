@@ -16,6 +16,8 @@ sharp.cache(false);
 const profile = await mkdtemp(path.join(os.tmpdir(), 'clop-desktop-'));
 const executable = path.resolve('release/win-unpacked/Clop for Windows.exe');
 execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()']);
+// Software H.264, so the video size check does not depend on which hardware encoder the runner happens to have.
+await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ videoEncoder: 'libx264' }));
 const app = spawn(executable, ['--remote-debugging-port=9227', `--user-data-dir=${profile}`], { stdio: 'pipe' });
 let output = '';
 app.stdout.on('data', chunk => { output += chunk; }); app.stderr.on('data', chunk => { output += chunk; });
