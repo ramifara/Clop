@@ -4,7 +4,7 @@ import path from 'node:path';
 import { samePath } from '../fileops';
 import { detectKind } from '../media/detect';
 import { run as runTool, ToolError } from '../run';
-import { defaultPaths } from '../settings/paths';
+import { defaultPaths, expandHome } from '../settings/paths';
 import { toolsDir } from '../tools';
 import type { RunState } from './run-state';
 
@@ -61,8 +61,9 @@ async function scriptCommand(script: string, input: string): Promise<Command> {
     // The script is local and not marked as downloaded (checked before), so the execution policy is not what protects here.
     if (ext === '.ps1') return { command: powershell(), args: [...POWERSHELL_ARGS, '-ExecutionPolicy', 'Bypass', '-File', script, input] };
     if (ext === '.exe' || ext === '.com') return { command: script, args: [input] };
-    // /s strips the outer quotes and keeps the inner ones; code page 65001 makes the script's output UTF-8.
-    return { command: system32('cmd.exe'), args: ['/d', '/s', '/c', `""${system32('chcp.com')}" 65001 >nul & "%CLOP_SCRIPT%" "%CLOP_INPUT_FILE%""`], verbatim: true };
+    // /s strips the outer quotes and keeps the inner ones; /v:off stops a DelayedExpansion registry default from reading `!VAR!`
+    // inside the expanded paths; code page 65001 makes the script's output UTF-8.
+    return { command: system32('cmd.exe'), args: ['/d', '/v:off', '/s', '/c', `""${system32('chcp.com')}" 65001 >nul & "%CLOP_SCRIPT%" "%CLOP_INPUT_FILE%""`], verbatim: true };
   }
   const executable = await access(script, constants.X_OK).then(() => true, () => false);
   return executable ? { command: script, args: [input] } : { command: 'sh', args: [script, input] };
@@ -107,11 +108,25 @@ export function decodeOutput(stdout: Buffer) {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(stdout); } catch { return new TextDecoder('windows-1252').decode(stdout); }
 }
 
+/** The watched folder (any type) that holds `file`, if one does. */
+function watchedFolderHolding(run: RunState, file: string) {
+  const { settings, home, platform = process.platform } = run.opts.env;
+  const fold = (value: string) => platform === 'win32' ? value.toLowerCase() : value;
+  return [...settings.imageDirs, ...settings.videoDirs, ...settings.pdfDirs, ...settings.audioDirs].map(dir => path.resolve(expandHome(dir, home))).find(dir => {
+    const relative = path.relative(fold(dir), fold(path.resolve(file)));
+    return !!relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+  });
+}
+
 async function runFile(run: RunState, script: string | undefined, code: string | undefined, label: string) {
   if (!run.opts.allowScripts) throw new Error(`This pipeline runs a script (${label}), and scripts are not allowed here.`);
   const input = run.current, name = script ? path.basename(script) : 'inline code';
   if (script) {
     if (!await isFile(script)) throw new Error(`Script not found: ${script}`);
+    if (/\.(exe|com)$/i.test(script)) {
+      const watched = watchedFolderHolding(run, script);
+      if (watched) throw new Error(`${script} is inside the watched folder ${watched}. A program loads DLLs from its own folder, so a file arriving there could run inside it. Move the program out of the watched folder.`);
+    }
     if (await markedAsDownloaded(script)) throw new Error(`${script} was downloaded from the internet. Check it, then unblock it in its Properties (or with Unblock-File) to run it.`);
   }
   const { command, args, verbatim } = script ? await scriptCommand(script, input) : await inlineCommand(code!, input);
@@ -127,10 +142,13 @@ async function runFile(run: RunState, script: string | undefined, code: string |
     if (error instanceof ToolError) { const detail = readableStderr(error.stderr); throw new Error(`Script '${name}' failed (exit ${error.exitCode ?? 'killed'})${detail ? `: ${detail}` : ''}`); }
     throw new Error(`Script '${name}' failed to start: ${error.message}`);
   }
-  // One absolute path to another existing file of the kind being processed (or an unknown kind) carries on.
-  if (!printed || /[\r\n]/.test(printed) || !path.isAbsolute(printed) || samePath(printed, input) || !await isFile(printed)) return;
+  // One absolute path to another existing file of the kind being processed (or an unknown kind) carries on. Several lines
+  // are the script's own log; one line that names no usable file is reported, so a mangled path does not go unnoticed.
+  if (!printed || /[\r\n]/.test(printed) || (path.isAbsolute(printed) && samePath(printed, input))) return;
+  if (!path.isAbsolute(printed) || !await isFile(printed)) { run.warnings.push(`Script '${name}' printed a path that was not found, so the pipeline carried on with ${input}: ${printed}`); return; }
   const kind = await detectKind(printed, { signal: run.signal }).catch(() => undefined);
   if (!kind || kind === run.fileType) run.current = path.resolve(printed);
+  else run.warnings.push(`Script '${name}' printed a path to another kind of file (${kind}, not ${run.fileType}), so the pipeline carried on with ${input}: ${printed}`);
 }
 
 /**

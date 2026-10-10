@@ -41,10 +41,18 @@ test('runScript runs inline code from an empty folder, and a printed absolute pa
   assert.notEqual(path.basename(cwd), path.basename(w.files), 'never the folder the input arrived in');
   assert.ok(cwd.toLowerCase().includes(`${path.sep}pipeline-`) && cwd.toLowerCase().includes(`${path.sep}temp${path.sep}`), cwd);
 
-  // A printed path of another kind of file, or a relative one, leaves the file as it was.
+  assert.deepEqual(result.warnings, []);
+
+  // A printed path of another kind of file, or one that is not found, leaves the file as it was, with a warning.
   await writeFile(w.file('notes.mp3'), 'not audio');
-  assert.equal((await w.run([inline("Write-Output ($env:CLOP_INPUT_FILE -replace 'in.png$', 'notes.mp3')", 'echo "${CLOP_INPUT_FILE%in.png}notes.mp3"')], input)).file, input);
-  assert.equal((await w.run([inline('Write-Output out.png', 'echo out.png')], input)).file, input);
+  const otherKind = await w.run([inline("Write-Output ($env:CLOP_INPUT_FILE -replace 'in.png$', 'notes.mp3')", 'echo "${CLOP_INPUT_FILE%in.png}notes.mp3"')], input);
+  assert.equal(otherKind.file, input);
+  assert.match(otherKind.warnings.join(), /printed a path to another kind of file \(audio, not image\)/);
+  const missing = await w.run([inline('Write-Output out.png', 'echo out.png')], input);
+  assert.equal(missing.file, input);
+  assert.deepEqual(missing.warnings, [`Script 'inline code' printed a path that was not found, so the pipeline carried on with ${input}: out.png`]);
+  const log = await w.run([inline("Write-Output 'one'; Write-Output 'two'", 'echo one; echo two')], input);
+  assert.deepEqual([log.file, log.warnings], [input, []], 'several lines are the script\'s own log');
 });
 
 test('a script file runs from its own folder with the input as its first argument and the bundled tools folder', async t => {
@@ -71,6 +79,16 @@ test('an executable gets the input as its first argument', async t => {
   await writeFile(input, "require('fs').writeFileSync(process.argv[1] + '.arg.txt', process.argv[1])");
   await w.run([makeStep('runScript', { path: process.execPath })], input);
   assert.equal(await readFile(`${input}.arg.txt`, 'utf8'), input);
+});
+
+test('a program inside a watched folder is refused', async t => {
+  const w = await pipelineWorkspace(t); if (!w) return;
+  const input = w.file('in.png'), program = path.join(w.dir, 'watched', 'tools', 'tool.exe');
+  await graphic(40, 30).png().toFile(input);
+  await mkdir(path.dirname(program), { recursive: true });
+  await writeFile(program, 'MZ');
+  w.settings.videoDirs = [path.join(w.dir, 'watched')];
+  await assert.rejects(w.run([makeStep('runScript', { path: program })], input), /is inside the watched folder .*watched\. A program loads DLLs from its own folder/);
 });
 
 test('script paths must be absolute, and runShortcut only runs scripts from Clop\'s scripts folder', async t => {
