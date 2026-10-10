@@ -82,6 +82,9 @@ export function videoEncoderArgs(compression: CompressionQuality, { family, hard
   return softwareArgs(family, compression, videoUsesAutoCRF(compression) ? 'slower' : videoH264Preset(compression));
 }
 
+/** The container each codec conversion writes. */
+export const CONVERSION_EXTENSIONS: Record<VideoCodecConversion, string> = { hevc: 'mp4', x265: 'mp4', av1: 'mkv', webm: 'webm' };
+
 /**
  * `videoConversionArgs` (Shared.swift): encoder arguments and container for an explicit codec
  * conversion. Without a compression value the historical fixed arguments apply. HEVC keeps the
@@ -89,24 +92,28 @@ export function videoEncoderArgs(compression: CompressionQuality, { family, hard
  * legacy VideoToolbox -q:v 40), libx265 otherwise or when there is no hardware HEVC encoder.
  */
 export function videoConversionArgs(codec: VideoCodecConversion, compression: CompressionQuality | undefined, hardwareHEVC?: string, tenBit = false): { args: string[]; ext: string } {
+  return { args: conversionEncoderArgs(codec, compression, hardwareHEVC, tenBit), ext: CONVERSION_EXTENSIONS[codec] };
+}
+
+function conversionEncoderArgs(codec: VideoCodecConversion, compression: CompressionQuality | undefined, hardwareHEVC: string | undefined, tenBit: boolean) {
   const x265 = (cq: CompressionQuality) => ['-vcodec', 'libx265', '-crf', String(videoH265CRF(cq)), '-tag:v', 'hvc1', '-preset', videoH264Preset(cq)];
   const x265Fixed = (crf: number) => ['-vcodec', 'libx265', '-crf', String(crf), '-tag:v', 'hvc1', '-preset', 'medium'];
   switch (codec) {
     case 'hevc':
-      if (!compression) return { args: hardwareHEVC ? hardwareArgs(hardwareHEVC, { tier: 'fast', factor: 64 }, tenBit) : x265Fixed(28), ext: 'mp4' };
-      if (compression.tier === 'lossless') return { args: x265Fixed(18), ext: 'mp4' };
-      if (compression.tier === 'fast' && hardwareHEVC) return { args: hardwareArgs(hardwareHEVC, compression, tenBit), ext: 'mp4' };
-      return { args: x265(compression), ext: 'mp4' };
+      if (!compression) return hardwareHEVC ? hardwareArgs(hardwareHEVC, { tier: 'fast', factor: 64 }, tenBit) : x265Fixed(28);
+      if (compression.tier === 'lossless') return x265Fixed(18);
+      if (compression.tier === 'fast' && hardwareHEVC) return hardwareArgs(hardwareHEVC, compression, tenBit);
+      return x265(compression);
     case 'x265':
-      if (!compression) return { args: x265Fixed(28), ext: 'mp4' };
-      return { args: compression.tier === 'lossless' ? x265Fixed(18) : x265(compression), ext: 'mp4' };
+      if (!compression) return x265Fixed(28);
+      return compression.tier === 'lossless' ? x265Fixed(18) : x265(compression);
     case 'av1':
-      if (!compression) return { args: ['-vcodec', 'libsvtav1'], ext: 'mkv' };
-      if (compression.tier === 'lossless') return { args: ['-vcodec', 'libsvtav1', '-crf', '22', '-preset', '6'], ext: 'mkv' };
-      return { args: ['-vcodec', 'libsvtav1', '-crf', String(videoAV1CRF(compression)), '-preset', compression.factor >= 60 ? '6' : '8'], ext: 'mkv' };
+      if (!compression) return ['-vcodec', 'libsvtav1'];
+      if (compression.tier === 'lossless') return ['-vcodec', 'libsvtav1', '-crf', '22', '-preset', '6'];
+      return ['-vcodec', 'libsvtav1', '-crf', String(videoAV1CRF(compression)), '-preset', compression.factor >= 60 ? '6' : '8'];
     case 'webm': {
       const crf = !compression ? 31 : compression.tier === 'lossless' ? 15 : videoVP9CRF(compression);
-      return { args: ['-vcodec', 'libvpx-vp9', '-crf', String(crf), '-b:v', '0', '-row-mt', '1'], ext: 'webm' };
+      return ['-vcodec', 'libvpx-vp9', '-crf', String(crf), '-b:v', '0', '-row-mt', '1'];
     }
   }
 }

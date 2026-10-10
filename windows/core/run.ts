@@ -13,7 +13,7 @@ export class ToolError extends Error {
 const STDERR_LIMIT = 1024 * 1024;
 const isToolName = (tool: string): tool is ToolName => (TOOL_NAMES as readonly string[]).includes(tool);
 // ffmpeg's `-progress` key=value lines, which would push its actual error out of the last lines.
-const PROGRESS_LINE = /^(frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time(_us|_ms)?|dup_frames|drop_frames|speed|progress)=\S*$/;
+const PROGRESS_LINE = /^(frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time(_us|_ms)?|dup_frames|drop_frames|speed|progress)=\s*\S*$/;
 const lastLines = (text: string, count: number) => text.split(/\r?\n|\r/).map(line => line.trim()).filter(line => line && !PROGRESS_LINE.test(line)).slice(-count).join('\n');
 const abortError = (signal: AbortSignal) => signal.reason instanceof Error ? signal.reason : new DOMException('The operation was aborted.', 'AbortError');
 

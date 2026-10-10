@@ -29,7 +29,7 @@ test('rejects with the last stderr lines when the tool fails', async () => {
 });
 
 test('the error detail skips ffmpeg progress lines that follow the real error', async () => {
-  const script = 'console.error("Error opening output file: Permission denied"); for (const line of ["frame=0", "fps=0.00", "stream_0_0_q=0.0", "bitrate=N/A", "total_size=0", "out_time_us=0", "out_time_ms=0", "out_time=00:00:00.000000", "dup_frames=0", "drop_frames=0", "speed=N/A", "progress=end"]) console.error(line); process.exit(1)';
+  const script = 'console.error("Error opening output file: Permission denied"); for (const line of ["frame=0", "fps=0.00", "stream_0_0_q=0.0", "bitrate=N/A", "bitrate=   0.1kbits/s", "speed= 5.4x", "total_size=0", "out_time_us=0", "out_time_ms=0", "out_time=00:00:00.000000", "dup_frames=0", "drop_frames=0", "speed=N/A", "progress=end"]) console.error(line); process.exit(1)';
   await assert.rejects(run(node, ['-e', script]), (error: ToolError) => {
     assert.equal(error.stderr, 'Error opening output file: Permission denied');
     return true;
