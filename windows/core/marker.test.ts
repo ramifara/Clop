@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { exists } from './fileops';
 import { OptimisedMarker } from './marker';
 
 async function folder(t: TestContext) {
@@ -11,6 +12,8 @@ async function folder(t: TestContext) {
   return dir;
 }
 const DAY = 86400000;
+/** The cache key for a file: Windows ignores case. */
+const keyOf = (file: string) => process.platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file);
 async function setup(t: TestContext, options: ConstructorParameters<typeof OptimisedMarker>[1] = {}) {
   const dir = await folder(t), file = path.join(dir, 'a.png'), cache = path.join(dir, 'cache', 'optimised.json');
   await writeFile(file, 'pixels');
@@ -23,7 +26,7 @@ test('a file is optimised only after it is marked, and stays so across restarts'
   await marker.markOptimised(file);
   assert.equal(await marker.isOptimised(file), true);
   assert.equal(await new OptimisedMarker(cache).isOptimised(file), true, 'a new instance reads the sidecar file');
-  assert.deepEqual(Object.keys(JSON.parse(await readFile(cache, 'utf8'))), [path.resolve(file)]);
+  assert.deepEqual(Object.keys(JSON.parse(await readFile(cache, 'utf8'))), [keyOf(file)]);
 });
 
 test('changing the content, size or modification time clears the mark', async t => {
@@ -55,6 +58,7 @@ test('a missing file is not optimised, and a relative path is the same file', as
   await rm(file);
   assert.equal(await marker.isOptimised(file), false);
   await assert.rejects(marker.markOptimised(file));
+  assert.equal(await exists(file), false, 'marking a missing file must not create it (a stream write would)');
 });
 
 test('unmark forgets a file', async t => {
@@ -88,7 +92,15 @@ test('loading drops entries that are expired or whose file is gone, and rewrites
   assert.equal(await marker.isOptimised(file), true);
   assert.equal(await marker.isOptimised(stale), false);
   for (const end = Date.now() + 2000; Object.keys(JSON.parse(await readFile(cache, 'utf8'))).length > 1 && Date.now() < end;) await new Promise(resolve => setTimeout(resolve, 20));
-  assert.deepEqual(Object.keys(JSON.parse(await readFile(cache, 'utf8'))), [path.resolve(file)]);
+  assert.deepEqual(Object.keys(JSON.parse(await readFile(cache, 'utf8'))), [keyOf(file)]);
+});
+
+test('entries written with another casing still match on Windows', async t => {
+  const { file, cache } = await setup(t);
+  const info = await stat(file);
+  await mkdir(path.dirname(cache), { recursive: true });
+  await writeFile(cache, JSON.stringify({ [path.resolve(file)]: { size: info.size, mtimeMs: info.mtimeMs, at: Date.now() } }));
+  assert.equal(await new OptimisedMarker(cache, { platform: 'win32' }).isOptimised(file), true);
 });
 
 test('the cache never holds more than the limit, dropping the oldest marks first', async t => {

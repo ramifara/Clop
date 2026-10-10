@@ -48,10 +48,11 @@ export class OptimisedMarker {
       try { stored = JSON.parse(await readFile(this.file, 'utf8')); } catch {}
       const entries = new Map<string, Entry>(), cutoff = this.now() - this.maxAgeMs;
       const records = typeof stored === 'object' && stored !== null && !Array.isArray(stored) ? Object.entries(stored) : [];
-      for (const [key, value] of records) {
+      for (const [stored, value] of records) {
         const { size, mtimeMs, at } = (value ?? {}) as Partial<Entry>;
         if (typeof size !== 'number' || typeof mtimeMs !== 'number' || typeof at !== 'number' || at < cutoff) continue;
-        if (await stat(key).then(info => info.isFile(), () => false)) entries.set(key, { size, mtimeMs, at });
+        // Keys are normalised again, so a file written with another casing (or by hand) still matches.
+        if (await stat(stored).then(info => info.isFile(), () => false)) entries.set(this.key(stored), { size, mtimeMs, at });
       }
       this.entries = entries;
       if (entries.size !== records.length) void this.persist().catch(() => {});
@@ -72,7 +73,9 @@ export class OptimisedMarker {
   /** Records the file as it is now. Call it after the last write to the file. */
   async markOptimised(file: string): Promise<void> {
     const entries = await this.load();
-    // Writing the stream first, because stream writes can touch the file's times.
+    // Checked first: writing a stream to a missing path would create an empty file there.
+    if (!(await stat(file)).isFile()) throw new Error(`${file} is not a file.`);
+    // Writing the stream before the final stat, because stream writes can touch the file's times.
     await this.writeHint(file);
     const info = await stat(file);
     const key = this.key(file);

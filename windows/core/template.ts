@@ -43,7 +43,7 @@ export function safeFileName(name: string): string {
 /** `%USERPROFILE%` (Windows only), `~`, `$HOME` and `${HOME}` at the start of a path mean the user's profile folder. */
 export function resolveHome(value: string, home = os.homedir(), platform: NodeJS.Platform = process.platform): string {
   if (platform === 'win32') value = value.replace(/^%USERPROFILE%(?=$|[\\/])/i, () => home);
-  return expandHome(value, home);
+  return expandHome(value, home, pathApi(platform));
 }
 
 /** Port of `generateFileName`: replaces the tokens, makes the result a safe file name unless `safe` is false, then appends the extension of `ctx.path`. */
