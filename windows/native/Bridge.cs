@@ -74,6 +74,8 @@ namespace ClopWindows {
       ".mp3", ".m4a", ".aac", ".wav", ".aif", ".aiff", ".flac", ".ogg", ".opus", ".pdf" };
     const int MaxFiles = 64;
     static void Emit(object value) { Console.WriteLine(Json.Serialize(value)); Console.Out.Flush(); }
+    // Console.Out is synchronised, so another thread can write whole lines too; it brings its own serializer.
+    static void EmitFrom(JavaScriptSerializer json, object value) { Console.WriteLine(json.Serialize(value)); Console.Out.Flush(); }
     static void DragDebug(string message) { if (Environment.GetEnvironmentVariable("CLOP_DEBUG_DRAG") == "1") Diagnostics.Enqueue(message); }
     public static void Run() {
       SetProcessDpiAwarenessContext(new IntPtr(-4));
@@ -197,17 +199,24 @@ namespace ClopWindows {
         foreach (var root in new[] { Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu) }) {
           try {
             foreach (var link in Directory.EnumerateFiles(root, "*.lnk", SearchOption.AllDirectories)) {
+              object shortcut = null;
               try {
-                string target = Convert.ToString(links.CreateShortcut(link).TargetPath);
+                shortcut = links.CreateShortcut(link);
+                string target = Convert.ToString(((dynamic)shortcut).TargetPath);
                 if (target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(target)) AddApp(apps, seen, Path.GetFileNameWithoutExtension(link), target, false);
               } catch { }
+              finally { if (shortcut != null && Marshal.IsComObject(shortcut)) Marshal.ReleaseComObject(shortcut); }
             }
           } catch { /* A folder the user cannot read ends that part of the list. */ }
         }
         shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
-        dynamic folder = ((dynamic)shell).NameSpace("shell:AppsFolder");
-        if (folder != null) foreach (dynamic item in folder.Items()) {
-          try { string id = Convert.ToString(item.Path); if (id.Contains("!")) AddApp(apps, seen, Convert.ToString(item.Name), id, false); } catch { }
+        object folder = ((dynamic)shell).NameSpace("shell:AppsFolder");
+        if (folder != null) {
+          try {
+            foreach (dynamic item in ((dynamic)folder).Items()) {
+              try { string id = Convert.ToString(item.Path); if (id.Contains("!")) AddApp(apps, seen, Convert.ToString(item.Name), id, false); } catch { }
+            }
+          } finally { if (Marshal.IsComObject(folder)) Marshal.ReleaseComObject(folder); }
         }
       } catch { }
       finally { if (scripting != null) Marshal.ReleaseComObject(scripting); if (shell != null) Marshal.ReleaseComObject(shell); }
@@ -253,7 +262,28 @@ namespace ClopWindows {
           string owner, aumid; ClipboardSource(out owner, out aumid);
           Emit(new { type = "reply", id, ok = true, sequence = GetClipboardSequenceNumber(), paths = FileList().ToArray(), bitmap = HasBitmap(contents), text, owned, transient = Excluded(contents), owner, aumid }); return;
         }
-        if (type == "apps") { Emit(new { type = "reply", id, ok = true, apps = Apps() }); return; }
+        if (type == "apps") {
+          // Walking processes and the Start Menu takes a while. This thread pumps the mouse hook, which Windows drops when it
+          // stalls, so the list is built on a thread of its own, STA for the shell's COM objects.
+          string request = id;
+          var worker = new Thread(() => {
+            var json = new JavaScriptSerializer();
+            try { EmitFrom(json, new { type = "reply", id = request, ok = true, apps = Apps() }); }
+            catch (Exception error) { EmitFrom(json, new { type = "reply", id = request, ok = false, error = error.Message }); }
+          });
+          worker.IsBackground = true; worker.SetApartmentState(ApartmentState.STA); worker.Start();
+          return;
+        }
+        if (type == "attributes") {
+          // Cloud placeholders (OneDrive files-on-demand): recall on data access, recall on open, offline. Reading attributes does not download them.
+          var cloud = new List<bool>();
+          foreach (object item in (System.Collections.IEnumerable)command["paths"]) {
+            bool placeholder = false;
+            try { placeholder = ((int)File.GetAttributes(Convert.ToString(item)) & 0x441000) != 0; } catch { }
+            cloud.Add(placeholder);
+          }
+          Emit(new { type = "reply", id, ok = true, cloud }); return;
+        }
         if (type == "copy") {
           if (command.ContainsKey("expectedSequence") && Convert.ToUInt32(command["expectedSequence"]) != GetClipboardSequenceNumber()) {
             Emit(new { type = "reply", id, ok = true, skipped = true }); return;
