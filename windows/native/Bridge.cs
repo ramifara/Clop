@@ -62,6 +62,12 @@ namespace ClopWindows {
     static Point Start;
     static string[] DragPaths = new string[0];
     static readonly HashSet<string> Extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".tif", ".tiff", ".heic", ".heif", ".jxl", ".bmp", ".svg" };
+    // Every file Clop optimises (core/media/detect.ts): images, videos, audio and PDFs.
+    static readonly HashSet<string> MediaExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+      ".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".tif", ".tiff", ".heic", ".heif", ".jxl", ".bmp", ".svg",
+      ".mp4", ".mov", ".qt", ".m4v", ".webm", ".mkv", ".avi", ".m2v", ".mpg", ".mpeg",
+      ".mp3", ".m4a", ".aac", ".wav", ".aif", ".aiff", ".flac", ".ogg", ".opus", ".pdf" };
+    const int MaxFiles = 64;
     static void Emit(object value) { Console.WriteLine(Json.Serialize(value)); Console.Out.Flush(); }
     static void DragDebug(string message) { if (Environment.GetEnvironmentVariable("CLOP_DEBUG_DRAG") == "1") Diagnostics.Enqueue(message); }
     public static void Run() {
@@ -107,10 +113,14 @@ namespace ClopWindows {
             // OLE can bump the sequence again when delayed clipboard formats render. Tag ownership
             // explicitly rather than relying only on the sequence captured by SetDataObject.
             if (contents != null && Convert.ToString(contents.GetData("ClopWindows.Owner")) == ClipboardOwner) return;
-            var paths = new List<string>();
-            if (Clipboard.ContainsFileDropList()) foreach (string file in Clipboard.GetFileDropList()) if (Extensions.Contains(Path.GetExtension(file))) paths.Add(file);
-            bool image = paths.Count > 0 || (contents != null && (contents.GetDataPresent(DataFormats.Bitmap) || contents.GetDataPresent(DataFormats.Dib) || contents.GetDataPresent("PNG") || contents.GetDataPresent("image/png")));
-            Emit(new { type = "clipboard", sequence = next, paths = paths.ToArray(), image, process = ForegroundProcess, app = ForegroundApp });
+            if (Excluded(contents)) return;
+            // Every listed file goes to the app, which decides by type and settings. `image` also counts image files,
+            // for the pickup's editing sessions; `bitmap` is image data alone.
+            var paths = FileList();
+            bool bitmap = HasBitmap(contents);
+            bool image = bitmap || paths.Exists(file => Extensions.Contains(Path.GetExtension(file)));
+            bool text = contents != null && contents.GetDataPresent(DataFormats.UnicodeText);
+            Emit(new { type = "clipboard", sequence = next, paths = paths.ToArray(), image, bitmap, text, process = ForegroundProcess, app = ForegroundApp });
           } catch { /* A different app may temporarily hold the clipboard. Retry on its next change. */ }
         }
         DetectImageDrag();
@@ -137,6 +147,21 @@ namespace ClopWindows {
         return process;
       } catch { return 0; }
     }
+    static List<string> FileList() {
+      var paths = new List<string>();
+      if (Clipboard.ContainsFileDropList()) foreach (string file in Clipboard.GetFileDropList()) { if (paths.Count == MaxFiles) break; paths.Add(file); }
+      return paths;
+    }
+    static bool HasBitmap(IDataObject contents) {
+      return contents != null && (contents.GetDataPresent(DataFormats.Bitmap) || contents.GetDataPresent(DataFormats.Dib) || contents.GetDataPresent("PNG") || contents.GetDataPresent("image/png"));
+    }
+    // Password managers and other apps mark content that clipboard monitors must leave alone.
+    static bool Excluded(IDataObject contents) {
+      return contents != null && (contents.GetDataPresent("ExcludeClipboardContentFromMonitorProcessing") || contents.GetDataPresent("Clipboard Viewer Ignore"));
+    }
+    static string Optional(Dictionary<string, object> command, string key) {
+      return command.ContainsKey(key) && command[key] != null ? Convert.ToString(command[key]) : null;
+    }
     static string ProcessName(uint process) { using (var info = Process.GetProcessById((int)process)) return info.ProcessName.ToLowerInvariant(); }
     static void Handle(string line) {
       string id = null;
@@ -152,24 +177,27 @@ namespace ClopWindows {
         }
         if (type == "sequence") { Emit(new { type = "reply", id, ok = true, sequence = GetClipboardSequenceNumber() }); return; }
         if (type == "read") {
-          var paths = new List<string>();
-          if (Clipboard.ContainsFileDropList()) foreach (string file in Clipboard.GetFileDropList()) if (Extensions.Contains(Path.GetExtension(file))) paths.Add(file);
           var contents = Clipboard.GetDataObject();
           bool owned = contents != null && Convert.ToString(contents.GetData("ClopWindows.Owner")) == ClipboardOwner;
-          Emit(new { type = "reply", id, ok = true, sequence = GetClipboardSequenceNumber(), paths = paths.ToArray(), owned }); return;
+          bool text = contents != null && contents.GetDataPresent(DataFormats.UnicodeText);
+          Emit(new { type = "reply", id, ok = true, sequence = GetClipboardSequenceNumber(), paths = FileList().ToArray(), bitmap = HasBitmap(contents), text, owned, transient = Excluded(contents) }); return;
         }
         if (type == "copy") {
           if (command.ContainsKey("expectedSequence") && Convert.ToUInt32(command["expectedSequence"]) != GetClipboardSequenceNumber()) {
             Emit(new { type = "reply", id, ok = true, skipped = true }); return;
           }
-          string file = Convert.ToString(command["file"]), png = Convert.ToString(command["png"]);
+          // Any of a file list, an image (an encoded PNG, also written as a bitmap) and text.
+          string file = Optional(command, "file"), png = Optional(command, "png"), text = Optional(command, "text");
           var data = new DataObject();
           data.SetData("ClopWindows.Owner", false, ClipboardOwner);
           var paths = new StringCollection();
           if (command.ContainsKey("files") && command["files"] != null) foreach (object item in (System.Collections.IEnumerable)command["files"]) paths.Add(Convert.ToString(item));
-          if (paths.Count == 0) paths.Add(file);
-          data.SetFileDropList(paths);
-          using (var image = new Bitmap(png)) using (var stream = new MemoryStream(File.ReadAllBytes(png))) {
+          if (paths.Count == 0 && file != null) paths.Add(file);
+          if (paths.Count == 0 && png == null && String.IsNullOrEmpty(text)) throw new InvalidOperationException("There is nothing to copy.");
+          if (paths.Count > 0) data.SetFileDropList(paths);
+          if (!String.IsNullOrEmpty(text)) data.SetText(text, TextDataFormat.UnicodeText);
+          if (png == null) Clipboard.SetDataObject(data, true, 5, 100);
+          else using (var image = new Bitmap(png)) using (var stream = new MemoryStream(File.ReadAllBytes(png))) {
             data.SetImage(image);
             data.SetData("PNG", false, stream);
             Clipboard.SetDataObject(data, true, 5, 100);
@@ -317,7 +345,7 @@ namespace ClopWindows {
             if ((long)explorer.HWND != window.ToInt64()) continue;
             foreach (dynamic item in explorer.Document.SelectedItems()) {
               string file = Convert.ToString(item.Path);
-              if (Extensions.Contains(Path.GetExtension(file)) && File.Exists(file)) {
+              if (MediaExtensions.Contains(Path.GetExtension(file)) && File.Exists(file)) {
                 paths.Add(file);
                 if (ItemNameMatches(name, file, Convert.ToString(item.Name))) hitSelectedImage = true;
               }
@@ -331,7 +359,7 @@ namespace ClopWindows {
       var className = new StringBuilder(256); GetClassName(window, className, className.Capacity);
       if (className.ToString() == "Progman" || className.ToString() == "WorkerW") {
         foreach (var directory in new[] { Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory) }) {
-          try { foreach (var file in Directory.EnumerateFiles(directory)) if (Extensions.Contains(Path.GetExtension(file)) && ItemNameMatches(name, file, Path.GetFileName(file))) return new[] { file }; } catch { }
+          try { foreach (var file in Directory.EnumerateFiles(directory)) if (MediaExtensions.Contains(Path.GetExtension(file)) && ItemNameMatches(name, file, Path.GetFileName(file))) return new[] { file }; } catch { }
         }
       }
       return new string[0];
