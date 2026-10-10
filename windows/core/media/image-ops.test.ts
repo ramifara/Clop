@@ -8,6 +8,7 @@ import { run } from '../run';
 import { needTools } from '../testing';
 import { optimiseImage } from './image';
 import { convertImage, cropImage, fitUnderSize, stripImageMetadata, watermarkImage } from './image-ops';
+import { watermarkFilters } from './watermark';
 import { animation, graphic, photo } from './image.fixtures';
 
 const at = (factor: number) => ({ tier: 'custom', factor }) as const;
@@ -91,6 +92,8 @@ test('watermarks a corner at the requested scale and opacity, and every frame of
     assert.ok(cr < 40 && cg < 40 && cb > 200, `frame ${page} has ${cr},${cg},${cb} under the watermark`);
   }
   await assert.rejects(watermarkImage(input, w.out, { compression: at(30), watermark: { file: path.join(w.dir, 'missing.png') } }), /not found/);
+  // ffmpeg's watermark width is truncated, as watermarkWithFFmpeg computes it.
+  assert.equal(watermarkFilters(333, { file: mark }).scale.split(':')[0], 'scale=49');
 });
 
 test('stripping keeps DPI, orientation and colour; keeping copies every tag but an obsolete rotation', async t => {

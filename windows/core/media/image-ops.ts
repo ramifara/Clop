@@ -1,11 +1,11 @@
 import { copyFile, mkdir, mkdtemp, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { retryBusy } from '../run';
+import { queue, retryBusy } from '../run';
 import { COMPRESSION_FACTOR_AGGRESSIVE } from './compression';
 import type { CropSpec } from './crop-size';
 import { stripExif } from './exif';
 import { optimiseImage, type ImageFormat, type ImageOptimiseOptions } from './image';
-import { sniffImage } from './image-codecs';
+import { probeImage, sniffImage } from './image-codecs';
 import type { MediaJobOptions, MediaOutput } from './types';
 import type { Watermark } from './watermark';
 
@@ -30,16 +30,16 @@ export async function watermarkImage(input: string, outputDir: string, opts: Opt
 }
 
 /** Copies the image and strips its identifying metadata (`FilePath.stripExif`), keeping resolution, orientation and, with `preserveColour`, the colour profile. */
-export async function stripImageMetadata(input: string, outputDir: string, { preserveColour = true, name, signal }: { preserveColour?: boolean; name?: string; signal?: AbortSignal } = {}): Promise<MediaOutput> {
-  const { format, meta } = await sniffImage(input);
-  if (!format) throw new Error('This is not an image Clop can read.');
-  await mkdir(outputDir, { recursive: true });
-  let output = path.join(outputDir, `${name ?? path.parse(input).name}${path.extname(input)}`);
-  if (path.resolve(output) === path.resolve(input)) output = path.join(outputDir, `${name ?? path.parse(input).name}-stripped${path.extname(input)}`);
-  await copyFile(input, output);
-  await stripExif(output, { preserveColour, signal });
-  const rotated = (meta?.orientation ?? 1) >= 5, width = meta?.width, height = meta?.pageHeight ?? meta?.height;
-  return { path: output, bytes: (await stat(output)).size, format, width: rotated ? height : width, height: rotated ? width : height };
+export function stripImageMetadata(input: string, outputDir: string, { preserveColour = true, name, signal }: { preserveColour?: boolean; name?: string; signal?: AbortSignal } = {}): Promise<MediaOutput> {
+  return queue('image')(async () => {
+    const { format, width, height } = await probeImage(input, signal);
+    await mkdir(outputDir, { recursive: true });
+    let output = path.join(outputDir, `${name ?? path.parse(input).name}${path.extname(input)}`);
+    if (path.resolve(output) === path.resolve(input)) output = path.join(outputDir, `${name ?? path.parse(input).name}-stripped${path.extname(input)}`);
+    await copyFile(input, output);
+    await stripExif(output, { preserveColour, signal });
+    return { path: output, bytes: (await stat(output)).size, format, width, height };
+  });
 }
 
 /**
