@@ -42,7 +42,8 @@ export interface VideoOptimiseOptions {
 }
 type Options = VideoOptimiseOptions & MediaJobOptions;
 
-const PROGRESS = ['-progress', 'pipe:2', '-nostats', '-stats_period', '0.1'];
+/** Makes ffmpeg write `-progress` lines such as `out_time_us=…` to stderr ten times a second. */
+export const PROGRESS = ['-progress', 'pipe:2', '-nostats', '-stats_period', '0.1'];
 const ENCODED_CONTAINERS = new Set(['mp4', 'mov', 'hevc']);
 // Linear light, BT.709 primaries, Hable's curve, then back to 8-bit BT.709 video. Needs ffmpeg built with zimg.
 const TONE_MAP = ['zscale=t=linear:npl=100', 'format=gbrpf32le', 'zscale=p=bt709', 'tonemap=tonemap=hable:desat=0', 'zscale=t=bt709:m=bt709:r=tv', 'format=yuv420p'];
@@ -162,7 +163,8 @@ async function finish(input: string, file: string, outputDir: string, name: stri
   return { path: output, bytes: (await stat(output)).size, format: ext, width: info.width, height: info.height, durationMs: info.durationMs };
 }
 
-async function withTemp<T>(outputDir: string, task: (tmp: string) => Promise<T>) {
+/** Runs `task` with a temporary folder inside `outputDir`, removed afterwards, so results can be renamed into place. */
+export async function withTemp<T>(outputDir: string, task: (tmp: string) => Promise<T>) {
   await mkdir(outputDir, { recursive: true });
   const tmp = await mkdtemp(path.join(outputDir, '.clop-'));
   try { return await task(tmp); } finally { await rm(tmp, { recursive: true, force: true }); }

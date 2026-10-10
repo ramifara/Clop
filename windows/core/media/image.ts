@@ -367,10 +367,15 @@ async function uniqueColours(file: string, cap: number) {
   return seen.size;
 }
 
-/** `largeAreaEntropy`: Shannon entropy of the joined R, G and B histograms, only for images over a megapixel. */
+/** `largeAreaEntropy`: the entropy of images over a megapixel. */
 async function largeAreaEntropy(file: string) {
   const meta = await decode(file).metadata();
   if ((meta.width ?? 0) * (meta.height ?? 0) <= 1_000_000) return undefined;
+  return imageEntropy(file);
+}
+
+/** `NSImage.entropy`: Shannon entropy of the joined R, G and B histograms. Photographs score high, flat graphics low. */
+export async function imageEntropy(file: string) {
   const { data } = await decode(file).removeAlpha().toColourspace('srgb').raw({ depth: 'uchar' }).toBuffer({ resolveWithObject: true });
   const histogram = new Float64Array(768);
   for (let i = 0; i + 2 < data.length; i += 3) { histogram[data[i]]++; histogram[256 + data[i + 1]]++; histogram[512 + data[i + 2]]++; }
