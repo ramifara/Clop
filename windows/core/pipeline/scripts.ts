@@ -5,6 +5,7 @@ import { samePath } from '../fileops';
 import { detectKind } from '../media/detect';
 import { run as runTool, ToolError } from '../run';
 import { defaultPaths, expandHome } from '../settings/paths';
+import { powershell } from '../shell-effects';
 import { toolsDir } from '../tools';
 import type { RunState } from './run-state';
 
@@ -19,7 +20,6 @@ const onPath = async (name: string) => {
   return false;
 };
 const system32 = (...parts: string[]) => path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', ...parts);
-const powershell = () => system32('WindowsPowerShell', 'v1.0', 'powershell.exe');
 /** Output is written as UTF-8, so a printed path with any characters comes back intact. */
 const UTF8_OUTPUT = '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n';
 const encoded = (code: string) => Buffer.from(UTF8_OUTPUT + code, 'utf16le').toString('base64');

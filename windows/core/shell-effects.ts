@@ -5,7 +5,8 @@ import type { PipelineEffects } from './pipeline/run-state';
 // The clipboard, "open with" and the Recycle Bin without Electron, through Windows PowerShell, for the CLI and for the
 // app's pipe requests. Values reach the script through the environment, so no quoting can change what it runs.
 
-const powershell = () => path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+/** Windows PowerShell 5.1, by its full path so a `powershell.exe` earlier on PATH is never run instead. */
+export const powershell = () => path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const encoded = (code: string) => Buffer.from(code, 'utf16le').toString('base64');
 
 async function script(code: string, env: Record<string, string>, what: string) {

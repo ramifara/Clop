@@ -64,7 +64,9 @@ export class ProgressPrinter {
 
   /** `printResults`. */
   printResults(json: boolean) {
-    const byPath = <T extends { forURL: string }>(items: Iterable<T>) => [...items].sort((a, b) => shown(a.forURL).localeCompare(shown(b.forURL)));
+    // Sorted as Swift's `<` sorts `forURL.path`: by full path, code unit by code unit.
+    const key = (url: string) => urlPath(url) ?? (() => { try { return new URL(url).pathname; } catch { return url; } })();
+    const byPath = <T extends { forURL: string }>(items: Iterable<T>) => [...items].sort((a, b) => key(a.forURL) < key(b.forURL) ? -1 : key(a.forURL) > key(b.forURL) ? 1 : 0);
     const done = byPath(this.responses.values()), failed = byPath(this.errors.values());
     if (json) { const result: CLIResult = { done, failed }; this.io.out(`${sortedJSON(result)}\n`); return; }
     const out = (line: string) => this.io.out(`${line}\n`);

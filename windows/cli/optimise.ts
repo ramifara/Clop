@@ -1,5 +1,5 @@
 import { randomInt } from 'node:crypto';
-import { type FileBehaviour, type OptimisationRequest, type PlacementOverride } from '../core/ipc/protocol';
+import { compact, type FileBehaviour, type OptimisationRequest, type PlacementOverride } from '../core/ipc/protocol';
 import { parseCompression } from '../core/pipeline/parser';
 import { PDF_DPI_STOPS } from '../core/media/pdf';
 import type { CompressionQuality, CropSize } from '../core/settings/schema';
@@ -139,7 +139,6 @@ function playbackFrames(value: string | undefined) {
 }
 
 const requestId = () => String(randomInt(1000, 100_001));
-const compact = <T extends object>(value: T): T => Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
 const placementOf = (p: PlacementOverride) => { const placement = compact(p); return Object.keys(placement).length ? placement : undefined; };
 
 interface SendOptions { showProgress: boolean; async: boolean; gui: boolean; json: boolean; operation: string }
