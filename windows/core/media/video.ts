@@ -271,8 +271,9 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
     const totalUs = info.durationMs ? info.durationMs * 1000 / (speed ?? 1) : undefined;
     const onProgress = rising(opts.onProgress);
     await firstWorking('ffmpeg', argSets, { signal, onStderrLine: ffmpegProgress(totalUs, onProgress) });
-    // Only a plain optimisation may hand back the input: anything else asked for would be silently dropped.
-    const plain = !size && !crop && !speed && !conversion && ext === inputExt && !opts.removeAudio && !opts.convertAudioToAAC && !(toneMap && opts.hdrToSdr);
+    // Only a plain optimisation may hand back the input: an explicitly requested change would be silently dropped.
+    // convertAudioToAAC is a standing setting, so like macOS it does not stop the input being kept.
+    const plain = !size && !crop && !speed && !conversion && ext === inputExt && !opts.removeAudio && !(toneMap && opts.hdrToSdr);
     if (plain && !opts.allowLarger && (await stat(out)).size >= inputBytes) {
       onProgress?.(1);
       return { path: input, bytes: inputBytes, format: inputExt, width: info.width, height: info.height, durationMs: info.durationMs, unchanged: true };

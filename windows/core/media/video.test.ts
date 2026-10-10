@@ -57,8 +57,9 @@ test('aggressive compresses harder; a result that is not smaller keeps the input
   // Asked-for changes are never dropped by keeping the input, even when the result is larger.
   const muted = await optimiseVideo(aggressive.path, w.out, { compression: { tier: 'lossless', factor: 5 }, removeAudio: true, name: 'muted' });
   assert.ok(!muted.unchanged && !(await video(muted.path)).hasAudio);
+  // convertAudioToAAC is a standing setting, so a larger result still keeps the input, as on macOS.
   const aac = await optimiseVideo(aggressive.path, w.out, { compression: { tier: 'lossless', factor: 5 }, convertAudioToAAC: true, name: 'aac' });
-  assert.ok(!aac.unchanged && aac.bytes > aggressive.bytes);
+  assert.deepEqual([aac.unchanged, aac.path], [true, aggressive.path]);
 });
 
 test('the encoder setting chooses H.264 or HEVC and keeps software tiers in software', async t => {
