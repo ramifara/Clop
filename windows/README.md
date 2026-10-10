@@ -91,7 +91,7 @@ The Windows build ships these programs unmodified, as separate executables in `r
 
 | Tool | Source | Licence |
 | --- | --- | --- |
-| FFmpeg and FFprobe | [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) essentials build | GPLv3 |
+| FFmpeg and FFprobe, sharing the libav* DLLs | [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) GPL shared build | GPLv3 |
 | Ghostscript (`gswin64c.exe`, `lib`, `Resource`) | [Artifex](https://github.com/ArtifexSoftware/ghostpdl-downloads) | AGPLv3 |
 | gifsicle | [eternallybored.org](https://eternallybored.org/misc/gifsicle/) | GPLv2 |
 | gifski | [ImageOptim/gifski](https://github.com/ImageOptim/gifski) | AGPLv3 |
@@ -107,7 +107,7 @@ Ghostscript and gifski are AGPLv3. They run as separate programs, and section 13
 
 ### Refreshing pinned tools
 
-To update a tool, change its entry in `scripts/tools.json`: the version, the URL, the sha256 of the download and the archive paths in `files`. Then run `node scripts/fetch-tools.mjs --platform win32`, which refuses a download whose hash differs. repo.msys2.org removes old package versions, so the MSYS2 entries eventually stop downloading. Regenerate them with `npx tsx scripts/resolve-msys2.ts libheif:heif-dec,heif-enc pngquant:pngquant`. It reads the current MSYS2 package database, follows the tools' DLL imports to every package they load and prints their entries with sha256; replace the `msys2-*` entries with its output. CI checks that each tool reports its pinned version and that the bundle carries every DLL its programs import.
+To update a tool, change its entry in `scripts/tools.json`: the version, the URL, the sha256 of the download and the archive paths in `files`. Then run `node scripts/fetch-tools.mjs --platform win32`, which refuses a download whose hash differs. repo.msys2.org removes old package versions, so the MSYS2 entries eventually stop downloading. Regenerate them with `npx tsx scripts/resolve-msys2.ts libheif:heif-dec,heif-enc pngquant:pngquant`. It reads the current MSYS2 package database, follows the tools' DLL imports to every package they load and prints their entries with sha256; replace the `msys2-*` entries with its output. BtbN keeps its month-end FFmpeg builds for about two years; pick a newer month-end `autobuild-*` release when the pinned one disappears. CI checks that each tool reports its pinned version and that the bundle carries every DLL its programs import.
 
 ## Attribution
 
