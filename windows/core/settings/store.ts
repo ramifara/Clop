@@ -12,7 +12,7 @@ const reason = (error: unknown) => (error as NodeJS.ErrnoException).code ?? (err
 /** Settings persisted as JSON. Every value is replaced, never mutated, so `get()` snapshots stay stable. */
 export class SettingsStore extends EventEmitter<{ change: [settings: ClopSettings, changed: SettingKey[]] }> {
   private current: ClopSettings;
-  private writes: Promise<void> = Promise.resolve();
+  private queue: Promise<unknown> = Promise.resolve();
   /** Set when the file exists but could not be read or moved aside; saving would destroy it. */
   private unreadable?: Error;
   constructor(readonly file: string, private readonly paths: Partial<DefaultPaths> = {}) {
@@ -51,30 +51,41 @@ export class SettingsStore extends EventEmitter<{ change: [settings: ClopSetting
   get<K extends SettingKey>(key: K): ClopSettings[K];
   get(key?: SettingKey) { return key === undefined ? this.current : this.current[key]; }
 
-  /** Validates `partial` with `parseSettings`, saves when anything changed, then emits `change` with the changed keys. */
-  async set(partial: unknown): Promise<ClopSettings> {
-    if (this.unreadable) throw this.unreadable;
-    const previous = this.current, next = parseSettings(partial, previous);
-    const changed = SETTING_KEYS.filter(key => !isDeepStrictEqual(next[key], previous[key]));
-    if (!changed.length) return previous;
-    this.current = next;
-    await this.save();
-    this.emit('change', next, changed);
-    return next;
+  /**
+   * Validates `partial` with `parseSettings` and saves it. Sets run one at a time, each on top of the last saved one; the
+   * new settings become current and `change` fires with the changed keys only after the file is written. A failed write
+   * leaves the previous settings in place, so retrying the same change writes again.
+   */
+  set(partial: unknown): Promise<ClopSettings> {
+    return this.enqueue(async () => {
+      if (this.unreadable) throw this.unreadable;
+      const previous = this.current, next = parseSettings(partial, previous);
+      const changed = SETTING_KEYS.filter(key => !isDeepStrictEqual(next[key], previous[key]));
+      if (!changed.length) return previous;
+      await this.write(next);
+      this.current = next;
+      this.emit('change', next, changed);
+      return next;
+    });
   }
 
-  /** Writes are queued in call order and replace the file atomically, so a crash never leaves half a file. */
+  /** Writes the current settings after any queued sets. */
   save(): Promise<void> {
     if (this.unreadable) return Promise.reject(this.unreadable);
-    const json = JSON.stringify(this.current, null, 2);
-    const write = async () => {
-      await mkdir(path.dirname(this.file), { recursive: true });
-      const temporary = `${this.file}.${randomUUID()}.tmp`;
-      try { await writeFile(temporary, json); await retryBusy(() => rename(temporary, this.file)); }
-      finally { await rm(temporary, { force: true }); }
-    };
-    const job = this.writes.then(write);
-    this.writes = job.catch(() => {});
+    return this.enqueue(() => this.write(this.current));
+  }
+
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const job = this.queue.then(task);
+    this.queue = job.catch(() => {});
     return job;
+  }
+
+  /** Replaces the file atomically, so a crash never leaves half a file. */
+  private async write(settings: ClopSettings) {
+    await mkdir(path.dirname(this.file), { recursive: true });
+    const temporary = `${this.file}.${randomUUID()}.tmp`;
+    try { await writeFile(temporary, JSON.stringify(settings, null, 2)); await retryBusy(() => rename(temporary, this.file)); }
+    finally { await rm(temporary, { force: true }); }
   }
 }

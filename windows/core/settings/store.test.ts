@@ -87,3 +87,28 @@ test('concurrent sets are written in order and leave no temporary files', async 
   assert.equal((await readJson(file)).batchModeFileCountThreshold, 8);
   assert.deepEqual(await readdir(dir), ['settings.json']);
 });
+
+test('a failed write keeps the previous settings and a retry writes again', async t => {
+  const dir = await folder(t), file = path.join(dir, 'settings.json');
+  const store = new SettingsStore(file, paths);
+  await store.load();
+  const events: SettingKey[][] = [];
+  store.on('change', (_settings, changed) => events.push(changed));
+  // A non-empty folder where the file goes makes the final rename fail on every platform.
+  await mkdir(path.join(file, 'blocker'), { recursive: true });
+  const before = store.get();
+  const [first, second] = await Promise.allSettled([store.set({ keepDropZoneVisible: true }), store.set({ launchAtLogin: true })]);
+  assert.equal(first.status, 'rejected');
+  assert.equal(second.status, 'rejected');
+  assert.equal(store.get(), before);
+  assert.deepEqual(events, []);
+  await assert.rejects(store.set({ keepDropZoneVisible: true }), 'the retry must try to write again');
+  assert.equal(store.get('keepDropZoneVisible'), false);
+  await rm(file, { recursive: true });
+  const saved = await store.set({ keepDropZoneVisible: true });
+  assert.equal(saved.keepDropZoneVisible, true);
+  assert.equal(saved.launchAtLogin, false, 'a failed set leaves nothing behind for later sets to write');
+  assert.deepEqual(await readJson(file), saved);
+  assert.deepEqual(events, [['keepDropZoneVisible']]);
+  assert.deepEqual((await readdir(dir)).sort(), ['settings.json']);
+});
