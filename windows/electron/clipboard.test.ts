@@ -9,12 +9,12 @@ const settings = { ...defaultSettings(), optimiseImagePathClipboard: false };
 const all = { ...settings, optimiseVideoClipboard: true, optimisePDFClipboard: true, optimiseAudioClipboard: true, optimiseImagePathClipboard: true };
 const owns = (file: string) => file.startsWith('/work/');
 const pick = (files: string[], options: { manual?: boolean; bitmap?: boolean; settings?: typeof settings } = {}) =>
-  clipboardFiles(files, { manual: options.manual ?? false, bitmap: options.bitmap ?? false, settings: options.settings ?? settings, owns });
+  clipboardFiles(files, { manual: options.manual ?? false, bitmap: options.bitmap ?? false, settings: options.settings ?? settings, owns, platform: 'linux' });
 
 test('automatic clipboard optimisation takes each file type only when its setting is on, as macOS does by default', () => {
   const files = ['/a/photo.png', '/a/clip.mp4', '/a/doc.pdf', '/a/song.mp3'];
   // A copied file is a reference: by default only image data beside an image file makes it an image to optimise.
-  assert.deepEqual(pick(files), { files: [], media: true });
+  assert.deepEqual(pick(files), { files: [], media: true, remote: [] });
   assert.deepEqual(pick(files, { bitmap: true }).files, ['/a/photo.png']);
   assert.deepEqual(pick(files, { settings: all }).files, files);
   for (const [key, file] of [['optimiseVideoClipboard', '/a/clip.mp4'], ['optimisePDFClipboard', '/a/doc.pdf'], ['optimiseAudioClipboard', '/a/song.mp3'], ['optimiseImagePathClipboard', '/a/photo.png']] as const)
@@ -29,9 +29,9 @@ test('skips formats listed as never optimised automatically, under any of their 
 });
 test('a manual optimisation takes every media file; neither takes copy temporaries or other files', () => {
   const files = ['/a/scan.tiff', '/a/movie.mkv', '/work/temp/result.png', '/a/.clop-1234.tmp', '/a/notes.txt', '/a/archive.zip'];
-  assert.deepEqual(pick(files, { manual: true }), { files: ['/a/scan.tiff', '/a/movie.mkv', '/work/temp/result.png'], media: true });
-  assert.deepEqual(pick(files, { settings: all }), { files: [], media: true });
-  assert.deepEqual(pick(['/a/notes.txt', '/a/.clop-1.tmp']), { files: [], media: false });
+  assert.deepEqual(pick(files, { manual: true }), { files: ['/a/scan.tiff', '/a/movie.mkv', '/work/temp/result.png'], media: true, remote: [] });
+  assert.deepEqual(pick(files, { settings: all }), { files: [], media: true, remote: [] });
+  assert.deepEqual(pick(['/a/notes.txt', '/a/.clop-1.tmp']), { files: [], media: false, remote: [] });
   // Clop's own results are never optimised again automatically.
   assert.deepEqual(pick(['/work/temp/session/1/clip.mp4', '/a/clip.mp4'], { settings: all }).files, ['/a/clip.mp4']);
 });
@@ -124,7 +124,7 @@ test('a copied path that is re-read after the clipboard moved on is still optimi
 test('a manual optimisation reads image data, data URLs and links; an automatic one only image data', async () => {
   const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(8)]);
   assert.deepEqual(await clipboardIntake(undefined, true, memory(), sources({ snapshots: [change(1, { text: true })], text: `data:image/png;base64,${png.toString('base64')}` }).value), { type: 'image', bytes: png, ext: 'png', sequence: 1 });
-  assert.deepEqual(await clipboardIntake(undefined, true, memory(), sources({ snapshots: [change(1)], text: 'https://example.com/clip.mp4' }).value), { type: 'url', url: 'https://example.com/clip.mp4' });
+  assert.deepEqual(await clipboardIntake(undefined, true, memory(), sources({ snapshots: [change(1)], text: 'https://example.com/clip.mp4' }).value), { type: 'url', url: 'https://example.com/clip.mp4', sequence: 1 });
   assert.deepEqual(await clipboardIntake(undefined, false, memory(), sources({ snapshots: [change(1)], text: 'https://example.com/clip.mp4', settings: defaultSettings() }).value), { type: 'none' });
   const pixels = sources({ snapshots: [change(1, { bitmap: true, text: false })], image: png });
   assert.deepEqual(await clipboardIntake(undefined, false, memory(), pixels.value), { type: 'image', bytes: png, ext: 'png', sequence: 1 });
@@ -178,4 +178,28 @@ test('a long video in a copied list never holds up a later clipboard image', asy
   events.length = 0;
   await importClipboardList(['/a/scan.pdf'], steps);
   assert.deepEqual(events, ['loaded /a/scan.pdf', 'write id:scan.pdf']);
+});
+test('content marked private is never read, even on request', async () => {
+  const s = sources({ snapshots: [change(1, { transient: true, bitmap: true, paths: ['C:\\a\\clip.mp4'] })], text: 'C:\\a\\clip.mp4', files: ['C:\\a\\clip.mp4'] });
+  assert.deepEqual(await clipboardIntake(undefined, false, memory(), s.value), { type: 'none' });
+  assert.equal((await clipboardIntake(undefined, true, memory(), s.value)).type, 'none');
+  assert.match(((await clipboardIntake(undefined, true, memory(), s.value)) as { notice: string }).notice, /private/);
+  assert.deepEqual([s.calls.text, s.looked], [0, []]);
+});
+test('copying a file the settings leave alone lets the last optimised file be optimised again', async () => {
+  const remembered = { fingerprint: 'C:\\a\\photo.png', own: 'x' };
+  assert.deepEqual(await clipboardIntake(change(2, { paths: ['C:\\a\\clip.mp4'] }), false, remembered, sources({}).value), { type: 'none' });
+  assert.deepEqual(remembered, { sequence: 2, fingerprint: '', own: '' });
+  assert.deepEqual(await clipboardIntake(change(3, { paths: ['C:\\a\\photo.png'] }), false, remembered, sources({ settings: defaultSettings() }).value), { type: 'files', files: ['C:\\a\\photo.png'], sequence: 3 });
+});
+test('automatic optimisation takes copied files from drives only, mapped network drives included', async () => {
+  const files = ['\\\\nas\\photos\\a.png', 'Z:\\photos\\b.png', '\\\\?\\C:\\c.png'];
+  assert.deepEqual(clipboardFiles(files, { manual: false, bitmap: false, settings: defaultSettings(), owns: () => false, platform: 'win32' }), { files: ['Z:\\photos\\b.png'], media: true, remote: ['\\\\nas\\photos\\a.png', '\\\\?\\C:\\c.png'] });
+  assert.deepEqual(clipboardFiles(files, { manual: true, bitmap: false, settings: defaultSettings(), owns: () => false, platform: 'win32' }).files, files);
+  // A list holding only a share path is not looked at; the notice says how to optimise it.
+  const share = sources({ settings: defaultSettings() });
+  const plan = await clipboardIntake(change(1, { paths: ['\\\\nas\\photos\\a.png'] }), false, memory(), share.value);
+  assert.equal(plan.type, 'none');
+  assert.match((plan as { notice: string }).notice, /a\.png is on a network share.*Ctrl\+Shift\+C/);
+  assert.deepEqual(share.looked, []);
 });

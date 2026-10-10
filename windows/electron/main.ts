@@ -88,13 +88,14 @@ async function makeRoom() {
   const oldest = engine.list().at(-1);
   if (engine.list().length >= 40 && oldest) await dismiss(oldest.id);
 }
-async function importUrl(value: unknown, aggressive = false, source: ItemResult['source'] = 'drop') {
+/** Downloads and optimises a link. A copied link passes the clipboard sequence it was read at, so its result never overwrites a later copy. */
+async function importUrl(value: unknown, aggressive = false, source: ItemResult['source'] = 'drop', expectedSequence?: number) {
   if (typeof value !== 'string' || value.length > 8192) throw new Error('Drop an HTTP or HTTPS link.');
   const url = new URL(value);
   if (!['https:', 'http:'].includes(url.protocol)) throw new Error('Drop an HTTP or HTTPS link.');
   importsRunning++; dropActive = false;
   try {
-    const sequence = await currentSequence();
+    const sequence = expectedSequence ?? await currentSequence();
     const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
     if (!response.ok) throw new Error('Could not download this link. Copy the file instead.');
     if (Number(response.headers.get('content-length')) > 128 * 1024 * 1024) throw new Error('Use a file smaller than 128 MB.');
@@ -255,7 +256,7 @@ function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive 
       case 'none': if (plan.notice) inform(plan.notice); return;
       case 'files': return () => importClipboardFiles(plan.files, plan.sequence, aggressive, { text: plan.text });
       case 'image': return () => importClipboardImage(plan.bytes, `Clipboard-${stamp()}.${plan.ext}`, plan.sequence, aggressive);
-      case 'url': return () => importUrl(plan.url, aggressive, 'clipboard');
+      case 'url': return () => importUrl(plan.url, aggressive, 'clipboard', plan.sequence);
     }
   });
 }

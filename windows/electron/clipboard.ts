@@ -38,10 +38,13 @@ export function takesFile(kind: MediaKind, file: string, settings: ClipboardSett
  * per-type settings allow, and never Clop's own results. `media` says whether the list held any media file at all: then the
  * image data that apps put beside a file is not optimised on its own.
  */
-export function clipboardFiles(files: readonly string[], { manual, bitmap, settings, owns }: { manual: boolean; bitmap: boolean; settings: ClipboardSettings; owns: (file: string) => boolean }) {
+export function clipboardFiles(files: readonly string[], { manual, bitmap, settings, owns, platform = process.platform }: { manual: boolean; bitmap: boolean; settings: ClipboardSettings; owns: (file: string) => boolean; platform?: NodeJS.Platform }) {
   const media = files.filter(file => !TEMPORARY.test(path.basename(file)) && mediaKind(file));
-  const take = media.filter(file => manual || (!owns(file) && takesFile(mediaKind(file)!, file, settings, { bitmap })));
-  return { files: take, media: media.length > 0 };
+  const wanted = media.filter(file => manual || (!owns(file) && takesFile(mediaKind(file)!, file, settings, { bitmap })));
+  // Any app can put a network path in a file list, and following one makes Windows authenticate to that host, so automatic
+  // optimisation takes drive paths only, mapped network drives included. `remote` lists the rest for a notice.
+  const take = wanted.filter(file => manual || isLocalPath(file, platform));
+  return { files: take, media: media.length > 0, remote: wanted.filter(file => !take.includes(file)) };
 }
 
 export type ClipboardText = { type: 'path'; path: string } | { type: 'image'; bytes: Buffer; ext: string } | { type: 'url'; url: string };
@@ -149,7 +152,7 @@ export interface IntakeSources {
 export type ClipboardPlan =
   | { type: 'files'; files: string[]; sequence?: number; text?: boolean }
   | { type: 'image'; bytes: Buffer; ext: string; sequence?: number }
-  | { type: 'url'; url: string }
+  | { type: 'url'; url: string; sequence?: number }
   /** The clipboard changed while it was read; look at the newer change instead. */
   | { type: 'retry'; change: ClipboardSnapshot }
   | { type: 'none'; notice?: string };
@@ -165,12 +168,14 @@ export async function clipboardIntake(change: ClipboardSnapshot | undefined, man
   let snapshot = change;
   if (!snapshot) {
     snapshot = await sources.read();
-    if (!manual && (snapshot?.owned || snapshot?.transient)) return none;
+    // Content its app marked private, as password managers do, is never read, even on request.
+    if (snapshot?.transient) return manual ? { type: 'none', notice: 'The app that copied this marked it private, so Clop leaves it alone.' } : none;
+    if (!manual && snapshot?.owned) return none;
   }
   const sequence = snapshot?.sequence;
   if (!manual && sequence !== undefined && sequence === memory.sequence) return none;
   if (sequence !== undefined) memory.sequence = sequence;
-  const listed = clipboardFiles(snapshot?.paths ?? [], { manual, bitmap: !!snapshot?.bitmap, settings, owns });
+  const listed = clipboardFiles(snapshot?.paths ?? [], { manual, bitmap: !!snapshot?.bitmap, settings, owns, platform: sources.platform });
   if (listed.files.length) {
     if (!manual) {
       const hash = await sources.fingerprint(listed.files);
@@ -179,7 +184,11 @@ export async function clipboardIntake(change: ClipboardSnapshot | undefined, man
     }
     return { type: 'files', files: listed.files, sequence };
   }
-  if (listed.media && !manual) return none;
+  if (listed.media && !manual) {
+    // Another copy came between, so copying the last optimised file again optimises it again.
+    memory.fingerprint = ''; memory.own = '';
+    return listed.remote.length ? { type: 'none', notice: `${path.basename(listed.remote[0])} is on a network share. Clop only opens network paths when asked: press Ctrl+Shift+C to optimise it.` } : none;
+  }
   const bytes = !snapshot || snapshot.bitmap ? await sources.image() : Buffer.alloc(0);
   const text = !bytes.length && (!snapshot || snapshot.text) && (manual || pathSettings(settings)) ? parseClipboardText(await sources.text(), sources.platform, { manual }) : undefined;
   const file = text?.type === 'path' && textPathKind(text.path, { manual, settings, owns, platform: sources.platform }) && await sources.isFile(text.path) ? text.path : undefined;
@@ -207,7 +216,7 @@ export async function clipboardIntake(change: ClipboardSnapshot | undefined, man
     return { type: 'files', files: [file], sequence, text: true };
   }
   if (text?.type === 'image') return { type: 'image', bytes: text.bytes, ext: text.ext, sequence };
-  if (text?.type === 'url') return { type: 'url', url: text.url };
+  if (text?.type === 'url') return { type: 'url', url: text.url, sequence };
   return manual ? { type: 'none', notice: 'Copy an image, a video, a PDF or an audio file, or its path or link, then try again.' } : none;
 }
 
