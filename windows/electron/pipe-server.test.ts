@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { main } from '../cli/main';
 import type { IO } from '../cli/results';
-import { appPipe, AppNotRunning, sendMessage } from '../core/ipc/client';
-import { newPipePath, type ClientMessage, type ServerMessage } from '../core/ipc/protocol';
+import { appPipe, AppNotRunning, ForgedServer, sendMessage } from '../core/ipc/client';
+import { helloProof, newPipeKey, newPipePath, pipeInfoFile, type ClientMessage, type ServerMessage } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
 import { OptimisedMarker } from '../core/marker';
 import { graphic } from '../core/media/image.fixtures';
@@ -28,7 +28,7 @@ async function app(t: TestContext) {
   const service = new ClopService({ store, workdir, effects: new FakeEffects(), marker: new OptimisedMarker(path.join(userData, 'optimised.json')) });
   const received: ClientMessage['kind'][] = [];
   const server = await startPipeServer(newPipePath(), (message, emit) => { received.push(message.kind); return service.handle(message, emit); });
-  const withdraw = await publishPipe(userData, server.path);
+  const withdraw = await publishPipe(userData, server);
   t.after(async () => { withdraw(); await server.close(); });
   const out: string[] = [], err: string[] = [];
   const io: IO = { out: text => { out.push(text); }, err: text => { err.push(text); }, errTTY: false };
@@ -39,7 +39,7 @@ async function app(t: TestContext) {
 test('the CLI finds the running app and round-trips an optimise request over the pipe', async t => {
   if (!needTools(t, 'pngquant')) return;
   const a = await app(t);
-  assert.equal(await appPipe(a.userData), a.server.path);
+  assert.deepEqual(await appPipe(a.userData), { pipe: a.server.path, key: a.server.key });
   const input = path.join(a.dir, 'shot.png');
   await graphic(300, 200).png({ compressionLevel: 0 }).toFile(input);
   const before = (await stat(input)).size;
@@ -71,19 +71,43 @@ test('settings go through the app, which applies and saves them', async t => {
   assert.deepEqual(a.received, ['settings', 'settings', 'settings']);
 });
 
-test('a malformed request gets a failed answer, and nothing listening means the app is not running', async t => {
+test('a connection must greet first, a malformed request gets a failed answer, and nothing listening means no app', async t => {
   const a = await app(t);
-  const lines: string[] = [];
-  await new Promise<void>((resolve, reject) => {
-    const socket = net.connect(a.server.path, () => socket.write('{"kind":"exec","request":{}}\n'));
-    socket.on('data', chunk => lines.push(chunk.toString())).on('end', resolve).on('error', reject);
+  const exchange = (...lines: string[]) => new Promise<unknown[]>((resolve, reject) => {
+    const chunks: string[] = [];
+    const socket = net.connect(a.server.path, () => { for (const line of lines) socket.write(`${line}\n`); });
+    socket.on('data', chunk => chunks.push(chunk.toString())).on('end', () => resolve(chunks.join('').trim().split('\n').map(line => JSON.parse(line)))).on('error', reject);
   });
-  assert.deepEqual(lines.join('').trim().split('\n').map(line => JSON.parse(line)), [{ kind: 'failed', error: 'The message kind must be optimise, stop or settings.' }]);
-  const answers: ServerMessage[] = [];
-  await assert.rejects(sendMessage(newPipePath(), { kind: 'settings', request: { action: 'read' } }, message => answers.push(message)), AppNotRunning);
+  assert.deepEqual(await exchange('{"kind":"settings","request":{"action":"read"}}'), [{ kind: 'failed', error: 'The connection must start with a greeting.' }]);
+  const [hello, failed] = await exchange(JSON.stringify({ hello: 'n'.repeat(32) }), '{"kind":"exec","request":{}}');
+  assert.deepEqual(hello, { hello: helloProof(a.server.key, 'n'.repeat(32)) });
+  assert.deepEqual(failed, { kind: 'failed', error: 'The message kind must be optimise, stop or settings.' });
+  await assert.rejects(sendMessage({ pipe: newPipePath(), key: a.server.key }, { kind: 'settings', request: { action: 'read' } }), AppNotRunning);
   const empty: ServerMessage[] = [];
-  await sendMessage(a.server.path, { kind: 'optimise', request: { id: '1', urls: [], hideFloatingResult: true, copyToClipboard: false, aggressiveOptimisation: false, source: 'cli' } }, message => empty.push(message));
+  await sendMessage({ pipe: a.server.path, key: a.server.key }, { kind: 'optimise', request: { id: '1', urls: [], hideFloatingResult: true, copyToClipboard: false, aggressiveOptimisation: false, source: 'cli' } }, message => empty.push(message));
   assert.deepEqual(empty, [{ kind: 'done' }], 'the connection ends after the last answer');
+});
+
+test('a pipe that cannot prove it is the app gets no request, and the CLI runs headless', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-forged-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  // A squatter on the published name: it answers the greeting with a guess and records everything it is sent.
+  const heard: string[] = [];
+  const forged = net.createServer(socket => socket.on('data', chunk => {
+    heard.push(chunk.toString());
+    socket.write(`${JSON.stringify({ hello: helloProof(Buffer.alloc(32).toString('base64'), 'guess') })}\n`);
+  }));
+  const pipe = newPipePath();
+  await new Promise<void>(resolve => forged.listen(pipe, resolve));
+  t.after(() => new Promise<void>(resolve => forged.close(() => resolve())));
+  await writeFile(pipeInfoFile(dir), JSON.stringify({ pipe, pid: 1, key: newPipeKey() }));
+  await assert.rejects(sendMessage({ pipe, key: newPipeKey() }, { kind: 'settings', request: { action: 'read' } }), ForgedServer);
+  const out: string[] = [], err: string[] = [];
+  const code = await main(['settings', 'set', 'stripMetadata', 'false'], { io: { out: text => { out.push(text); }, err: text => { err.push(text); }, errTTY: false }, cwd: dir, options: { userData: dir, home: dir }, env: {}, colours: false });
+  assert.equal(code, 0, err.join(''));
+  assert.match(err.join(''), /answered by something that is not Clop, so nothing was sent to it\. Running here instead\./);
+  assert.equal(JSON.parse(await readFile(path.join(dir, 'settings.json'), 'utf8')).stripMetadata, false, 'the change went to the settings file');
+  assert.ok(heard.every(text => !text.includes('stripMetadata')), 'the squatter only ever saw greetings');
 });
 
 test('a CLI with no app published runs headless', async t => {

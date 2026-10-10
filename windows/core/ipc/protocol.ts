@@ -1,6 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { FileBehaviour, PlacementOverride } from '../placement';
 import { COMPRESSION_TIERS, type CompressionQuality, type CropSize } from '../settings/schema';
@@ -9,7 +10,8 @@ import { COMPRESSION_TIERS, type CompressionQuality, type CropSize } from '../se
 // types (Shared.swift `OptimisationRequest`, `OptimisationResponse`, `SettingsRequest`…) encoded the way Swift's
 // JSONEncoder writes them: nil optionals left out, URLs as absolute URL strings, sizes as `[width, height]`.
 // The transport is one named pipe (a Unix socket off Windows), newline-delimited JSON, one connection per request:
-// the client writes one `ClientMessage` line, the app answers with `ServerMessage` lines and closes the connection.
+// after the `hello` handshake below, the client writes one `ClientMessage` line, and the app answers with
+// `ServerMessage` lines and closes the connection.
 // macOS answers per-file results on a reply port the CLI names; here they come back on the request's own connection.
 
 export type { FileBehaviour, PlacementOverride, CompressionQuality, CropSize };
@@ -117,7 +119,7 @@ const int = (value: unknown, what: string) => Number.isInteger(value) ? value as
 const optional = <T>(value: unknown, parse: (value: unknown) => T): T | undefined => value === undefined || value === null ? undefined : parse(value);
 const oneOf = <T extends string>(values: readonly T[], value: unknown, what: string) => values.includes(value as T) ? value as T : fail(`${what} must be one of ${values.join(', ')}.`);
 /** Drops undefined values, as Swift leaves nil optionals out. */
-const compact = <T extends object>(value: T): T => Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
+export const compact = <T extends object>(value: T): T => Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
 
 const FILE_BEHAVIOURS: readonly FileBehaviour[] = ['temporary', 'inPlace', 'sameFolder', 'specificFolder'];
 
@@ -242,19 +244,24 @@ export function parseServerMessage(line: string): ServerMessage {
 
 export const encodeMessage = (message: ClientMessage | ServerMessage) => `${JSON.stringify(message)}\n`;
 
-/** Splits a byte stream into lines, refusing a line longer than `MAX_MESSAGE_BYTES`. */
+/** Splits a UTF-8 byte stream into lines, refusing a line longer than `limit` bytes. Characters split across chunks are joined first. */
 export class LineReader {
   private buffer = '';
+  private bytes = 0;
+  private readonly decoder = new StringDecoder('utf8');
   constructor(private readonly onLine: (line: string) => void, private readonly limit = MAX_MESSAGE_BYTES) {}
   push(chunk: Buffer | string) {
-    this.buffer += chunk.toString();
+    const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+    this.buffer += this.decoder.write(bytes);
+    this.bytes += bytes.length;
     let index: number;
     while ((index = this.buffer.indexOf('\n')) >= 0) {
       const line = this.buffer.slice(0, index).replace(/\r$/, '');
       this.buffer = this.buffer.slice(index + 1);
+      this.bytes = Buffer.byteLength(this.buffer);
       if (line.trim()) this.onLine(line);
     }
-    if (this.buffer.length > this.limit) { this.buffer = ''; throw new ProtocolError('The message is too long.'); }
+    if (this.bytes > this.limit) { this.buffer = ''; this.bytes = 0; throw new ProtocolError('The message is too long.'); }
   }
 }
 
@@ -264,12 +271,32 @@ export const fileURL = (file: string) => pathToFileURL(path.resolve(file)).href;
 /** The local path of a `file:` URL, or undefined for a download. */
 export const urlPath = (url: string) => url.startsWith('file:') ? fileURLToPath(url) : undefined;
 
-// Where the app listens. A random name, published in a file only the user can read, means another user can neither
-// guess the pipe to squat it nor find it to talk to it; Node cannot read the Windows session id to name it after.
+// Where the app listens. Each start picks a random pipe name and a random key and writes both to `ipc.json` in the
+// user's app data folder, which only the user (and administrators) can read. Pipe names can be listed by anyone, so the
+// name alone proves nothing: before sending a request, a client sends a nonce and the app answers with an HMAC of it
+// under the key (`hello`). A pipe someone else created under a stale name cannot answer, and gets no request.
 
-export interface PipeInfo { pipe: string; pid: number }
+export interface PipeInfo { pipe: string; pid: number; key: string }
+/** What a client needs to reach the app: the pipe and the key that proves the app is behind it. */
+export interface PipeEndpoint { pipe: string; key: string }
 export const pipeInfoFile = (userData: string) => path.join(userData, 'ipc.json');
 export function newPipePath(platform: NodeJS.Platform = process.platform): string {
   const id = randomUUID().replaceAll('-', '');
   return platform === 'win32' ? `\\\\.\\pipe\\clop-${id}` : path.join(os.tmpdir(), `clop-${id.slice(0, 16)}.sock`);
+}
+export const newPipeKey = () => randomBytes(32).toString('base64');
+/** The first line on every connection, from the client; the app answers with `{ hello: proof }` before reading the request. */
+export interface Hello { hello: string }
+export const helloProof = (key: string, nonce: string) => createHmac('sha256', Buffer.from(key, 'base64')).update(nonce).digest('base64');
+/** Checks the app's answer to `nonce` in constant time. */
+export function validProof(key: string, nonce: string, proof: unknown): boolean {
+  if (typeof proof !== 'string') return false;
+  const expected = Buffer.from(helloProof(key, nonce)), given = Buffer.from(proof);
+  return expected.length === given.length && timingSafeEqual(expected, given);
+}
+export function parseHello(line: string): string {
+  let value: unknown;
+  try { value = JSON.parse(line); } catch { return fail('The greeting is not JSON.'); }
+  const hello = record(value, 'The greeting').hello;
+  return typeof hello === 'string' && hello.length >= 16 && hello.length <= 256 ? hello : fail('The connection must start with a greeting.');
 }

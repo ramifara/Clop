@@ -1,8 +1,7 @@
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { appPipe, postMessage, sendMessage } from '../core/ipc/client';
-import type { OptimisationRequest, ServerMessage, SettingsRequest, SettingsResponse, StopOptimisationRequest } from '../core/ipc/protocol';
+import { appAnswers, appPipe, ForgedServer, postMessage, sendMessage } from '../core/ipc/client';
+import type { OptimisationRequest, PipeEndpoint, ServerMessage, SettingsRequest, SettingsResponse, StopOptimisationRequest } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
 import { handleSettingsRequest } from '../core/ipc/settings';
 import { OptimisedMarker } from '../core/marker';
@@ -35,18 +34,9 @@ export function backendOptions(env: NodeJS.ProcessEnv = process.env): BackendOpt
   return { userData: env.CLOP_USER_DATA || paths.userData, home: os.homedir() };
 }
 
-/** Whether something accepts connections on `pipe`. Connecting without writing a line asks the app for nothing. */
-const listening = (pipe: string) => new Promise<boolean>(resolve => {
-  const socket = net.connect(pipe);
-  const done = (value: boolean) => { clearTimeout(timer); socket.destroy(); resolve(value); };
-  const timer = setTimeout(() => done(false), 2000);
-  socket.once('connect', () => done(true));
-  socket.once('error', () => done(false));
-});
-
 class AppBackend implements Backend {
   readonly app = true;
-  constructor(private readonly pipe: string) {}
+  constructor(private readonly pipe: PipeEndpoint) {}
   optimise(request: OptimisationRequest, onMessage: (message: ServerMessage) => void) { return sendMessage(this.pipe, { kind: 'optimise', request }, onMessage); }
   queue(request: OptimisationRequest) { return postMessage(this.pipe, { kind: 'optimise', request }); }
   stop(request: StopOptimisationRequest) { return sendMessage(this.pipe, { kind: 'stop', request }); }
@@ -91,9 +81,17 @@ class HeadlessBackend implements Backend {
   async settings(request: SettingsRequest) { return handleSettingsRequest(request, await this.loadStore()); }
 }
 
-/** The running app's backend when it answers, otherwise this process's own. */
-export async function connectBackend(options: BackendOptions): Promise<Backend> {
-  const pipe = await appPipe(options.userData);
-  if (pipe && await listening(pipe)) return new AppBackend(pipe);
+/**
+ * The running app's backend when it answers and proves it is the app, otherwise this process's own. A published pipe
+ * that answers without proof (a stale name someone else took) gets nothing; `warn` says so and the work runs here.
+ */
+export async function connectBackend(options: BackendOptions, warn: (text: string) => void = () => {}): Promise<Backend> {
+  const endpoint = await appPipe(options.userData);
+  if (endpoint) {
+    try { if (await appAnswers(endpoint)) return new AppBackend(endpoint); } catch (error) {
+      if (!(error instanceof ForgedServer)) throw error;
+      warn(`${error.message} Running here instead.\n`);
+    }
+  }
   return new HeadlessBackend(options);
 }

@@ -52,8 +52,8 @@ export async function main(argv: readonly string[], overrides: MainOptions = {})
   const onSignal = () => { void (interrupt?.() ?? Promise.resolve()).catch(() => {}).finally(() => process.exit(130)); };
   const ctx: Context = {
     io, cwd: overrides.cwd ?? process.cwd(), home: overrides.home ?? options.home ?? os.homedir(), options, argv, origin: env.CLOP_ORIGIN || undefined,
-    backend: () => backend ??= (overrides.backend?.() ?? connectBackend(options)),
-    detach: args => { spawn(process.execPath, [...process.execArgv, process.argv[1], ...args], { detached: true, stdio: 'ignore', env, windowsHide: true }).unref(); },
+    backend: () => backend ??= (overrides.backend?.() ?? connectBackend(options, text => io.err(text))),
+    detach: args => { spawn(process.execPath, [...process.execArgv, process.argv[1], ...args], { detached: true, stdio: 'ignore', env: { ...env, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}) }, windowsHide: true }).unref(); },
     onInterrupt: handler => {
       interrupt = handler;
       if (handler) process.on('SIGINT', onSignal).on('SIGTERM', onSignal); else process.off('SIGINT', onSignal).off('SIGTERM', onSignal);

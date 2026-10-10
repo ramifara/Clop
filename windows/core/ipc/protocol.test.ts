@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURL, LineReader, newPipePath, parseClientMessage, parseOptimisationRequest, parseServerMessage, urlPath } from './protocol';
+import { fileURL, helloProof, LineReader, newPipeKey, newPipePath, parseClientMessage, parseHello, parseOptimisationRequest, parseServerMessage, urlPath, validProof } from './protocol';
 
 const request = { id: '1234', urls: ['file:///tmp/a.png', 'https://example.com/b.jpg'], hideFloatingResult: true, copyToClipboard: false, aggressiveOptimisation: false, source: 'cli' };
 
@@ -54,6 +54,14 @@ test('lines split across chunks are joined, and an endless line is refused', () 
   assert.throws(() => reader.push('x'.repeat(32)), /too long/);
 });
 
+test('a character split across chunks is joined, and the limit counts bytes', () => {
+  const lines: string[] = [], reader = new LineReader(line => lines.push(line), 8);
+  const bytes = Buffer.from('é→\n');
+  reader.push(bytes.subarray(0, 1)); reader.push(bytes.subarray(1, 3)); reader.push(bytes.subarray(3));
+  assert.deepEqual(lines, ['é→']);
+  assert.throws(() => reader.push(Buffer.from('ééééé')), /too long/, 'five characters, ten bytes');
+});
+
 test('paths travel as file URLs and come back as the same path', () => {
   const file = path.resolve('some folder', 'é.png');
   assert.match(fileURL(file), /^file:\/\//);
@@ -65,4 +73,15 @@ test('pipe names are random and per platform', () => {
   assert.match(newPipePath('win32'), /^\\\\\.\\pipe\\clop-[0-9a-f]{32}$/);
   assert.notEqual(newPipePath('linux'), newPipePath('linux'));
   assert.match(newPipePath('linux'), /clop-[0-9a-f]{16}\.sock$/);
+});
+
+test('the greeting proof needs the key, and a greeting must come first', () => {
+  const key = newPipeKey(), nonce = 'abcdefghijklmnopqrstuvwx';
+  assert.equal(validProof(key, nonce, helloProof(key, nonce)), true);
+  assert.equal(validProof(newPipeKey(), nonce, helloProof(key, nonce)), false);
+  assert.equal(validProof(key, 'another nonce entirely!!', helloProof(key, nonce)), false);
+  assert.equal(validProof(key, nonce, undefined), false);
+  assert.equal(parseHello(JSON.stringify({ hello: nonce })), nonce);
+  assert.throws(() => parseHello('{"kind":"settings"}'), /must start with a greeting/);
+  assert.throws(() => parseHello(JSON.stringify({ hello: 'short' })), /must start with a greeting/);
 });

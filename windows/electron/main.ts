@@ -62,7 +62,7 @@ const intake = new ClipboardIntake(error => inform(message(error)));
 const pickup = new ClipboardPickup(change => { void optimiseClipboard(change); });
 let clipboardWrites: Promise<void> = Promise.resolve();
 const bridge = new WindowsBridge();
-let pipe: PipeServer | undefined, withdrawPipe: (() => void) | undefined, cliInstalled = false;
+let pipe: PipeServer | undefined, withdrawPipe: (() => void) | undefined, cliInstalled = false, askingMCP = false;
 const devUrl = process.env.CLOP_DEV_URL;
 const fingerprint = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 /** Files are recognised by path, size and modification time: hashing a large video's bytes on every copy would take too long. */
@@ -453,14 +453,18 @@ async function serveCLI(userData: string) {
     workdir, effects, copyFiles: files => effects.copyFiles(files), home: app.getPath('home'), withCard: optimiseWithCard,
   });
   pipe = await startPipeServer(newPipePath(), (request, emit) => { console.log(`CLI request: ${request.kind}`); return service.handle(request, emit); });
-  withdrawPipe = await publishPipe(userData, pipe.path);
+  withdrawPipe = await publishPipe(userData, pipe);
 }
 /** `clop://settings/…` opens Settings (tabs arrive with the settings window) and `clop://mcp/start|stop` flips the MCP switch; start asks first. */
 async function openClopURL(link: ClopURL) {
   if (link.kind === 'settings') { console.log(`Settings link: ${link.tab ?? 'general'}${link.row ? ` / ${link.row}` : ''}`); main.show(); main.focus(); return; }
   if (link.action === 'stop') return updateSettings({ mcpEnabled: false });
-  if (settings.mcpEnabled) return;
-  const { response } = await dialog.showMessageBox({ type: 'question', buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1, title: 'Clop', message: 'Let AI agents change files and settings through Clop?', detail: 'An agent asked to use Clop through its MCP server. You can turn this off again in Clop settings.' });
+  // Repeated start links while the question is open ask nothing more.
+  if (settings.mcpEnabled || askingMCP) return;
+  askingMCP = true;
+  let response: number;
+  try { ({ response } = await dialog.showMessageBox({ type: 'question', buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1, title: 'Clop', message: 'Let AI agents change files and settings through Clop?', detail: 'An agent asked to use Clop through its MCP server. You can turn this off again in Clop settings.' })); }
+  finally { askingMCP = false; }
   if (response === 0) await updateSettings({ mcpEnabled: true });
 }
 function toggleCLI() {
@@ -639,7 +643,9 @@ else {
     } else startClipboardFallback();
     // Requests can change settings, which updates the tray and the windows, so the pipe opens once they exist.
     await serveCLI(userData).catch(error => inform(`The clop command cannot reach Clop: ${message(error)}`));
-    if (app.isPackaged && process.platform === 'win32') app.setAsDefaultProtocolClient('clop', process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath);
+    // An installed copy owns clop:// links; a portable copy only takes them when nothing else has.
+    const exe = process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath;
+    if (app.isPackaged && process.platform === 'win32' && (!isPortable() || !app.getApplicationNameForProtocol('clop://') || app.isDefaultProtocolClient('clop', exe))) app.setAsDefaultProtocolClient('clop', exe);
     if (isPortable() && (cliInstalled = await portableCLIInstalled())) { updateTray(); void refreshPortableCLI(process.resourcesPath, path.dirname(process.execPath)).catch(error => inform(message(error))); }
     for (const link of clopURLs(process.argv.slice(1))) void openClopURL(link).catch(error => inform(message(error)));
     const files = process.argv.slice(1).filter(arg => path.isAbsolute(arg) && mediaKind(arg));
