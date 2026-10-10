@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { DEFAULT_CROP_SIZES } from '../data/cropSizes';
 import { defaultPaths, portablePath, type DefaultPaths } from './paths';
 
 // Every key from Clop/Settings.swift keeps its macOS name, so `clop settings get/set` and the MCP
@@ -68,7 +69,6 @@ export interface CropSize { width: number; height: number; name: string; longEdg
 const isCropSize = (v: unknown) => isRecord(v) && Number.isInteger(v.width) && Number.isInteger(v.height) && typeof v.name === 'string' && typeof v.longEdge === 'boolean' && typeof v.smartCrop === 'boolean'
   && (v.isAspectRatio === undefined || typeof v.isAspectRatio === 'boolean')
   && (v.cropRect === undefined || (isRecord(v.cropRect) && ['x', 'y', 'width', 'height'].every(k => Number.isFinite((v.cropRect as Record<string, unknown>)[k]))));
-const crop = (width: number, height: number, name: string): CropSize => ({ width, height, name, longEdge: false, smartCrop: false });
 
 const FLOATING_ACTIONS = ['downscale', 'compression', 'crop', 'share', 'restoreOptimise', 'aggressiveOptimisation', 'copyToClipboard', 'showInFinder', 'quickLook', 'saveAs', 'addToShelf', 'sendSecurely', 'targetSize'];
 const actions = (value: string[], description: string) => list(value, `${description} Built-in action names, or \`pipeline:image=<id>;video=<id>\`. macOS: \`[FloatingAction]\`.`, { item: new RegExp(`^(${FLOATING_ACTIONS.join('|')}|pipeline:.+)$`) });
@@ -240,7 +240,7 @@ export const settingsSchema = {
   keyComboModifiers: list(['Control', 'Shift'], 'Modifiers held with an action key for global shortcuts. macOS: `[TriggerKey]`.', { values: KEY_MODIFIERS, unique: true, encoding: 'Electron accelerator modifiers; macOS stores left/right TriggerKeys.' }),
   quickResizeKeys: shortcutKeys([], 'Number keys that downscale the latest result.'),
   enabledKeys: shortcutKeys(['-', '=', 'Backspace', 'Space', 'Z', 'P', 'C', 'A', 'X', 'R', 'K', 'Escape'], 'Action keys with a global shortcut.'),
-  savedCropSizes: json<CropSize[]>([crop(1920, 1080, '1080p'), crop(1280, 720, '720p'), crop(1440, 900, 'Mac App Store'), crop(1200, 630, 'OpenGraph'), crop(1600, 900, 'Twitter'), crop(128, 128, 'Small Square'), crop(512, 512, 'Medium Square'), crop(1024, 1024, 'Large Square')], 'Saved crop sizes. macOS: `[CropSize]`.', v => Array.isArray(v) && v.every(isCropSize)),
+  savedCropSizes: json<CropSize[]>([...DEFAULT_CROP_SIZES], 'Saved crop sizes. macOS: `[CropSize]`.', v => Array.isArray(v) && v.every(isCropSize)),
   pauseAutomaticOptimisations: bool(false, 'Pause clipboard and watched-folder optimisation.'),
   presetZones: json<unknown[]>([], 'Preset drop zones, each running a pipeline. macOS: `[PresetZone]`.', v => Array.isArray(v) && v.every(isRecord)),
   syncSettingsCloud: bool(true, 'Sync settings through iCloud.', UNSUPPORTED),
