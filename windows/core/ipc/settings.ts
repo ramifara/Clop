@@ -11,6 +11,41 @@ export interface SettingsAccess { get(): ClopSettings; set(partial: unknown): Pr
 
 /** Switches only the user may flip: an agent that could turn them on would need no permission at all. */
 const USER_ONLY: readonly SettingKey[] = ['mcpEnabled', 'mcpAllowScriptSteps'];
+/**
+ * What an agent may change with `set`: the keys of the macOS bridge's registry (`MCPSettingsBridge.keys` in
+ * Clop/MCPSettings.swift) that Windows uses, plus the Windows-only display switches. macOS also lets an agent write
+ * `mcpAllowScriptSteps`; here it is the user's alone, since it is the very permission script steps need.
+ */
+export const MCP_WRITABLE: ReadonlySet<SettingKey> = new Set<SettingKey>([
+  'optimisedImageBehaviour', 'optimisedVideoBehaviour', 'optimisedAudioBehaviour', 'optimisedPDFBehaviour', 'convertedImageBehaviour', 'convertedVideoBehaviour', 'convertedAudioBehaviour',
+  'manualConvertedImageBehaviour', 'manualConvertedVideoBehaviour', 'manualConvertedAudioBehaviour', 'stripMetadata', 'preserveColorMetadata', 'preserveDates', 'optimisedFileProtectionMs',
+  'enableClipboardOptimiser', 'optimiseTIFF', 'optimiseHEICAVIFClipboard', 'optimiseImagePathClipboard', 'optimiseVideoClipboard', 'optimiseAudioClipboard', 'optimisePDFClipboard',
+  'appendClipboardResults', 'copyConsecutiveClipboardImages', 'clipboardAccumulationTimeout', 'removeAudioFromVideos', 'capVideoFPS', 'convertAudioToAAC', 'playbackSpeedFrameBehaviour',
+  'copyImageFilePath', 'useCustomNameTemplateForClipboardImages', 'customNameTemplateForClipboardImages', 'gifFrameDropBehaviour', 'convertHDRToSDR', 'audioCoverArt', 'enableDragAndDrop',
+  'onlyShowDropZoneOnOption', 'autoCopyToClipboard', 'useBatchModeForFolders', 'batchModeFileCountThreshold', 'onlyShowPresetZonesOnControlTapped', 'enableFloatingResults', 'followCursorScreen',
+  'hideFloatingResultTooltips', 'alwaysShowCompactResults', 'showCopyClearButtons', 'dismissFloatingResultOnDrop', 'dismissFloatingResultOnUpload', 'autoHideFloatingResults',
+  'autoHideFloatingResultsAfter', 'autoHideClipboardResultAfter', 'showCompactImages', 'dismissCompactResultOnDrop', 'dismissCompactResultOnUpload', 'autoClearAllCompactResultsAfter',
+  'formatPickerStyle', 'floatingResultsCorner', 'enableAutomaticVideoOptimisations', 'minVideoSizeKB', 'maxVideoSizeMB', 'minVideoResolution', 'maxVideoResolution', 'maxVideoFileCount',
+  'sameFolderNameTemplateVideo', 'specificFolderNameTemplateVideo', 'convertedSameFolderNameTemplateVideo', 'convertedSpecificFolderNameTemplateVideo', 'videoCompression', 'targetVideoFPS',
+  'minVideoFPS', 'videoFormatsToSkip', 'formatsToConvertToMP4', 'enableAutomaticImageOptimisations', 'minImageSizeKB', 'maxImageSizeMB', 'minImageResolution', 'maxImageResolution',
+  'maxImageFileCount', 'sameFolderNameTemplateImage', 'specificFolderNameTemplateImage', 'convertedSameFolderNameTemplateImage', 'convertedSpecificFolderNameTemplateImage', 'imageCompression',
+  'imageFormatsToSkip', 'formatsToConvertToJPEG', 'formatsToConvertToPNG', 'enableAutomaticAudioOptimisations', 'minAudioSizeKB', 'maxAudioSizeMB', 'maxAudioFileCount',
+  'sameFolderNameTemplateAudio', 'specificFolderNameTemplateAudio', 'convertedSameFolderNameTemplateAudio', 'convertedSpecificFolderNameTemplateAudio', 'audioCompression', 'formatsToConvertToAAC',
+  'formatsToConvertToMP3', 'enableAutomaticPDFOptimisations', 'pdfDPI', 'minPDFSizeKB', 'maxPDFSizeMB', 'maxPDFFileCount', 'sameFolderNameTemplatePDF', 'specificFolderNameTemplatePDF', 'workdir',
+  'showMenubarIcon', 'allowClopToAppearInScreenshots', 'pauseAutomaticOptimisations', 'floatingResultActions', 'compactResultActions',
+  // Windows only.
+  'keepDropZoneVisible', 'floatingResultsAlwaysOnTop', 'launchAtLogin', 'defaultImageFormat', 'persistDebugLogs',
+]);
+/** Programs Clop starts ("Edit with"). On macOS they are writable like any setting; an exe path runs anything, so here an agent needs the script permission for them. */
+const PROGRAM_KEYS: readonly SettingKey[] = ['editorAppImage', 'editorAppVideo', 'editorAppPDF', 'editorAppAudio'];
+/** What `clop pipeline add|attach|detach|preset` write. An agent may change these only through `update`, after its pipelines are checked for script steps. */
+const LIBRARY_KEYS: readonly SettingKey[] = [
+  'savedPipelines', 'presetZones', 'pipelinesToRunOnImage', 'pipelinesToRunOnVideo', 'pipelinesToRunOnPdf', 'pipelinesToRunOnAudio',
+  'imageDirs', 'videoDirs', 'pdfDirs', 'audioDirs', 'enableAutomaticImageOptimisations', 'enableAutomaticVideoOptimisations', 'enableAutomaticPDFOptimisations', 'enableAutomaticAudioOptimisations',
+];
+/** Steps that run code: `runScript`, and `runShortcut`, which on Windows runs a script or program of that name. */
+const SCRIPT_STEP = /\brun(Script|Shortcut)\b/;
+const scriptRefusal = (step: string) => `Clop is not accepting script steps from agents, and this pipeline has a ${step} step. Use a built-in step if one can do the job, or ask the user to allow script steps in Clop Settings, MCP.`;
 const spec = (key: SettingKey) => settingsSchema[key] as SettingSpec;
 const isCompression = (key: SettingKey) => spec(key).type === 'object' && isDeepStrictEqual(Object.keys(spec(key).default as object).sort(), ['factor', 'tier']);
 /** Keys `clop settings` shows: everything Windows uses. */
@@ -108,8 +143,44 @@ const isKey = (key: string | undefined): key is SettingKey => !!key && Object.ha
 export function mcpRefusal(origin: string | undefined, pipeline: string | undefined, settings: Pick<ClopSettings, 'mcpEnabled' | 'mcpAllowScriptSteps'>): string | undefined {
   if (origin !== 'mcp') return undefined;
   if (!settings.mcpEnabled) return 'Clop is not accepting changes from agents. Ask the user to allow it in Clop Settings, MCP.';
-  if (!pipeline || settings.mcpAllowScriptSteps || !pipeline.includes('runScript')) return undefined;
-  return 'Clop is not accepting script steps from agents, and this pipeline has a runScript step. Use a built-in step if one can do the job, or ask the user to allow script steps in Clop Settings, MCP.';
+  const step = pipeline && !settings.mcpAllowScriptSteps ? SCRIPT_STEP.exec(pipeline)?.[0] : undefined;
+  return step ? scriptRefusal(step) : undefined;
+}
+
+/** Every pipeline a stored library value holds: saved pipelines, preset zones' pipelines and attached pipelines. */
+const storedPipelines = (key: SettingKey, value: unknown): unknown[] => {
+  if (key === 'presetZones') return Array.isArray(value) ? value.map(zone => (zone as { pipeline?: unknown })?.pipeline ?? zone) : [];
+  if (key.startsWith('pipelinesToRunOn')) return value && typeof value === 'object' ? Object.values(value).flat() : [];
+  return key === 'savedPipelines' && Array.isArray(value) ? value : [];
+};
+
+/**
+ * An agent's library write: refused when a pipeline it adds (or a saved pipeline a new reference points at) has a script
+ * step and the user has not allowed those. Pipelines already stored are the user's own and are not judged.
+ */
+function libraryRefusal(values: Record<string, unknown>, settings: ClopSettings): string | undefined {
+  if (settings.mcpAllowScriptSteps) return undefined;
+  const json = (value: unknown) => JSON.stringify(value) ?? '';
+  const saved = [...storedPipelines('savedPipelines', values.savedPipelines ?? settings.savedPipelines)];
+  for (const key of LIBRARY_KEYS) {
+    if (!(key in values)) continue;
+    const before = new Set(storedPipelines(key, settings[key]).map(json));
+    for (const added of storedPipelines(key, values[key]).filter(entry => !before.has(json(entry)))) {
+      const id = (added as { libraryID?: unknown })?.libraryID;
+      const target = id === undefined ? undefined : saved.find(entry => (entry as { id?: unknown })?.id === id);
+      const step = SCRIPT_STEP.exec(json(added))?.[0] ?? SCRIPT_STEP.exec(json(target))?.[0];
+      if (step) return scriptRefusal(step);
+    }
+  }
+  return undefined;
+}
+
+/** Why an agent may not write `key`, or undefined when it may. */
+function keyRefusal(key: SettingKey, settings: ClopSettings, viaLibrary: boolean): string | undefined {
+  if (USER_ONLY.includes(key)) return `${key} can only be changed by the user, in Clop Settings.`;
+  if (PROGRAM_KEYS.includes(key)) return settings.mcpAllowScriptSteps ? undefined : `${key} names a program for Clop to start, which agents may only change when the user allows script steps in Clop Settings, MCP.`;
+  if (MCP_WRITABLE.has(key) || (viaLibrary && LIBRARY_KEYS.includes(key))) return undefined;
+  return `${key} cannot be changed by agents.`;
 }
 
 /** Answers a `SettingsRequest` (`MCPSettingsBridge.handle`), enforcing the MCP gate on writes. */
@@ -130,7 +201,8 @@ export async function handleSettingsRequest(req: SettingsRequest, store: Setting
     case 'set': {
       if (!req.key || req.value === undefined) return { ok: false, error: 'set needs a key and a value' };
       if (!isKey(req.key)) return { ok: false, error: `no setting named '${req.key}'. Call the schema tool to see every key.` };
-      if (req.origin === 'mcp' && USER_ONLY.includes(req.key)) return { ok: false, error: `${req.key} can only be changed by the user, in Clop Settings.` };
+      const refused = req.origin === 'mcp' ? keyRefusal(req.key, settings, false) : undefined;
+      if (refused) return { ok: false, error: refused };
       const parsed = parseSettingValue(req.key, req.value, settings);
       if ('error' in parsed) return { ok: false, error: parsed.error };
       const next = await store.set({ [req.key]: parsed.value });
@@ -140,9 +212,13 @@ export async function handleSettingsRequest(req: SettingsRequest, store: Setting
       const values = req.values ?? {};
       for (const [key, value] of Object.entries(values)) {
         if (!isKey(key)) return { ok: false, error: `no setting named '${key}'.` };
-        if (req.origin === 'mcp' && USER_ONLY.includes(key)) return { ok: false, error: `${key} can only be changed by the user, in Clop Settings.` };
+        const refused = req.origin === 'mcp' ? keyRefusal(key, settings, true) : undefined;
+        if (refused) return { ok: false, error: refused };
         if (spec(key).parse(value) === undefined) return { ok: false, error: `${key} does not accept that value.` };
       }
+      // The payload itself is checked: the `pipeline` text an agent sends alongside proves nothing.
+      const refusal = req.origin === 'mcp' ? libraryRefusal(values, settings) : undefined;
+      if (refusal) return { ok: false, error: refusal };
       await store.set(values);
       return { ok: true };
     }

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { defaultSettings, settingsSchema, type ClopSettings } from '../settings/schema';
-import { formatSettingValue, handleSettingsRequest, matchSettings, mcpRefusal, parseSettingValue, VISIBLE_KEYS, type SettingsAccess } from './settings';
+import { parseSteps } from '../pipeline/parser';
+import type { SettingsRequest } from './protocol';
+import { formatSettingValue, handleSettingsRequest, matchSettings, MCP_WRITABLE, mcpRefusal, parseSettingValue, VISIBLE_KEYS, type SettingsAccess } from './settings';
 
 function memoryStore(values: Partial<ClopSettings> = {}): SettingsAccess & { current: ClopSettings } {
   const store = {
@@ -81,4 +83,31 @@ test('update writes stored values after checking every one', async () => {
   assert.equal(store.current.pdfDPI, 150);
   const read = await handleSettingsRequest({ action: 'read' }, store);
   assert.equal(read.values?.stripMetadata, false);
+});
+
+test('agents write only the keys the macOS bridge lists, and never plant script steps through the library', async () => {
+  const store = memoryStore({ mcpEnabled: true });
+  const mcp = (req: Omit<SettingsRequest, 'origin'>) => handleSettingsRequest({ ...req, origin: 'mcp' }, store);
+  assert.match((await mcp({ action: 'set', key: 'savedPipelines', value: '[]' })).error!, /cannot be changed by agents/);
+  assert.match((await mcp({ action: 'set', key: 'lastAutoIncrementingNumber', value: '5' })).error!, /cannot be changed by agents/);
+  assert.match((await mcp({ action: 'set', key: 'editorAppImage', value: 'C:\\evil.exe' })).error!, /names a program/);
+  assert.equal((await mcp({ action: 'set', key: 'imageCompression', value: '70' })).ok, true);
+  assert.equal(MCP_WRITABLE.has('mcpAllowScriptSteps'), false);
+
+  const pipeline = (id: string, text: string) => ({ id, name: id, steps: parseSteps(text), skipOptimisation: true, hideResult: false });
+  const userScript = pipeline('USER', 'runScript(code: "echo mine")');
+  store.current.savedPipelines = [userScript];
+  // The pipeline text the client sends along is not trusted; the payload is what counts.
+  for (const text of ['runScript(code: "calc")', 'runShortcut(name: "evil")']) {
+    const refused = await mcp({ action: 'update', values: { savedPipelines: [userScript, pipeline('NEW', text)] }, pipeline: 'optimise' });
+    assert.match(refused.error!, /not accepting script steps from agents/, text);
+  }
+  assert.match((await mcp({ action: 'update', values: { pipelinesToRunOnImage: { clipboard: [{ id: 'REF', steps: [], skipOptimisation: false, hideResult: false, libraryID: 'USER' }] } } })).error!, /runScript step/, 'a reference to a script pipeline is a script');
+  assert.match((await mcp({ action: 'update', values: { presetZones: [{ id: 'z-all', icon: 'x', name: 'z', pipeline: pipeline('Z', 'runShortcut(name: "x")') }] } })).error!, /runShortcut step/);
+  assert.equal((await mcp({ action: 'update', values: { savedPipelines: [userScript, pipeline('SAFE', 'convert(to: webp)')] } })).ok, true, 'the user\'s own script pipeline does not block an agent\'s plain one');
+  assert.match((await mcp({ action: 'update', values: { workdirCleanupInterval: 600 } })).error!, /cannot be changed by agents/);
+  assert.match((await mcp({ action: 'gate', pipeline: 'runShortcut(name: "x")' })).error!, /runShortcut step/);
+  store.current.mcpAllowScriptSteps = true;
+  assert.equal((await mcp({ action: 'update', values: { savedPipelines: [userScript, pipeline('NEW', 'runScript(code: "calc")')] } })).ok, true);
+  assert.equal((await mcp({ action: 'set', key: 'editorAppImage', value: 'C:\\editor.exe' })).ok, true);
 });
