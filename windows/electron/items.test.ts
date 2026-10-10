@@ -12,6 +12,7 @@ import { coverImage, tone } from '../core/media/audio.fixtures';
 import { photoPDF } from '../core/media/pdf.fixtures';
 import { ItemEngine, sampleImage } from './items';
 import { placeholder } from './thumbnails';
+import { replacedClipboardImages, serial } from './clipboard';
 const balanced = { mode: 'balanced', format: 'auto', scale: 1 } as const;
 async function fixture(t: TestContext) {
   if (!needTools(t, 'jpegoptim', 'pngquant', 'gifsicle', 'ffmpeg', 'exiftool')) return;
@@ -251,6 +252,20 @@ test('names downloads without a matching extension by their content', async t =>
   assert.deepEqual([engine.get(pdf).result.kind, engine.get(pdf).result.format, path.basename(engine.output(pdf))], ['pdf', 'pdf', 'view.pdf']);
   await engine.restore(pdf);
   assert.equal(path.extname(engine.output(pdf)), '.pdf');
+});
+test('overlapping clipboard images each finish before the next replaces its card', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine } = f, turn = serial(), settings = { ...defaultSettings(), appendClipboardResults: false };
+  const image = (colour: string) => sharp({ create: { width: 96, height: 64, channels: 3, background: colour } }).png().toBuffer();
+  // As main.ts handles each copied image: replace the earlier cards, then import, in one turn. Two dismissals of one card must not clash.
+  const copy = (bytes: Buffer, name: string) => turn(async () => {
+    await Promise.all(replacedClipboardImages(engine.list(), settings).flatMap(id => [engine.dismiss(id), engine.dismiss(id)]));
+    const id = await engine.importBuffer(bytes, name, 'clipboard', balanced);
+    return engine.get(id).result.status;
+  });
+  const statuses = await Promise.all([copy(await image('#aa3344'), 'a.png'), copy(await image('#33aa44'), 'b.png'), copy(await image('#3344aa'), 'c.png')]);
+  assert.deepEqual(statuses, ['ready', 'ready', 'ready']);
+  assert.deepEqual(engine.list().map(item => item.name), ['c.png']);
 });
 test('dismissing is immediate, safe to repeat and stops a running job', async t => {
   const f = await media(t, 'jpegoptim', 'pngquant', 'gifsicle', 'exiftool'); if (!f) return;

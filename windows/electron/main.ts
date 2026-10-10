@@ -12,7 +12,7 @@ import { Workdir } from '../core/workdir';
 import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
-import { ClipboardIntake, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, type ClipboardMemory } from './clipboard';
+import { ClipboardIntake, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, type ClipboardMemory } from './clipboard';
 import type { AppState, ImageOptions, ItemResult } from '../src/types';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +25,8 @@ const hideTimers = new Map<string, NodeJS.Timeout>();
 let clipboardTimer: NodeJS.Timeout | undefined;
 const memory: ClipboardMemory = { fingerprint: '', own: '' };
 let nameCounter: Counter | undefined;
+/** Clipboard images take turns, each optimised and written back before the next one replaces its card. Images share one engine queue anyway. */
+const clipboardImageTurn = serial();
 const intake = new ClipboardIntake(error => inform(message(error)));
 const pickup = new ClipboardPickup(change => { void optimiseClipboard(change); });
 let clipboardWrites: Promise<void> = Promise.resolve();
@@ -187,21 +189,16 @@ async function importFiles(files: unknown, source: ItemResult['source'], aggress
  */
 async function clipboardImageName(original: string) {
   if (!settings.copyImageFilePath || !settings.useCustomNameTemplateForClipboardImages) return original;
-  // One counter for the session: clipboard imports run concurrently, and each must take the next number.
+  // One counter for the session: clipboard imports run concurrently, and each must take the next number. It is read from
+  // `lastAutoIncrementingNumber` once; later edits to that setting while Clop runs are overwritten by the next name.
   const counter = nameCounter ??= { value: settings.lastAutoIncrementingNumber }, before = counter.value;
   const name = expandTemplate(settings.customNameTemplateForClipboardImages || DEFAULT_NAME_TEMPLATE, { counter }) + path.extname(original);
   if (counter.value !== before) settings = await store.set({ lastAutoIncrementingNumber: counter.value });
   return name;
 }
-/**
- * Before a new clipboard image: earlier clipboard images make way for it unless `appendClipboardResults` keeps them, and
- * even then they go once `clipboardAccumulationTimeout` seconds pass without a new one.
- */
+/** Earlier clipboard images make way for a new one (see `replacedClipboardImages`). */
 async function prepareClipboardImages() {
-  const previous = engine.list().filter(item => item.source === 'clipboard' && item.kind === 'image');
-  const timeout = settings.clipboardAccumulationTimeout * 1000;
-  if (!previous.length || (settings.appendClipboardResults && !(timeout > 0 && Date.now() - Math.max(...previous.map(item => item.createdAt)) > timeout))) return;
-  for (const item of previous) await dismiss(item.id);
+  for (const id of replacedClipboardImages(engine.list(), settings)) await dismiss(id);
 }
 /** Clipboard results always go back on the clipboard; consecutive clipboard images together with `copyConsecutiveClipboardImages`. */
 async function copyClipboardResults(ids: string[], sequence?: number, options?: { text?: boolean }) {
@@ -213,15 +210,20 @@ async function copyClipboardResults(ids: string[], sequence?: number, options?: 
   await copy(accumulated.length > 1 ? accumulated : ids, sequence, options);
 }
 async function importClipboardFiles(files: string[], sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }) {
-  if (files.some(file => mediaKind(file) === 'image')) await prepareClipboardImages();
-  const ids = await importPaths(files.slice(0, 20), 'clipboard', { aggressive, name: async file => mediaKind(file) === 'image' ? clipboardImageName(path.basename(file)) : undefined });
-  await copyClipboardResults(ids, sequence, options);
+  const run = async () => {
+    if (files.some(file => mediaKind(file) === 'image')) await prepareClipboardImages();
+    const ids = await importPaths(files.slice(0, 20), 'clipboard', { aggressive, name: async file => mediaKind(file) === 'image' ? clipboardImageName(path.basename(file)) : undefined });
+    await copyClipboardResults(ids, sequence, options);
+  };
+  return files.some(file => mediaKind(file) === 'image') ? clipboardImageTurn(run) : run();
 }
-async function importClipboardImage(bytes: Buffer, name: string, sequence: number | undefined, aggressive: boolean) {
-  await prepareClipboardImages();
-  await makeRoom();
-  const id = await engine.importBuffer(bytes, await clipboardImageName(name), 'clipboard', defaults(aggressive));
-  if (isReady(id)) await copyClipboardResults([id], sequence);
+function importClipboardImage(bytes: Buffer, name: string, sequence: number | undefined, aggressive: boolean) {
+  return clipboardImageTurn(async () => {
+    await prepareClipboardImages();
+    await makeRoom();
+    const id = await engine.importBuffer(bytes, await clipboardImageName(name), 'clipboard', defaults(aggressive));
+    if (isReady(id)) await copyClipboardResults([id], sequence);
+  });
 }
 async function readClipboardImage() {
   // Prefer an encoded PNG clipboard payload, avoiding an unnecessary bitmap round trip.

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } from '../core/media/detect';
 import type { MediaKind } from '../core/media/types';
 import type { ClopSettings } from '../core/settings/schema';
+import type { ItemResult } from '../src/types';
 import type { ClipboardChange } from './pickup';
 
 /** `DEFAULT_NAME_TEMPLATE` in SettingsView.swift, for clipboard images when the custom template is empty. */
@@ -230,4 +231,20 @@ export class ClipboardIntake {
   }
   /** Resolves when every queued read and the imports they started have finished. */
   async idle() { while (true) { const pending = [this.chain, ...this.running]; await Promise.all(pending); if (!this.running.size && pending[0] === this.chain) return; } }
+}
+
+/** Runs tasks one after another; one that fails does not stop the next. */
+export function serial() {
+  let chain: Promise<unknown> = Promise.resolve();
+  return <T>(task: () => Promise<T>): Promise<T> => { const run = chain.then(task, task); chain = run.catch(() => {}); return run; };
+}
+/**
+ * The earlier clipboard images a new one replaces, as macOS reuses its one clipboard result: all of them, unless
+ * `appendClipboardResults` keeps them, and then only once `clipboardAccumulationTimeout` seconds passed since the newest.
+ */
+export function replacedClipboardImages(items: readonly Pick<ItemResult, 'id' | 'source' | 'kind' | 'createdAt'>[], settings: Pick<ClopSettings, 'appendClipboardResults' | 'clipboardAccumulationTimeout'>, now = Date.now()) {
+  const previous = items.filter(item => item.source === 'clipboard' && item.kind === 'image');
+  const timeout = settings.clipboardAccumulationTimeout * 1000;
+  if (!previous.length || (settings.appendClipboardResults && !(timeout > 0 && now - Math.max(...previous.map(item => item.createdAt)) > timeout))) return [];
+  return previous.map(item => item.id);
 }

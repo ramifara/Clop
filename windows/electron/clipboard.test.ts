@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultSettings } from '../core/settings/schema';
-import { ClipboardIntake, clipboardChange, clipboardFiles, clipboardIntake, copyReply, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources } from './clipboard';
+import { ClipboardIntake, replacedClipboardImages, clipboardChange, clipboardFiles, clipboardIntake, copyReply, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources } from './clipboard';
 
 // The macOS defaults; Windows differs only in optimiseImagePathClipboard, checked below.
 const settings = { ...defaultSettings(), optimiseImagePathClipboard: false };
@@ -145,4 +145,16 @@ test('clipboard reads run one at a time and never wait for a running import or d
   await intake.idle();
   assert.deepEqual(order.at(-1), 'video done');
   assert.deepEqual(errors.map(error => (error as Error).message), ['manual failed']);
+});
+test('a new clipboard image replaces the earlier ones unless they accumulate', () => {
+  const items = [
+    { id: 'old', source: 'clipboard', kind: 'image', createdAt: 1_000 }, { id: 'new', source: 'clipboard', kind: 'image', createdAt: 20_000 },
+    { id: 'video', source: 'clipboard', kind: 'video', createdAt: 1_000 }, { id: 'drop', source: 'drop', kind: 'image', createdAt: 1_000 },
+  ] as const;
+  const now = 25_000;
+  assert.deepEqual(replacedClipboardImages(items, { appendClipboardResults: false, clipboardAccumulationTimeout: 30 }, now), ['old', 'new']);
+  assert.deepEqual(replacedClipboardImages(items, { appendClipboardResults: true, clipboardAccumulationTimeout: 30 }, now), []);
+  assert.deepEqual(replacedClipboardImages(items, { appendClipboardResults: true, clipboardAccumulationTimeout: 3 }, now), ['old', 'new']);
+  assert.deepEqual(replacedClipboardImages(items, { appendClipboardResults: true, clipboardAccumulationTimeout: 0 }, now), []);
+  assert.deepEqual(replacedClipboardImages([], { appendClipboardResults: false, clipboardAccumulationTimeout: 30 }, now), []);
 });
