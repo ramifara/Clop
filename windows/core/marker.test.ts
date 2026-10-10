@@ -149,3 +149,16 @@ test('the stream hint does not exist off Windows and never decides the answer', 
   await marker.unmark(file);
   assert.equal(await marker.isOptimised(file), false);
 });
+
+test('a mark that keeps being checked does not expire, even across restarts', async t => {
+  let now = Date.now();
+  const { file, cache, marker } = await setup(t, { now: () => now });
+  await marker.markOptimised(file);
+  now += 20 * DAY;
+  assert.equal(await marker.isOptimised(file), true);
+  now += 20 * DAY;
+  const restarted = new OptimisedMarker(cache, { now: () => now });
+  assert.equal(await restarted.isOptimised(file), true, '40 days after marking, 20 after the last check');
+  now += 40 * DAY;
+  assert.equal(await new OptimisedMarker(cache, { now: () => now }).isOptimised(file), false, 'a mark nobody checks still expires');
+});

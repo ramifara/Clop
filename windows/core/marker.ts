@@ -8,6 +8,7 @@ import { defaultPaths } from './settings/paths';
 // lost on FAT, zip, OneDrive sync and any app that saves through a temporary file, so the sidecar cache
 // (path, size and modification time) is the source of truth. The stream is only written as a hint.
 
+const DAY = 86400000;
 const STREAM = 'clop.optimisation.status';
 interface Entry { size: number; mtimeMs: number; at: number }
 export interface MarkerOptions {
@@ -66,7 +67,9 @@ export class OptimisedMarker {
     if (!entry) return false;
     const info = await stat(file).catch(() => undefined);
     if (!info?.isFile() || info.size !== entry.size || info.mtimeMs !== entry.mtimeMs) return false;
-    entry.at = this.now();
+    // Keeps a mark that is still being checked from expiring. Saved at most once a day, so checking stays cheap.
+    const now = this.now();
+    if (now - entry.at > DAY) { entry.at = now; await this.persist().catch(() => {}); }
     return true;
   }
 
