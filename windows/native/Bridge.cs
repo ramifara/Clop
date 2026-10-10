@@ -29,6 +29,8 @@ namespace ClopWindows {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessageTimeout(IntPtr window, uint message, IntPtr wparam, IntPtr lparam, uint flags, uint timeout, out IntPtr result);
     [DllImport("oleacc.dll")] static extern int AccessibleObjectFromPoint(Point point, out IAccessible accessible, [MarshalAs(UnmanagedType.Struct)] out object child);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
     delegate IntPtr MouseCallback(int code, IntPtr message, IntPtr data);
     [StructLayout(LayoutKind.Sequential)] struct MouseData { public Point Point; public uint Mouse, Flags, Time; public UIntPtr Extra; }
     [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int type, MouseCallback callback, IntPtr module, uint thread);
@@ -51,6 +53,9 @@ namespace ClopWindows {
     static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
     static volatile bool Ended;
     static uint Sequence;
+    static IntPtr ForegroundWindow;
+    static uint ForegroundProcess;
+    static string ForegroundApp = "";
     static readonly string ClipboardOwner = Guid.NewGuid().ToString("N");
     static bool Announced, Eligible, DetectDrag = true;
     static int Generation;
@@ -86,6 +91,14 @@ namespace ClopWindows {
         string line;
         while (Commands.TryDequeue(out line)) Handle(line);
         string diagnostic; while (Diagnostics.TryDequeue(out diagnostic)) Emit(new { type = "drag-diagnostic", message = diagnostic });
+        // Report which app is in front. Clipboard pickup waits for the user to leave an editor
+        // that rewrites the clipboard after every stroke.
+        var window = GetForegroundWindow();
+        if (window != ForegroundWindow) {
+          ForegroundWindow = window;
+          uint process = AppProcess(window, out ForegroundApp);
+          if (process != ForegroundProcess) { ForegroundProcess = process; Emit(new { type = "foreground", process, app = ForegroundApp }); }
+        }
         uint next = GetClipboardSequenceNumber();
         if (next != Sequence) {
           Sequence = next;
@@ -96,7 +109,8 @@ namespace ClopWindows {
             if (contents != null && Convert.ToString(contents.GetData("ClopWindows.Owner")) == ClipboardOwner) return;
             var paths = new List<string>();
             if (Clipboard.ContainsFileDropList()) foreach (string file in Clipboard.GetFileDropList()) if (Extensions.Contains(Path.GetExtension(file))) paths.Add(file);
-            Emit(new { type = "clipboard", sequence = next, paths = paths.ToArray() });
+            bool image = paths.Count > 0 || (contents != null && (contents.GetDataPresent(DataFormats.Bitmap) || contents.GetDataPresent(DataFormats.Dib) || contents.GetDataPresent("PNG") || contents.GetDataPresent("image/png")));
+            Emit(new { type = "clipboard", sequence = next, paths = paths.ToArray(), image, process = ForegroundProcess, app = ForegroundApp });
           } catch { /* A different app may temporarily hold the clipboard. Retry on its next change. */ }
         }
         DetectImageDrag();
@@ -109,6 +123,21 @@ namespace ClopWindows {
       if (hook != IntPtr.Zero) UnhookWinEvent(hook);
       if (mouseHook != IntPtr.Zero) UnhookWindowsHookEx(mouseHook);
     }
+    // UWP windows sit inside ApplicationFrameHost. Resolve them to the hosted app's process.
+    static uint AppProcess(IntPtr window, out string name) {
+      name = "";
+      if (window == IntPtr.Zero) return 0;
+      try {
+        uint process; GetWindowThreadProcessId(window, out process);
+        name = ProcessName(process);
+        if (name == "applicationframehost") {
+          var core = FindWindowEx(window, IntPtr.Zero, "Windows.UI.Core.CoreWindow", null);
+          if (core != IntPtr.Zero) { GetWindowThreadProcessId(core, out process); name = ProcessName(process); }
+        }
+        return process;
+      } catch { return 0; }
+    }
+    static string ProcessName(uint process) { using (var info = Process.GetProcessById((int)process)) return info.ProcessName.ToLowerInvariant(); }
     static void Handle(string line) {
       string id = null;
       try {
