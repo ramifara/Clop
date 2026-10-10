@@ -248,3 +248,36 @@ export function replacedClipboardImages(items: readonly Pick<ItemResult, 'id' | 
   if (!previous.length || (settings.appendClipboardResults && !(timeout > 0 && now - Math.max(...previous.map(item => item.createdAt)) > timeout))) return [];
   return previous.map(item => item.id);
 }
+
+export interface ClipboardListSteps {
+  /** The clipboard images' turn (see `serial`). */
+  turn: <T>(task: () => Promise<T>) => Promise<T>;
+  /** Makes way for new clipboard images. */
+  prepare: () => Promise<void>;
+  /** Imports files, returning the results that finished. */
+  load: (files: string[]) => Promise<string[]>;
+  /** Puts finished results back on the clipboard. */
+  writeBack: (ids: string[]) => Promise<void>;
+}
+/** Imports clipboard images in their turn: earlier clipboard images make way, then `load` imports, then, unless `writeBack` is false, the results go back on the clipboard before the next turn. */
+export function importClipboardImages(steps: ClipboardListSteps, load: () => Promise<string[]>, { writeBack = true } = {}) {
+  return steps.turn(async () => {
+    await steps.prepare();
+    const ids = await load();
+    if (writeBack) await steps.writeBack(ids);
+    return ids;
+  });
+}
+/**
+ * Imports a copied file list. Its images take the clipboard images' turn (`importClipboardImages`). Videos, PDFs and
+ * audio import outside it, so a long video in the list never holds up a later screenshot; a mixed list goes back on the
+ * clipboard together once all of it is done.
+ */
+export async function importClipboardList(files: string[], steps: ClipboardListSteps) {
+  const images = files.filter(file => mediaKind(file) === 'image'), others = files.filter(file => mediaKind(file) !== 'image');
+  const [imageIds, otherIds] = await Promise.all([
+    images.length ? importClipboardImages(steps, () => steps.load(images), { writeBack: !others.length }) : [],
+    others.length ? steps.load(others) : [],
+  ]);
+  if (others.length) await steps.writeBack([...imageIds, ...otherIds]);
+}

@@ -12,7 +12,7 @@ import { Workdir } from '../core/workdir';
 import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
-import { ClipboardIntake, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, type ClipboardMemory } from './clipboard';
+import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, type ClipboardMemory } from './clipboard';
 import type { AppState, ImageOptions, ItemResult } from '../src/types';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -209,20 +209,21 @@ async function copyClipboardResults(ids: string[], sequence?: number, options?: 
     ? engine.list().filter(item => item.source === 'clipboard' && item.kind === 'image' && item.status === 'ready').map(item => item.id).reverse() : [];
   await copy(accumulated.length > 1 ? accumulated : ids, sequence, options);
 }
-async function importClipboardFiles(files: string[], sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }) {
-  const run = async () => {
-    if (files.some(file => mediaKind(file) === 'image')) await prepareClipboardImages();
-    const ids = await importPaths(files.slice(0, 20), 'clipboard', { aggressive, name: async file => mediaKind(file) === 'image' ? clipboardImageName(path.basename(file)) : undefined });
-    await copyClipboardResults(ids, sequence, options);
+/** The steps of importing clipboard results (see `importClipboardList`), written back against the clipboard `sequence` they came from. */
+function clipboardSteps(sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }): ClipboardListSteps {
+  return {
+    turn: clipboardImageTurn, prepare: prepareClipboardImages, writeBack: ids => copyClipboardResults(ids, sequence, options),
+    load: list => importPaths(list, 'clipboard', { aggressive, name: async file => mediaKind(file) === 'image' ? clipboardImageName(path.basename(file)) : undefined }),
   };
-  return files.some(file => mediaKind(file) === 'image') ? clipboardImageTurn(run) : run();
+}
+function importClipboardFiles(files: string[], sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }) {
+  return importClipboardList(files.slice(0, 20), clipboardSteps(sequence, aggressive, options));
 }
 function importClipboardImage(bytes: Buffer, name: string, sequence: number | undefined, aggressive: boolean) {
-  return clipboardImageTurn(async () => {
-    await prepareClipboardImages();
+  return importClipboardImages(clipboardSteps(sequence, aggressive), async () => {
     await makeRoom();
     const id = await engine.importBuffer(bytes, await clipboardImageName(name), 'clipboard', defaults(aggressive));
-    if (isReady(id)) await copyClipboardResults([id], sequence);
+    return isReady(id) ? [id] : [];
   });
 }
 async function readClipboardImage() {

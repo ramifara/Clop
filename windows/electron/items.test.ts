@@ -12,7 +12,7 @@ import { coverImage, tone } from '../core/media/audio.fixtures';
 import { photoPDF } from '../core/media/pdf.fixtures';
 import { ItemEngine, sampleImage } from './items';
 import { placeholder } from './thumbnails';
-import { replacedClipboardImages, serial } from './clipboard';
+import { importClipboardImages, replacedClipboardImages, serial } from './clipboard';
 const balanced = { mode: 'balanced', format: 'auto', scale: 1 } as const;
 async function fixture(t: TestContext) {
   if (!needTools(t, 'jpegoptim', 'pngquant', 'gifsicle', 'ffmpeg', 'exiftool')) return;
@@ -253,18 +253,18 @@ test('names downloads without a matching extension by their content', async t =>
   await engine.restore(pdf);
   assert.equal(path.extname(engine.output(pdf)), '.pdf');
 });
-test('overlapping clipboard images each finish before the next replaces its card', async t => {
+test('overlapping clipboard images each finish and go back on the clipboard before the next replaces its card', async t => {
   const f = await fixture(t); if (!f) return;
-  const { engine } = f, turn = serial(), settings = { ...defaultSettings(), appendClipboardResults: false };
+  const { engine } = f, turn = serial(), settings = { ...defaultSettings(), appendClipboardResults: false }, written: string[][] = [];
   const image = (colour: string) => sharp({ create: { width: 96, height: 64, channels: 3, background: colour } }).png().toBuffer();
-  // As main.ts handles each copied image: replace the earlier cards, then import, in one turn. Two dismissals of one card must not clash.
-  const copy = (bytes: Buffer, name: string) => turn(async () => {
-    await Promise.all(replacedClipboardImages(engine.list(), settings).flatMap(id => [engine.dismiss(id), engine.dismiss(id)]));
-    const id = await engine.importBuffer(bytes, name, 'clipboard', balanced);
-    return engine.get(id).result.status;
-  });
-  const statuses = await Promise.all([copy(await image('#aa3344'), 'a.png'), copy(await image('#33aa44'), 'b.png'), copy(await image('#3344aa'), 'c.png')]);
-  assert.deepEqual(statuses, ['ready', 'ready', 'ready']);
+  // The steps main.ts gives `importClipboardImages`; making way dismisses each earlier card twice, as overlapping imports could.
+  const steps = {
+    turn, load: async () => [], writeBack: async (ids: string[]) => { written.push(ids.map(id => engine.get(id).result.name)); },
+    prepare: async () => { await Promise.all(replacedClipboardImages(engine.list(), settings).flatMap(id => [engine.dismiss(id), engine.dismiss(id)])); },
+  };
+  const copy = async (colour: string, name: string) => importClipboardImages(steps, async () => [await engine.importBuffer(await image(colour), name, 'clipboard', balanced)]);
+  await Promise.all([copy('#aa3344', 'a.png'), copy('#33aa44', 'b.png'), copy('#3344aa', 'c.png')]);
+  assert.deepEqual(written, [['a.png'], ['b.png'], ['c.png']]);
   assert.deepEqual(engine.list().map(item => item.name), ['c.png']);
 });
 test('dismissing is immediate, safe to repeat and stops a running job', async t => {

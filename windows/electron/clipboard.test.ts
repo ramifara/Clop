@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { defaultSettings } from '../core/settings/schema';
-import { ClipboardIntake, replacedClipboardImages, clipboardChange, clipboardFiles, clipboardIntake, copyReply, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources } from './clipboard';
+import { ClipboardIntake, importClipboardList, replacedClipboardImages, serial, clipboardChange, clipboardFiles, clipboardIntake, copyReply, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources } from './clipboard';
 
 // The macOS defaults; Windows differs only in optimiseImagePathClipboard, checked below.
 const settings = { ...defaultSettings(), optimiseImagePathClipboard: false };
@@ -157,4 +158,24 @@ test('a new clipboard image replaces the earlier ones unless they accumulate', (
   assert.deepEqual(replacedClipboardImages(items, { appendClipboardResults: true, clipboardAccumulationTimeout: 3 }, now), ['old', 'new']);
   assert.deepEqual(replacedClipboardImages(items, { appendClipboardResults: true, clipboardAccumulationTimeout: 0 }, now), []);
   assert.deepEqual(replacedClipboardImages([], { appendClipboardResults: false, clipboardAccumulationTimeout: 30 }, now), []);
+});
+test('a long video in a copied list never holds up a later clipboard image', async () => {
+  const events: string[] = [];
+  let finishVideo!: () => void;
+  const video = new Promise<void>(resolve => { finishVideo = resolve; });
+  const steps = {
+    turn: serial(), prepare: async () => { events.push('prepare'); },
+    load: async (files: string[]) => { if (files.includes('/a/clip.mp4')) await video; events.push(`loaded ${files.join(' ')}`); return files.map(file => `id:${path.basename(file)}`); },
+    writeBack: async (ids: string[]) => { events.push(`write ${ids.join(' ')}`); },
+  };
+  const mixed = importClipboardList(['/a/clip.mp4', '/a/photo.png'], steps);
+  await importClipboardList(['/a/shot.png'], steps);
+  assert.deepEqual(events, ['prepare', 'loaded /a/photo.png', 'prepare', 'loaded /a/shot.png', 'write id:shot.png']);
+  finishVideo(); await mixed;
+  // The mixed list goes back together, images first, once its video is done.
+  assert.deepEqual(events.slice(5), ['loaded /a/clip.mp4', 'write id:photo.png id:clip.mp4']);
+  // A list without images never takes the images' turn.
+  events.length = 0;
+  await importClipboardList(['/a/scan.pdf'], steps);
+  assert.deepEqual(events, ['loaded /a/scan.pdf', 'write id:scan.pdf']);
 });
