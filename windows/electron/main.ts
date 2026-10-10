@@ -15,8 +15,8 @@ import { ClipboardPickup, type ClipboardChange } from './pickup';
 import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, type ClipboardMemory } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
-import { enabledKey } from './watch-rules';
-import { FolderResults, LastBatch } from './automation';
+import { enabledKey, placeholderReply } from './watch-rules';
+import { FolderResults, LastBatch, restoreAll } from './automation';
 import { appsReply } from './apps';
 import type { AppState, ImageOptions, ItemResult } from '../src/types';
 
@@ -37,6 +37,8 @@ let marker: OptimisedMarker, folders: FolderResults, watchers: FolderWatcher[] =
 const quiet = new Set<string>();
 /** Results that hid or were dismissed, latest last, for "Bring back last result". */
 const removedOrder: string[] = [];
+/** Remembers a result that hid or was dismissed; only the latest few can be brought back. */
+function removed(id: string) { removedOrder.push(id); removedOrder.splice(0, removedOrder.length - 80); }
 const lastBatch = new LastBatch();
 const paused = () => settings.pauseAutomaticOptimisations;
 const intake = new ClipboardIntake(error => inform(message(error)));
@@ -88,15 +90,14 @@ function scheduleHide(id: string) {
   const existing = hideTimers.get(id); if (existing) clearTimeout(existing);
   const check = () => {
     if (hovered || dragging) { hideTimers.set(id, setTimeout(check, 1000)); return; }
-    hidden.add(id); hideTimers.delete(id); removedOrder.push(id); syncFloating(); broadcast();
+    hidden.add(id); hideTimers.delete(id); removed(id); syncFloating(); broadcast();
   };
   hideTimers.set(id, setTimeout(check, engine.get(id).result.source === 'clipboard' ? 10000 : 30000));
 }
 async function dismiss(id: string) {
   const timer = hideTimers.get(id); if (timer) clearTimeout(timer);
   hideTimers.delete(id); hidden.delete(id); await engine.dismiss(id);
-  if (quiet.delete(id)) return;
-  removedOrder.push(id); removedOrder.splice(0, removedOrder.length - 80);
+  if (!quiet.delete(id)) removed(id);
 }
 /** "Bring back last result": the result that hid or was dismissed last shows again. */
 function bringBackLast() {
@@ -110,9 +111,11 @@ function bringBackLast() {
 async function revertLast() {
   const ids = lastBatch.take().filter(id => engine.has(id));
   if (!ids.length) { inform('There are no recent optimisations to revert.'); return; }
-  for (const id of ids) await engine.restore(id);
-  const clipboardIds = ids.filter(id => engine.has(id) && engine.get(id).result.source === 'clipboard');
+  // Each result on its own: one the user edited, moved or deleted since stays as it is, and the rest are still restored.
+  const { restored, failures } = await restoreAll(engine, ids);
+  const clipboardIds = restored.filter(id => engine.has(id) && engine.get(id).result.source === 'clipboard');
   if (clipboardIds.length) await copyClipboardResults(clipboardIds);
+  if (failures.length) inform(failures.join('\n'));
 }
 async function makeRoom() {
   const oldest = engine.list().at(-1);
@@ -404,13 +407,16 @@ else {
     marker = new OptimisedMarker(path.join(userData, 'optimised.json'));
     const home = app.getPath('home');
     folders = new FolderResults({
-      engine, settings: () => settings, home, options: () => defaults(), makeRoom, quiet: id => { quiet.add(id); },
+      engine, settings: () => settings, home, options: () => defaults(), makeRoom,
+      // The shelf holds at most 40 results, so a quiet result older than the latest few is long gone.
+      quiet: id => { quiet.add(id); for (const old of quiet) { if (quiet.size <= 80) break; quiet.delete(old); } },
       env: () => ({ settings, workdir, marker, home, counter: nameCounter ??= { value: settings.lastAutoIncrementingNumber } }),
       saved: value => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); },
     });
     watchers = (['image', 'video', 'pdf', 'audio'] as const).map(kind => new FolderWatcher(kind, {
-      // The stream hint moves with a renamed file, which the cache keyed by path cannot follow.
-      settings: () => settings, home, firstLaunch, owns: file => workdir.owns(file), isOptimised: async file => await marker.isOptimised(file) || await marker.hint(file) === true,
+      // The stream hint moves with a renamed file, which the cache keyed by path cannot follow; it counts while the size is unchanged.
+      settings: () => settings, home, firstLaunch, owns: file => workdir.owns(file), isOptimised: async file => await marker.isOptimised(file) || await marker.hintMatches(file),
+      isLocal: async file => !bridgeReady || !placeholderReply(await bridge.request({ type: 'attributes', paths: [file] }), 1)[0],
       handle: (file, dir) => folders.optimise(file, kind, dir), cancel: files => folders.cancel(files), notice: inform,
       disable: () => toggleSetting({ [enabledKey(kind)]: false }),
     }));
