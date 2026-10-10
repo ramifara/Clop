@@ -1,6 +1,6 @@
 import { access, constants, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { copyTo, exists, moveTo } from './fileops';
+import { copyTo, exists, moveTo, samePath } from './fileops';
 import { defaultMarker, type OptimisedMarker } from './marker';
 import type { ClopSettings } from './settings/schema';
 import { expandPathTemplate, expandTemplate, isAbsoluteTemplate, nameMatchesTemplate, resolveHome, type Counter } from './template';
@@ -120,12 +120,12 @@ export async function executePlacement(env: PlacementEnv, plan: PlacementPlan, p
   const { dest } = plan, { workdir } = env;
   let backup: string | undefined, originalRemoved = false, replaced: string | undefined;
   // A different file already at the destination (a template collision, or `shot.webp` beside `shot.png`) would be lost to the copy, so keep it first.
-  const same = (a: string, b: string) => platformOf(env) === 'win32' ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b);
+  const same = (a: string, b: string) => samePath(a, b, platformOf(env));
   if (!same(dest, original) && !same(dest, produced) && await exists(dest)) {
     replaced = await workdir.backup(dest, { force: true }).catch(error => { throw new Error(`Could not back up ${dest} before replacing it: ${error instanceof Error ? error.message : error}`); });
   }
   if (plan.behaviour === 'inPlace' && await exists(original)) {
-    if (path.resolve(original) === path.resolve(produced)) {
+    if (same(original, produced)) {
       // The optimiser rewrote the original where it stood, so there is nothing to move. Report the copy taken before it ran.
       backup = await workdir.latestBackup(original);
     } else {

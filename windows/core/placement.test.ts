@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { exists } from './fileops';
+import { exists, samePath } from './fileops';
 import { OptimisedMarker } from './marker';
 import { effectiveBehaviour, executePlacement, isTemplatedCopy, placeOutput, planPlacement, type FileBehaviour, type PlacementEnv, type PlacementOverride } from './placement';
 import { defaultSettings, type ClopSettings } from './settings/schema';
@@ -266,4 +266,11 @@ test('a placed result is skipped by a later look at the folder, the way a watche
   assert.equal(await marker.isOptimised(original), false);
   await placeOutput(env, { produced, original, type: 'image' });
   assert.equal(await new OptimisedMarker(marker.file).isOptimised(original), true);
+});
+
+test('samePath ignores case on Windows only and resolves relative segments', () => {
+  const upper = path.resolve('a', 'b', 'Shot.PNG'), lower = path.resolve('a', 'b', 'shot.png');
+  assert.equal(samePath(upper, lower, 'win32'), true);
+  assert.equal(samePath(upper, lower, 'linux'), false);
+  assert.equal(samePath(path.resolve('a', 'b', '..', 'b', 'shot.png'), lower, 'linux'), true);
 });

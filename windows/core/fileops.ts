@@ -3,6 +3,12 @@ import { copyFile, mkdir, rename, rm, stat, utimes } from 'node:fs/promises';
 import path from 'node:path';
 import { retryBusy } from './run';
 
+/** Whether two paths name the same file. Windows ignores case, so `C:\\A\\x.png` and `c:\\a\\X.PNG` are one file there. */
+export const samePath = (a: string, b: string, platform: NodeJS.Platform = process.platform) => {
+  const [x, y] = [path.resolve(a), path.resolve(b)];
+  return platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
+};
+
 export const exists = (file: string) => stat(file).then(() => true, () => false);
 
 /** Copies `source` to `dest` through a sibling temporary file, so `dest` is either the old file or the whole new one. Keeps the modification time. Returns `dest`; with `force: false` an existing `dest` is left alone. */
