@@ -44,3 +44,8 @@ test('an explicit aggressive flag picks the anchors, otherwise the setting appli
   assert.equal(cq.imageIsAggressive(at(50)), true);
   assert.equal(cq.imageIsAggressive(at(49)), false);
 });
+
+test('JXL quality and effort follow JXLCoder', () => {
+  assert.deepEqual([5, 30, 64, 70, 71, 100].map(factor => cq.jxlQuality(at(factor))), [73, 60, 43, 40, 39, 15]);
+  assert.deepEqual([30, 49, 50, 69, 70, 100].map(factor => cq.jxlEffort(at(factor))), [7, 7, 8, 8, 9, 9]);
+});
