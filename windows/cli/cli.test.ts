@@ -208,4 +208,12 @@ test('the bundled entry point runs as its own process', async t => {
   assert.equal(JSON.parse(stdout).settings[0].value, 'true');
   const failed = await promisify(execFile)(process.execPath, [tsx, path.join(import.meta.dirname, 'index.ts'), 'crop'], { env: { ...process.env, CLOP_USER_DATA: dir } }).catch(error => error);
   assert.equal(failed.code, 64);
+
+  // clop.exe starts the CLI with ELECTRON_RUN_AS_NODE; programs the CLI starts must not inherit it.
+  const image = path.join(dir, 'a.png'), seen = path.join(dir, 'seen.txt');
+  await graphic(20, 20).png().toFile(image);
+  const windows = process.platform === 'win32', script = path.join(dir, windows ? 'env.ps1' : 'env.sh');
+  await writeFile(script, windows ? `Set-Content -LiteralPath '${seen}' -Value "[$env:ELECTRON_RUN_AS_NODE]"` : `printf '[%s]' "$ELECTRON_RUN_AS_NODE" > '${seen}'`);
+  await promisify(execFile)(process.execPath, [tsx, path.join(import.meta.dirname, 'index.ts'), 'pipeline', 'run', `runScript(path: "${script.replaceAll('\\', '/')}")`, image, '-n'], { env: { ...process.env, CLOP_USER_DATA: dir, ELECTRON_RUN_AS_NODE: '1' } });
+  assert.equal((await readFile(seen, 'utf8')).trim(), '[]');
 });
