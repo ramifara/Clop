@@ -169,10 +169,11 @@ export class ItemEngine extends EventEmitter {
         });
       } else output = await this.optimiseMedia(r.kind, e.originalPath, outputDir, { aggressive: options.mode === 'aggressive', name, signal, onProgress: this.progress(r) });
       signal.throwIfAborted();
+      // PDF.swift gives an optimised PDF its source's dates; the audio optimiser does it itself, and macOS leaves video dates alone.
+      // Before placing, so a placed copy keeps them too.
+      if (r.kind === 'pdf' && !output.unchanged && this.settings().preserveDates) { const { atime, mtime } = await stat(e.originalPath); await utimes(output.path, atime, mtime); }
       if (e.placement) e.placedPath = await e.placement.place(output);
       if (!output.unchanged) e.revision++;
-      // PDF.swift gives an optimised PDF its source's dates; the audio optimiser does it itself, and macOS leaves video dates alone.
-      if (r.kind === 'pdf' && !output.unchanged && this.settings().preserveDates) { const { atime, mtime } = await stat(e.originalPath); await utimes(output.path, atime, mtime); }
       // Keep earlier results until the session ends: other apps may still be pasting or dragging them.
       e.outputPath = output.path;
       for (const warning of output.warnings ?? []) console.warn(warning);
