@@ -36,18 +36,28 @@ export const systemHost: ExplorerHost = {
 
 const needWindows = (host: ExplorerHost) => { if (host.platform !== 'win32') throw new Error('The Explorer menu entries need Windows.'); };
 
+/** The portable build's file name carries its version (`Clop-Windows-<version>-<arch>-Portable.exe`), so a newer build is the same app. */
+const PORTABLE_NAME = /^Clop-Windows-.+-Portable\.exe$/i;
+const sameProgramName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase() || (PORTABLE_NAME.test(a) && PORTABLE_NAME.test(b));
 /**
- * How the registered entries stand for `paths`: `current` when the first verb runs this very app, `moved` when it runs an exe of the same
- * file name somewhere else (the portable app was moved), `none` otherwise, including entries another copy of Clop (the installer's) wrote.
+ * `reg.exe` answers in the console's OEM code page, which is read here as UTF-8, so a non-ASCII character in a path comes back as something else.
+ * Both sides are compared with every run of such characters made one `?`.
+ */
+export const comparable = (text: string) => text.replace(/[^\x20-\x7e]+/g, '?');
+
+/**
+ * How the registered entries stand for `paths`: `current` when the first verb runs this very app, `moved` when it runs the same portable app
+ * from another place or a different version of it (a moved or updated portable build), `none` otherwise, including entries another copy of Clop
+ * (the installer's) wrote.
  */
 export async function verbsStatus(paths: VerbPaths, host: ExplorerHost = systemHost): Promise<'current' | 'moved' | 'none'> {
   if (host.platform !== 'win32') return 'none';
   const { code, stdout } = await host.reg(regQuery(verbPlan(paths).roots[0])).catch(() => ({ code: 1, stdout: '' }));
   const value = code === 0 ? regQueryValue(stdout) : undefined;
   if (value === undefined) return 'none';
-  if (value === firstCommand(paths)) return 'current';
+  if (comparable(value) === comparable(firstCommand(paths))) return 'current';
   const exe = commandExe(value);
-  return exe && path.win32.basename(exe).toLowerCase() === path.win32.basename(paths.app).toLowerCase() ? 'moved' : 'none';
+  return exe && sameProgramName(path.win32.basename(exe), path.win32.basename(paths.app)) ? 'moved' : 'none';
 }
 
 /** Writes every verb and the Send To shortcut, after clearing any earlier ones. A failure part-way removes what was written. */
