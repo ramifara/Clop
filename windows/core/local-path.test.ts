@@ -18,8 +18,8 @@ test('an agent path is refused as written or as resolved against a network worki
 });
 
 test('a template or step path is judged as written and with every token and capture empty', () => {
-  for (const remote of ['%e//host/share/', '%e\\\\host\\share\\%f', '$1//host/share/', '$1$2\\\\host\\share', '%e\\\\?\\UNC\\host\\share', '%r%e//host', '//host/share']) assert.equal(isRemoteTemplate(remote), true, remote);
-  for (const local of ['%P/optimised/%f', '%F', '%f-optimised', 'C:\\%e\\x', '$1/x', '%y/%m/%f', '~/%e/x', '%USERPROFILE%\\x']) assert.equal(isRemoteTemplate(local), false, local);
+  for (const remote of ['%e//host/share/', '%e\\\\host\\share\\%f', '$1//host/share/', '$1$2\\\\host\\share', '%e\\\\?\\UNC\\host\\share', '//host/share']) assert.equal(isRemoteTemplate(remote), true, remote);
+  for (const local of ['%P/optimised/%f', '%F', '%f-optimised', 'C:\\%e\\x', '$1/x', '%y/%m/%f', '%r%e//host', '~/%e/x', '%USERPROFILE%\\x']) assert.equal(isRemoteTemplate(local), false, local);
   assert.match(agentPathRefusal(['ok.png', '%e//host/share/%f'])!, /^%e\/\/host\/share\/%f is on a network share/);
 });
 
