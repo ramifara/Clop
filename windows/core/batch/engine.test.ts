@@ -239,6 +239,21 @@ test('optimises videos, PDFs and audio side by side and reverts them', async t =
   assert.equal(await exists(path.join(files, 'tone.mp3')), false);
 });
 
+test('a video conversion uses the batch\'s encoder tier and compression', async t => {
+  if (!needTools(t, 'ffmpeg', 'ffprobe')) return;
+  const { dir, files, env, params } = await setup(t);
+  const video = await clip(path.join(files, 'clip.mp4'), { width: 640, height: 360, seconds: 1 });
+  const converted = async (encoder: 'smaller' | 'lossless') => {
+    const p = params({ output: { location: 'folder', folder: path.join(dir, encoder), template: '%f' } });
+    p.video = { ...p.video, convert: 'hevc', encoder, compression: 70, allowLarger: true };
+    const batch = await batchOf(env, [video], p);
+    await batch.run();
+    assert.deepEqual(statuses(batch), ['done'], batch.items.map(item => item.error).join());
+    return (await stat(batch.items[0].result!)).size;
+  };
+  assert.ok(await converted('lossless') > await converted('smaller'), 'visually lossless keeps more than the smaller-file tier');
+});
+
 test('a file that cannot be optimised fails with its reason while the rest finish', async t => {
   if (!needTools(t, 'jpegoptim', 'exiftool')) return;
   const { files, env, params } = await setup(t);

@@ -213,7 +213,7 @@ export class Batch extends EventEmitter {
         const convert = vp.convert === 'mp4' ? undefined : vp.convert;
         const output = await optimiseVideo(file, outputDir, {
           ...job, ...size, aggressive, crop, compression: { tier: vp.encoder, factor: vp.compression }, encoder: s.videoEncoder,
-          ...(vp.convert === 'mp4' ? { format: 'mp4' } : {}), ...(convert ? { convert: { codec: convert } } : {}),
+          ...(vp.convert === 'mp4' ? { format: 'mp4' } : {}), ...(convert ? { convert: { codec: convert, compression: { tier: vp.encoder, factor: vp.compression } } } : {}),
           ...(vp.fps ? { fps: vp.fps } : { capVideoFPS: s.capVideoFPS, targetVideoFPS: s.targetVideoFPS, minVideoFPS: s.minVideoFPS }),
           removeAudio: vp.removeAudio, convertAudioToAAC: s.convertAudioToAAC, adaptiveVideoSize: s.adaptiveVideoSize, stripMetadata: s.stripMetadata,
         });
