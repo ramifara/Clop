@@ -70,7 +70,9 @@ test('a check only looks: nothing is downloaded or installed, and the channel fo
 test('the result says current, available or failed, and a failure is logged in full but shown plainly', async () => {
   assert.deepEqual(await setup({}, { isUpdateAvailable: false, updateInfo: { version: '0.2.0' } }).updates.check(), { kind: 'current', version: '0.2.0' });
   assert.deepEqual(await setup({}, { updateInfo: { version: '0.2.0' } }).updates.check(), { kind: 'current', version: '0.2.0' });
-  assert.deepEqual(await setup({}, null).updates.check(), { kind: 'current', version: '0.2.0' });
+  const unconfigured = setup({}, null);
+  assert.deepEqual(await unconfigured.updates.check(), { kind: 'error', message: 'This build cannot check for updates.' }, 'no update configuration is not "up to date"');
+  assert.match(unconfigured.logs[0], /no update configuration/);
   const failing = setup({}, new Error('getaddrinfo ENOTFOUND api.github.com'));
   const result = await failing.updates.check();
   assert.equal(result.kind, 'error');

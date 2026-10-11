@@ -68,8 +68,10 @@ export class Updates {
     return this.checking ??= (async (): Promise<UpdateResult> => {
       try {
         const result = await (await this.configured()).checkForUpdates();
-        const version = result?.updateInfo.version;
-        if (!result || !version || result.isUpdateAvailable === false || version === this.options.version) return { kind: 'current', version: this.options.version };
+        // electron-updater answers null when this build has no update configuration (it is not an installed or portable build made with `publish` set).
+        if (!result) { this.options.log('Update check skipped: this build has no update configuration.'); return { kind: 'error', message: 'This build cannot check for updates.' }; }
+        const version = result.updateInfo.version;
+        if (!version || result.isUpdateAvailable === false || version === this.options.version) return { kind: 'current', version: this.options.version };
         this.available = version;
         return { kind: 'available', version };
       } catch (error) {
