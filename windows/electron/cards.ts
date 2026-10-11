@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { realpath as fsRealpath } from 'node:fs';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { NEW_CARD_EDITS, runEdit } from '../core/cards/edits';
@@ -71,25 +72,36 @@ const start = (program: string, args: string[]) => new Promise<void>((resolve, r
   child.once('spawn', () => { child.unref(); resolve(); }).once('error', reject);
 });
 
+/** The canonical path of `file` as Windows names it: links and junctions followed, short names expanded. */
+const nativeRealpath = (file: string) => new Promise<string>((resolve, reject) => fsRealpath.native(file, (error, resolved) => error ? reject(error) : resolve(resolved)));
+
 /** Whether an editor setting is the form "Edit with" accepts: the full path of a .exe file. A name is never looked up (no App Paths, no Start menu). */
-export const isEditorPath = (value: string) => { const program = value.trim().replace(/^"(.*)"$/, '$1'); return path.win32.isAbsolute(program) && /\.exe$/i.test(program); };
+export const isEditorPath = (value: string) => {
+  const program = value.trim().replace(/^"(.*)"$/, '$1');
+  // A drive path only: no network share or device path (`\\host\x`, `\\?\`), and no `:` past the drive letter (an NTFS stream such as `a.txt:evil.exe`).
+  return path.win32.isAbsolute(program) && /^[a-z]:[\\/]/i.test(program) && !program.slice(2).includes(':') && /\.exe$/i.test(program);
+};
 
 /**
  * The program "Edit with" starts for the `editorApp…` setting `editor`, or an error that says why not. It fails closed: the setting must be the
  * absolute path of an existing .exe that is not an interpreter or launcher, is not inside a watched folder (a file arriving there could be loaded
- * into it) and was not marked as downloaded from the internet (Zone.Identifier; a stream that cannot be read refuses too). The returned path is the
- * one that was checked, and the one to start.
+ * into it) and was not marked as downloaded from the internet (Zone.Identifier; a stream that cannot be read refuses too). Every check runs on the
+ * canonical path (links, junctions and short names resolved), which is also the one returned to start.
  */
-export async function editorProgram(editor: string, { platform = process.platform, marked = markedAsDownloaded, isFile = (file: string) => stat(file).then(info => info.isFile(), () => false), watched = [] }: {
+export async function editorProgram(editor: string, { platform = process.platform, marked = markedAsDownloaded, isFile = (file: string) => stat(file).then(info => info.isFile(), () => false), watched = [], canonical = platform === 'win32' ? nativeRealpath : async (file: string) => file }: {
   platform?: NodeJS.Platform; marked?: (file: string) => Promise<boolean>; isFile?: (file: string) => Promise<boolean>; watched?: readonly string[];
+  /** The canonical form of a path: what it names once links, junctions and short names are resolved. */
+  canonical?: (file: string) => Promise<string>;
 } = {}): Promise<string> {
-  const program = editor.trim().replace(/^"(.*)"$/, '$1');
-  if (!program) throw new Error('No editor app is set for this kind of file.');
-  if (!isEditorPath(program)) throw new Error('The editor app must be the full path of a .exe file. Choose it again in Settings.');
-  const name = path.win32.basename(program);
-  if (!await isFile(program)) throw new Error(`The editor app ${name} was not found.`);
+  const given = editor.trim().replace(/^"(.*)"$/, '$1');
+  if (!given) throw new Error('No editor app is set for this kind of file.');
+  if (!isEditorPath(given)) throw new Error('The editor app must be the full path of a .exe file on a local drive. Choose it again in Settings.');
+  const name = path.win32.basename(given);
+  if (!await isFile(given)) throw new Error(`The editor app ${name} was not found.`);
+  const program = await canonical(given).catch(() => undefined);
+  if (program === undefined || !isEditorPath(program)) throw new Error(`The editor app ${name} is not a program on a local drive. Choose it again in Settings.`);
   if (isLauncher(program)) throw new Error(`${name} runs other programs, so Clop does not use it as an editor.`);
-  const inside = watched.find(dir => { const relative = path.win32.relative(dir.toLowerCase(), program.toLowerCase()); return !!relative && !relative.startsWith('..') && !path.win32.isAbsolute(relative); });
+  const inside = (await Promise.all(watched.map(async dir => await canonical(dir).catch(() => dir)))).find(dir => { const relative = path.win32.relative(dir.toLowerCase(), program.toLowerCase()); return !!relative && !relative.startsWith('..') && !path.win32.isAbsolute(relative); });
   if (inside) throw new Error(`${name} is inside the watched folder ${inside}, so Clop does not run it.`);
   if (platform === 'win32' && await marked(program)) throw new Error(`Windows marked ${name} as downloaded from the internet. Unblock it in its file properties first.`);
   return program;

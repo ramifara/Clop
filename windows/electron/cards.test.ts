@@ -228,7 +228,7 @@ test('Open with uses the Windows chooser by its System32 path with the file as o
 
 const clean = async () => false, exists = async () => true;
 test('Edit with fails closed: only the full path of an existing .exe that passes every check is started, and that exact path comes back', async () => {
-  const win = { platform: 'win32' as const, marked: clean, isFile: exists };
+  const win = { platform: 'win32' as const, marked: clean, isFile: exists, canonical: async (file: string) => file };
   assert.equal(await editorProgram('"C:\\Program Files\\GIMP\\gimp.exe"', win), 'C:\\Program Files\\GIMP\\gimp.exe');
   // A name is never looked up: no Start menu, no App Paths, nothing relative.
   for (const name of ['gimp', 'gimp.exe', 'Editor', '..\\editor.exe', '.\\editor.exe', 'C:editor.exe', 'Microsoft.Paint_8wekyb3d8bbwe!App', 'C:\\Apps\\editor', 'C:\\Apps\\editor.bat', 'C:\\Apps\\editor.exe.lnk', 'https://example.com/x.exe']) {
@@ -241,11 +241,23 @@ test('Edit with fails closed: only the full path of an existing .exe that passes
   await assert.rejects(editorProgram('C:\\Users\\me\\Downloads\\editor.exe', { ...win, marked: async () => true }), /downloaded from the internet/);
   await assert.rejects(editorProgram('C:\\Apps\\editor.exe', { ...win, marked: async () => { throw new Error('Clop could not check whether it was downloaded'); } }), /could not check/);
   await assert.rejects(editorProgram('C:\\Users\\me\\Desktop\\editor.exe', { ...win, watched: ['C:\\Users\\me\\Desktop'] }), /inside the watched folder/);
-  assert.equal(await editorProgram('C:\\Users\\me\\Desktopper\\editor.exe', { ...win, watched: ['C:\\Users\\me\\Desktop'] }), 'C:\\Users\\me\\Desktopper\\editor.exe');
+  assert.equal(await editorProgram('C:\\Users\\me\\Desktopper\\editor.exe', { ...win, watched: ['C:\\Users\\me\\Desktop'] }), 'C:\\Users\\me\\Desktopper\\editor.exe');  // Streams, network shares and device paths are not programs on a local drive.
+  for (const odd of ['C:\\Users\\me\\Downloads\\a.txt:evil.exe', '\\\\host\\share\\x.exe', '\\\\?\\C:\\Apps\\x.exe', '\\\\.\\C:\\Apps\\x.exe']) {
+    await assert.rejects(editorProgram(odd, win), /full path of a \.exe/, odd);
+    assert.equal(isEditorPath(odd), false, odd);
+  }
+  // Every check runs on what the path really is, and that is what comes back.
+  const through = (map: Record<string, string>) => ({ ...win, canonical: async (file: string) => map[file] ?? file });
+  await assert.rejects(editorProgram('C:\\Apps\\J\\editor.exe', { ...through({ 'C:\\Apps\\J\\editor.exe': 'C:\\Users\\me\\Desktop\\editor.exe', 'C:\\Users\\me\\Desktop': 'C:\\Users\\me\\Desktop' }), watched: ['C:\\Users\\me\\Desktop'] }), /inside the watched folder/, 'a junction into a watched folder');
+  await assert.rejects(editorProgram('C:\\Users\\RAMI~1\\Desktop\\x.exe', { ...through({ 'C:\\Users\\RAMI~1\\Desktop\\x.exe': 'C:\\Users\\Rami\\Desktop\\x.exe' }), watched: ['C:\\Users\\Rami\\Desktop'] }), /inside the watched folder/, 'a short name');
+  await assert.rejects(editorProgram('C:\\Apps\\alias.exe', through({ 'C:\\Apps\\alias.exe': 'C:\\Windows\\System32\\cmd.exe' })), /runs other programs/, 'a link to a launcher');
+  await assert.rejects(editorProgram('C:\\Apps\\remote.exe', through({ 'C:\\Apps\\remote.exe': '\\\\host\\share\\remote.exe' })), /local drive/, 'a link to a network share');
+  await assert.rejects(editorProgram('C:\\Apps\\gone.exe', { ...win, canonical: async () => { throw new Error('ENOENT'); } }), /local drive/);
+  assert.equal(await editorProgram('C:\\Apps\\link.exe', through({ 'C:\\Apps\\link.exe': 'C:\\Program Files\\Real\\real.exe' })), 'C:\\Program Files\\Real\\real.exe');
 });
 
 test('a window that asks for Edit with when the menu hides it is refused the same way', async () => {
-  const win = { platform: 'win32' as const, marked: clean };
+  const win = { platform: 'win32' as const, marked: clean, canonical: async (file: string) => file };
   // The menu shows the entry only for an existing .exe path (`cardFacts`); the main process runs `editorProgram` on the same setting.
   for (const [setting, exists_, reason] of [['', true, /No editor app/], ['gimp', true, /full path/], ['C:\\Apps\\gone.exe', false, /was not found/], ['C:\\Windows\\System32\\cmd.exe', true, /runs other programs/]] as const) {
     await assert.rejects(editorProgram(setting, { ...win, isFile: async () => exists_ }), reason, setting);
