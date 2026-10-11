@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { defaultSettings } from '../core/settings/schema';
-import { ClipboardIntake, importClipboardList, replacedClipboardImages, serial, clipboardChange, clipboardFiles, clipboardIntake, copyReply, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources } from './clipboard';
+import { ClipboardIntake, importClipboardList, replacedClipboardImages, serial, clipboardChange, clipboardFiles, clipboardIntake, copyReply, splitClipboardList, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources } from './clipboard';
 
 // The macOS defaults; Windows differs only in optimiseImagePathClipboard, checked below.
 const settings = { ...defaultSettings(), optimiseImagePathClipboard: false };
@@ -232,4 +232,13 @@ test('a copy an ignored app made does not count as handled: the same content cop
   // Text between the copies lets the same image be optimised again.
   await clipboardIntake(change(4), false, mem, sources({ snapshots: [change(4)], settings }).value);
   assert.equal((await copy(5, [])).type, 'image');
+});
+
+test('the entries of a copied list Clop leaves alone, and files past the limit, go back on the clipboard beside the results', async () => {
+  const paths = ['C:\\a\\photo.png', 'C:\\a\\notes.txt', 'C:\\work\\temp\\own.png', 'C:\\a\\clip.mp4'];
+  const plan = await clipboardIntake(change(1, { paths }), false, memory(), sources({ settings: { ...settings, optimiseImagePathClipboard: true } }).value);
+  assert.deepEqual(plan, { type: 'files', files: ['C:\\a\\photo.png'], rest: ['C:\\a\\notes.txt', 'C:\\work\\temp\\own.png', 'C:\\a\\clip.mp4'], sequence: 1 });
+  const many = Array.from({ length: 30 }, (_, i) => `C:\\a\\${i}.png`);
+  const split = splitClipboardList(many, ['C:\\a\\notes.txt']);
+  assert.deepEqual([split.take.length, split.rest.length, split.rest[0], split.rest.at(-1)], [20, 11, 'C:\\a\\20.png', 'C:\\a\\notes.txt']);
 });

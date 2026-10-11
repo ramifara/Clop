@@ -13,7 +13,7 @@ import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ignoredApp, withIgnored } from './apps';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
-import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, copyingApp, type ClipboardMemory, type CopyingApp } from './clipboard';
+import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
 import { enabledKey, placeholderReply } from './watch-rules';
@@ -330,12 +330,12 @@ async function createWindows() {
  * results, and several at once, go on as a file list, with the last image's data when all are images. `text` also puts
  * the paths on as text, for results of a copied path.
  */
-async function copy(ids: string[], expectedSequence?: number, { text = false } = {}) {
-  const files = ids.map(id => engine.output(id));
+async function copy(ids: string[], expectedSequence?: number, { text = false, extra = [] }: { text?: boolean; extra?: string[] } = {}) {
+  const outputs = ids.map(id => engine.output(id)), files = [...outputs, ...extra];
   const images = ids.every(id => engine.get(id).result.kind === 'image');
-  const withFiles = !images || ids.length > 1 || settings.copyImageFilePath;
+  const withFiles = !images || ids.length > 1 || settings.copyImageFilePath || extra.length > 0;
   if (process.platform !== 'win32' && !images) throw new Error('Copying files needs the Windows clipboard helper. Save the result instead.');
-  await writeClipboard({ ...(withFiles ? { files } : {}), ...(images ? { image: files[files.length - 1] } : {}), ...(text ? { text: files.join('\r\n') } : {}) }, expectedSequence);
+  await writeClipboard({ ...(withFiles ? { files } : {}), ...(images ? { image: outputs[outputs.length - 1] } : {}), ...(text ? { text: files.join('\r\n') } : {}) }, expectedSequence);
 }
 /**
  * Writes a file list, an image's pixels and text to the clipboard, marked as Clop's own, unless the clipboard changed since
@@ -507,7 +507,7 @@ async function prepareClipboardImages() {
   for (const id of replacedClipboardImages(engine.list(), settings)) await dismiss(id);
 }
 /** Clipboard results always go back on the clipboard; consecutive clipboard images together with `copyConsecutiveClipboardImages`. */
-async function copyClipboardResults(ids: string[], sequence?: number, options?: { text?: boolean }) {
+async function copyClipboardResults(ids: string[], sequence?: number, options?: { text?: boolean; extra?: string[] }) {
   ids = ids.filter(isReady);
   if (!ids.length) return;
   const images = ids.every(id => engine.get(id).result.kind === 'image');
@@ -516,7 +516,7 @@ async function copyClipboardResults(ids: string[], sequence?: number, options?: 
   await copy(accumulated.length > 1 ? accumulated : ids, sequence, options);
 }
 /** The steps of importing clipboard results (see `importClipboardList`), written back against the clipboard `sequence` they came from. */
-function clipboardSteps(sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }, app?: CopyingApp): ClipboardListSteps {
+function clipboardSteps(sequence: number | undefined, aggressive: boolean, options?: { text?: boolean; extra?: string[] }, app?: CopyingApp): ClipboardListSteps {
   return {
     turn: clipboardImageTurn, prepare: prepareClipboardImages, writeBack: ids => copyClipboardResults(ids, sequence, options),
     load: list => importPaths(list, 'clipboard', {
@@ -525,8 +525,10 @@ function clipboardSteps(sequence: number | undefined, aggressive: boolean, optio
     }),
   };
 }
-function importClipboardFiles(files: string[], sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }, app?: CopyingApp) {
-  return importClipboardList(files.slice(0, 20), clipboardSteps(sequence, aggressive, options, app));
+function importClipboardFiles(files: string[], rest: string[] | undefined, sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }, app?: CopyingApp) {
+  // Files past the limit and the entries Clop leaves alone stay in the list the results are written back to.
+  const split = splitClipboardList(files, rest);
+  return importClipboardList(split.take, clipboardSteps(sequence, aggressive, { ...options, extra: split.rest }, app));
 }
 function importClipboardImage(bytes: Buffer, name: string, sequence: number | undefined, aggressive: boolean, app?: CopyingApp) {
   return importClipboardImages(clipboardSteps(sequence, aggressive, undefined, app), async () => {
@@ -562,7 +564,7 @@ function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive 
     switch (plan.type) {
       case 'retry': void optimiseClipboard(plan.change, false, aggressive); return;
       case 'none': if (plan.notice) inform(plan.notice); return;
-      case 'files': return () => importClipboardFiles(plan.files, plan.sequence, aggressive, { text: plan.text }, plan.app);
+      case 'files': return () => importClipboardFiles(plan.files, plan.rest, plan.sequence, aggressive, { text: plan.text }, plan.app);
       case 'image': return () => importClipboardImage(plan.bytes, `Clipboard-${stamp()}.${plan.ext}`, plan.sequence, aggressive, plan.app);
       case 'url': return () => importUrl(plan.url, aggressive, 'clipboard', plan.sequence);
     }

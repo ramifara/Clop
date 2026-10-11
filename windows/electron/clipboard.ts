@@ -50,6 +50,11 @@ export function clipboardFiles(files: readonly string[], { manual, bitmap, setti
   return { files: take, media: media.length > 0, remote: wanted.filter(file => !take.includes(file)) };
 }
 
+/** The most files of a copied list one optimisation takes. */
+const LIST_LIMIT = 20;
+/** Splits a copied list into the files to optimise and everything else, which goes back on the clipboard as it was. */
+export const splitClipboardList = (files: readonly string[], rest: readonly string[] = []) => ({ take: files.slice(0, LIST_LIMIT), rest: [...files.slice(LIST_LIMIT), ...rest] });
+
 export type ClipboardText = { type: 'path'; path: string } | { type: 'image'; bytes: Buffer; ext: string } | { type: 'url'; url: string };
 const DATA_URL = /^(?:url\(\s*["']?)?data:image\/([a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)["']?\s*\)?$/i;
 const BASE64 = /^[a-z0-9+/\s]+={0,2}$/i;
@@ -162,7 +167,8 @@ export function copyingApp({ owner, aumid }: Pick<ClipboardSnapshot, 'owner' | '
   if (owner) return { id: owner, name: owner.split(/[\\/]/).pop()!.replace(/\.exe$/i, '') };
 }
 export type ClipboardPlan =
-  | { type: 'files'; files: string[]; sequence?: number; text?: boolean; app?: CopyingApp }
+  /** `rest` is the copied list's other entries, which go back on the clipboard beside the results. */
+  | { type: 'files'; files: string[]; rest?: string[]; sequence?: number; text?: boolean; app?: CopyingApp }
   | { type: 'image'; bytes: Buffer; ext: string; sequence?: number; app?: CopyingApp }
   | { type: 'url'; url: string; sequence?: number }
   /** The clipboard changed while it was read; look at the newer change instead. */
@@ -197,7 +203,8 @@ export async function clipboardIntake(change: ClipboardSnapshot | undefined, man
       if (hash === memory.fingerprint) return none;
       memory.fingerprint = hash;
     }
-    return { type: 'files', files: listed.files, sequence, ...app };
+    const rest = (snapshot?.paths ?? []).filter(file => !listed.files.includes(file));
+    return { type: 'files', files: listed.files, ...(rest.length ? { rest } : {}), sequence, ...app };
   }
   if (listed.media && !manual) {
     // Another copy came between, so copying the last optimised file again optimises it again.
