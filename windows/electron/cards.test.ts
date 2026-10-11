@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -403,4 +403,23 @@ test('the steps for a total are the change from what the result has had, and non
   assert.deepEqual(totalChange(speed(1), { scale: 1, speed: 2 }), { steps: speed(0.5), tracked: { speed: 1 } });
   assert.deepEqual(totalChange(speed(1), { scale: 1 }), { steps: [] });
   assert.equal(totalChange([{ removeAudio: {} }] as never, { scale: 1 }), undefined);
+});
+
+test('saving PDF pages keeps what the folder holds and writes the pages that could not be made smaller', async t => {
+  const f = await setup(t); if (!f) return;
+  const pdf = f.file('doc.pdf'), folder = path.join(f.root, 'pages');
+  await writeFile(pdf, await photoPDF({ pages: 2 }));
+  await mkdir(folder);
+  // A file of the user's under the name page 1 would take.
+  const first = (await savePages(f.creation, await f.add(pdf), 'jpeg', path.join(f.root, 'probe')))[0], name = path.basename(first);
+  await writeFile(path.join(folder, name), 'mine');
+  const written = await savePages(f.creation, await f.add(pdf), 'jpeg', folder);
+  assert.equal(await readFile(path.join(folder, name), 'utf8'), 'mine', 'an existing file is not replaced');
+  assert.equal(written.length, 2);
+  assert.equal(new Set(written).size, 2);
+  for (const file of written) assert.ok((await stat(file)).size > 100 && path.dirname(file) === folder, file);
+  // A lossless setting leaves a page as it was rendered, which is in the scratch folder: it is copied to the folder.
+  f.state.settings = { ...f.state.settings, imageCompression: { tier: 'lossless', factor: 5 } };
+  const again = await savePages(f.creation, await f.add(pdf), 'png', path.join(f.root, 'lossless'));
+  for (const file of again) assert.ok((await stat(file)).size > 100 && path.dirname(file) === path.join(f.root, 'lossless'), file);
 });

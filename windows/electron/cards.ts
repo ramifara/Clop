@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
 import { realpath as fsRealpath } from 'node:fs';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { NEW_CARD_EDITS, runEdit } from '../core/cards/edits';
 import type { Facts, Plan } from '../core/cards/actions';
+import { exists } from '../core/fileops';
 import { AUDIO_FORMATS, audioFormatForExtension } from '../core/media/audioFormat';
 import { extractAudioCoverArt } from '../core/media/audio';
 import { probe } from '../core/media/detect';
@@ -204,7 +205,15 @@ export async function savePages({ engine, settings, scratchRoot }: CardCreation,
   try {
     const rendered = await renderPDFPages(engine.output(id), scratch, { format, scale: 2, name: path.parse(engine.get(id).result.name).name });
     const written: string[] = [];
-    for (const page of rendered) written.push((await optimiseImage(page.path, folder, { compression: s.imageCompression, stripMetadata: s.stripMetadata, preserveColorMetadata: s.preserveColorMetadata, name: path.parse(page.path).name })).path);
+    for (const page of rendered) {
+      // A page never replaces a file that is already there: it takes the next free name, as saving several results does.
+      const { name: stem, ext } = path.parse(page.path);
+      let name = stem;
+      for (let n = 1; (await Promise.all(['.jpg', '.jpeg', '.png'].map(extension => exists(path.join(folder, name + extension))))).some(Boolean); n++) name = `${stem} (${n})`;
+      const output = await optimiseImage(page.path, folder, { compression: s.imageCompression, stripMetadata: s.stripMetadata, preserveColorMetadata: s.preserveColorMetadata, name });
+      // A page that could not be made smaller comes back as the rendered one, which is in the scratch folder.
+      if (output.unchanged) { const copy = path.join(folder, name + ext); await mkdir(folder, { recursive: true }); await copyFile(page.path, copy); written.push(copy); } else written.push(output.path);
+    }
     return written;
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }
