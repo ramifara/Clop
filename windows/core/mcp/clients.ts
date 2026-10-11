@@ -239,6 +239,11 @@ export async function resolvedConfigPath(file: string): Promise<string> {
  * Reads the file as text, splices it, writes it back through a temporary file. `change` returns undefined when there is
  * nothing to do, and then nothing is written. The read happens as late as possible: some clients rewrite their config
  * while they run. A UTF-8 byte order mark and the file's permissions are kept.
+ *
+ * Read, splice and rename are not one atomic step, and a plain file has no lock to take: a client that saves between our
+ * read and our rename has its save replaced by ours. The window is short, and the backup taken just before the rename holds
+ * the file as it was read. The temporary file is not synced before the rename either, so a power cut at the wrong moment can
+ * leave an empty or partial config on some file systems; the backup is the way back.
  */
 async function edit(client: Client, config: Config, change: (text: string) => string | undefined, options: EditOptions, installing: boolean) {
   const target = await resolvedConfigPath(config.path);
