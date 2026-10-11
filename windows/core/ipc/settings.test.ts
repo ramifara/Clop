@@ -151,6 +151,31 @@ test('agents write only the keys the macOS bridge lists, and never plant script 
   assert.equal((await mcp({ action: 'set', key: 'editorAppImage', value: 'C:\\editor.exe' })).ok, true);
 });
 
+test('agents may not point the working directory, a name template, a watched folder, an attachment or a pipeline step at a network share or a device', async () => {
+  const store = memoryStore({ mcpEnabled: true, mcpAllowScriptSteps: true });
+  const mcp = (req: Omit<SettingsRequest, 'origin'>) => handleSettingsRequest({ ...req, origin: 'mcp' }, store);
+  const refused = /is on a network share or a device\. Agents may only use files and folders on this PC's own drives/;
+  for (const [key, value] of [['workdir', '\\\\server\\share\\work'], ['specificFolderNameTemplateImage', '\\\\server\\share\\%f'], ['convertedSameFolderNameTemplateVideo', '//server/share/%f'], ['customNameTemplateForClipboardImages', '\\\\?\\UNC\\server\\share\\%f']]) {
+    assert.match((await mcp({ action: 'set', key, value })).error!, refused, key);
+    assert.match((await mcp({ action: 'update', values: { [key]: value } })).error!, refused, key);
+  }
+  const step = (text: string) => ({ id: 'P', name: 'P', steps: parseSteps(text), skipOptimisation: true, hideResult: false });
+  for (const values of [
+    { imageDirs: [...store.current.imageDirs, '\\\\server\\share'] },
+    { pipelinesToRunOnImage: { '\\\\server\\share': [step('optimise()')] } },
+    { pipelinesToRunOnImage: { clipboard: [step('copy(to: "\\\\\\\\server\\\\share\\\\")')] } },
+    { savedPipelines: [step('watermark(image: "//server/share/logo.png")')] },
+    { presetZones: [{ id: 'z-all', icon: 'x', name: 'z', pipeline: step('delete(path: "\\\\\\\\.\\\\C:\\\\x")') }] },
+  ]) assert.match((await mcp({ action: 'update', values })).error!, refused, JSON.stringify(values));
+  assert.equal((await mcp({ action: 'set', key: 'workdir', value: 'D:\\Clop work' })).ok, true, 'a drive path is fine');
+  // A share the user set up stays: an agent's change to something else is not refused for it.
+  store.current.imageDirs = ['\\\\nas\\photos'];
+  store.current.savedPipelines = [step('copy(to: "\\\\\\\\nas\\\\backup\\\\")')];
+  assert.equal((await mcp({ action: 'update', values: { imageDirs: ['\\\\nas\\photos', 'D:\\Pictures'], savedPipelines: [...store.current.savedPipelines, { ...step('convert(to: webp)'), id: 'Q', name: 'Q' }] } })).ok, true);
+  // The user may use shares anywhere.
+  assert.equal((await handleSettingsRequest({ action: 'set', key: 'workdir', value: '\\\\server\\share\\work' }, store)).ok, true);
+});
+
 /** An MCP-enabled store holding the user's own script pipeline, and an agent's `update`. */
 function agentLibrary() {
   const store = memoryStore({ mcpEnabled: true });

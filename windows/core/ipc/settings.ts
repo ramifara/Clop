@@ -3,7 +3,8 @@ import { COMPRESSION_TIERS, settingsSchema, SETTING_KEYS, type ClopSettings, typ
 import { shortcutProblem } from '../shortcuts';
 import { isReadable, type Stored } from '../pipeline/codec';
 import { namesProgramByPath } from '../pipeline/app-resolve';
-import { stepEntry, type Pipeline, type PipelineStep, type PresetZone } from '../pipeline/model';
+import { stepEntry, stepPaths, type Pipeline, type PipelineStep, type PresetZone } from '../pipeline/model';
+import { isRemotePath, remotePathRefusal } from '../local-path';
 import { parsePipelineText } from '../pipeline/parser';
 import { SETTINGS_CHANGED, type MCPSettingInfo, type SettingsRequest, type SettingsResponse } from './protocol';
 
@@ -239,6 +240,32 @@ function libraryRefusal(values: Record<string, unknown>, settings: ClopSettings)
   return undefined;
 }
 
+/**
+ * An agent's write that names a network share or a device: in a text or list setting (the working directory, name
+ * templates, watched folders), as a folder a pipeline is attached to, or in a step of a pipeline it adds or changes. Only
+ * what the write brings in counts, so a share the user set up stays usable while an agent changes something else.
+ */
+function remoteRefusal(values: Record<string, unknown>, settings: ClopSettings): string | undefined {
+  const json = (value: unknown) => JSON.stringify(value) ?? '';
+  const texts = (value: unknown): string[] => typeof value === 'string' ? [value] : Array.isArray(value) ? value.filter(item => typeof item === 'string') : [];
+  for (const [key, value] of Object.entries(values)) {
+    if (!isKey(key)) continue;
+    const before = spec(key).parse(settings[key]) ?? settings[key], after = spec(key).parse(value) ?? value, known = new Set(texts(before));
+    const text = texts(after).find(item => !known.has(item) && isRemotePath(item));
+    if (text !== undefined) return remotePathRefusal(text);
+    const was = placedPipelines(key, before);
+    for (const [place, entries] of placedPipelines(key, after)) {
+      if (!was.has(place) && isRemotePath(place)) return remotePathRefusal(place);
+      const kept = new Set((was.get(place) ?? []).map(json));
+      for (const entry of entries) {
+        const found = isReadable(entry) && !kept.has(json(entry)) ? entry.steps.flatMap(stepPaths).find(isRemotePath) : undefined;
+        if (found !== undefined) return remotePathRefusal(found);
+      }
+    }
+  }
+  return undefined;
+}
+
 /** Why an agent may not write `key`, or undefined when it may. */
 function keyRefusal(key: SettingKey, settings: ClopSettings, viaLibrary: boolean): string | undefined {
   if (USER_ONLY.includes(key)) return `${key} can only be changed by the user, in Clop Settings.`;
@@ -277,6 +304,8 @@ export async function handleSettingsRequest(req: SettingsRequest, store: Setting
         if (refused) return refuse(refused);
         const parsed = parseSettingValue(req.key, req.value, current);
         if ('error' in parsed) return refuse(parsed.error);
+        const remote = req.origin === 'mcp' ? remoteRefusal({ [req.key]: parsed.value }, current) : undefined;
+        if (remote) return refuse(remote);
         const unusable = shortcutProblem({ [req.key]: parsed.value }, current);
         if (unusable) return refuse(unusable);
         return { patch: { [req.key]: parsed.value }, result: undefined };
@@ -298,7 +327,7 @@ export async function handleSettingsRequest(req: SettingsRequest, store: Setting
           if (spec(key).parse(value) === undefined) return refuse(`${key} does not accept that value.`);
         }
         // The payload itself is checked: the `pipeline` text an agent sends alongside proves nothing.
-        const refusal = req.origin === 'mcp' ? libraryRefusal(values, current) : undefined;
+        const refusal = req.origin === 'mcp' ? libraryRefusal(values, current) ?? remoteRefusal(values, current) : undefined;
         if (refusal) return refuse(refusal);
         const unusable = shortcutProblem(Object.fromEntries((['keyComboModifiers', 'enabledKeys', 'quickResizeKeys'] as const).filter(key => key in values).map(key => [key, spec(key).parse(values[key])])), current);
         if (unusable) return refuse(unusable);
