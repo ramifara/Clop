@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HIDDEN_KEYS } from '../core/settings/entries';
 import { SETTING_KEYS, defaultSettings, migrateLegacy, settingsSchema, type ClopSettings, type SettingSpec } from '../core/settings/schema';
+import { MCP_WRITABLE } from '../core/ipc/settings';
 import { ACTION_ONLY_SETTINGS, RENDERER_SETTINGS, imageCompression, imageDefaults, imageMode, parseOptions, rendererSettings } from './settings';
 test('new images use the compression and format settings', () => {
   assert.deepEqual(imageDefaults(defaultSettings()), { mode: 'balanced', format: 'auto', scale: 1 });
@@ -49,4 +50,9 @@ test('a value the setting cannot hold is refused instead of silently ignored', (
   assert.throws(() => rendererSettings({ enabledKeys: ['Not a key'] }), /enabledKeys/);
   assert.throws(() => rendererSettings({ videoEncoder: 'rm -rf' }), /videoEncoder/);
   assert.deepEqual(rendererSettings({ keyComboModifiers: ['Control', 'Alt'], enabledKeys: ['C', 'Space'] }), { keyComboModifiers: ['Control', 'Alt'], enabledKeys: ['C', 'Space'] });
+});
+test('the window can write only what agents may write, plus these Windows-side keys, so a new row cannot widen the IPC surface unnoticed', () => {
+  const beyondAgents = RENDERER_SETTINGS.filter(key => !MCP_WRITABLE.has(key)).sort();
+  // None of these chooses a program, script or folder. Add a key here only after deciding that of it.
+  assert.deepEqual(beyondAgents, ['adaptiveVideoSize', 'audioFormat', 'audioFormatsToSkip', 'defaultLinkExpiration', 'enabledKeys', 'formatsToConvertToOutputAudio', 'keyComboModifiers', 'quickResizeKeys', 'videoEncoder', 'workdirCleanupInterval']);
 });

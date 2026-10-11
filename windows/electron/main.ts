@@ -639,7 +639,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     }
     case 'reveal': shell.showItemInFolder(engine.output(id)); break;
     case 'dismiss': await dismiss(id); break;
-    case 'settings': await updateSettings(rendererSettings(args[0])); break;
+    case 'settings': if (event.sender !== main.webContents) throw new Error('Only the settings window can do this.'); await updateSettings(rendererSettings(args[0])); break;
     case 'apps': return bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [];
     case 'run-preset': await importFiles(args[1], 'drop', false, args[0]); break;
     case 'pipelines': return pipelineChoices(settings, engine.get(itemId(args[0])).result.kind);
@@ -656,7 +656,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
       if (isReady(target) && copiesBack(target)) await copy([target], sequence);
       break;
     }
-    case 'mcp': return mcp.handle(args[0]);
+    case 'mcp': if (event.sender !== main.webContents) throw new Error('Only the settings window can do this.'); return mcp.handle(args[0]);
     case 'open-crop': await openView('crop', id); break;
     case 'open-compare': await openView('compare', id); break;
     case 'crop-source': return cropSource(engine.get(id), parseCropView(args[1]), media);
