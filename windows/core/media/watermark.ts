@@ -31,6 +31,9 @@ export async function watermarkOverlay(watermark: Watermark, width: number, heig
   const corners = { topLeft: [PADDING, PADDING], topRight: [width - w - PADDING, PADDING], bottomLeft: [PADDING, height - h - PADDING], center: [(width - w) / 2, (height - h) / 2], bottomRight: [width - w - PADDING, height - h - PADDING] };
   const [left, top] = corners[watermark.position ?? 'bottomRight'];
   const inside = (value: number, room: number) => Math.max(0, Math.min(room, Math.round(value)));
-  const input = await sharp(watermark.file).resize(w, h, { fit: 'fill' }).ensureAlpha().linear([1, 1, 1, watermark.opacity ?? 1], [0, 0, 0, 0]).png().toBuffer();
+  // sharp orders its operations itself and applies `linear` before `ensureAlpha`, so a watermark without alpha (RGB or grey) gets its
+  // four bands in a pass of its own first.
+  const rgba = await sharp(watermark.file).resize(w, h, { fit: 'fill' }).toColourspace('srgb').ensureAlpha().png().toBuffer();
+  const input = await sharp(rgba).linear([1, 1, 1, watermark.opacity ?? 1], [0, 0, 0, 0]).png().toBuffer();
   return { input, left: inside(left, width - w), top: inside(top, height - h) };
 }
