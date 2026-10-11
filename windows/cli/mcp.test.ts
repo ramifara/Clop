@@ -156,6 +156,8 @@ test('video speed-ups get frames: keep or drop written into each changeSpeed ste
   assert.equal(withFrames('changeSpeed( factor: 2 ) -> changeSpeed(factor: 0.5) -> changeSpeed()', 'keep'), 'changeSpeed( factor: 2, frames: keep ) -> changeSpeed(factor: 0.5) -> changeSpeed(frames: keep)');
   assert.equal(withFrames('changeSpeed(factor: 3, frames: keep)', 'drop'), 'changeSpeed(factor: 3, frames: keep)');
   assert.equal(speedSteps('runScript(code: "changeSpeed(factor: 2)")').length, 0, 'quoted text is never rewritten');
+  assert.equal(speedSteps(`if(regex: 'changeSpeed(factor: 2)') -> optimise()`).length, 0, 'single-quoted text is never rewritten either');
+  assert.equal(withFrames(`runScript(code: 'echo "x" # changeSpeed(factor: 2)') -> changeSpeed(factor: 2, note: 'a)b')`, 'drop'), `runScript(code: 'echo "x" # changeSpeed(factor: 2)') -> changeSpeed(factor: 2, note: 'a)b', frames: drop)`);
 });
 
 test('start and stop open only the app Clop itself runs, never a program a card names', { timeout: TIMEOUT }, async t => {

@@ -299,19 +299,19 @@ const needsFrames = (step: SpeedStep) => !/\bframes\s*:/.test(step.args) && (spe
 /** Every `changeSpeed(...)` step. Quoted text is skipped, so a script that mentions changeSpeed is never rewritten. */
 export function speedSteps(dsl: string): SpeedStep[] {
   const name = 'changeSpeed', steps: SpeedStep[] = [];
-  let i = 0, quoted = false;
+  let i = 0, quoted: string | undefined;
   while (i < dsl.length) {
     const c = dsl[i];
-    if (quoted) { if (c === '\\') { i += 2; continue; } if (c === '"') quoted = false; i++; continue; }
-    if (c === '"') { quoted = true; i++; continue; }
+    if (quoted) { if (c === '\\') { i += 2; continue; } if (c === quoted) quoted = undefined; i++; continue; }
+    if (c === '"' || c === "'") { quoted = c; i++; continue; }
     if ((i > 0 && /[\p{L}\p{N}_]/u.test(dsl[i - 1])) || !dsl.startsWith(name, i)) { i++; continue; }
     let open = i + name.length;
     while (open < dsl.length && dsl[open] === ' ') open++;
     if (dsl[open] !== '(') { i = open; continue; }
-    let close = open + 1, inner = false;
+    let close = open + 1, inner: string | undefined;
     while (close < dsl.length && (inner || dsl[close] !== ')')) {
       if (inner && dsl[close] === '\\') { close += 2; continue; }
-      if (dsl[close] === '"') inner = !inner;
+      if (inner ? dsl[close] === inner : dsl[close] === '"' || dsl[close] === "'") inner = inner ? undefined : dsl[close];
       close++;
     }
     if (close >= dsl.length) break;
