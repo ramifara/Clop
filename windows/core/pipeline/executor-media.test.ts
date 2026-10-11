@@ -25,6 +25,18 @@ test('video: a speed change, audio removal and optimisation run as one pass', as
   assert.equal((await w.backups()).length, 1, 'one pass, one replacement');
 });
 
+test('video: an agent\'s GIF conversion may meet an earlier GIF in the folder the conversion setting chose', async t => {
+  const w = await pipelineWorkspace(t, 'ffmpeg', 'ffprobe', 'gifski'); if (!w) return;
+  const input = await clip(w.file('demo.mp4'), { width: 160, height: 120, seconds: 1, fps: 10 });
+  Object.assign(w.settings, { manualConvertedVideoBehaviour: 'specificFolder', convertedSpecificFolderNameTemplateVideo: `${w.file('gifs').replaceAll('\\', '/')}/%f` });
+  const agent = { refuseExisting: {} };
+  const first = await w.run('convert(to: gif)', input, agent);
+  assert.equal(first.file, w.file(path.join('gifs', 'demo.gif')));
+  const again = await w.run('convert(to: gif)', input, agent);
+  assert.equal(again.file, first.file, 'the setting chose that folder, so the earlier GIF is replaced');
+  await assert.rejects(w.run('convert(to: gif, location: "%P/gifs/%f")', input, agent), /already exists/);
+});
+
 test('video: GIF, frame rate cap, watermark and target size', async t => {
   const w = await pipelineWorkspace(t, 'ffmpeg', 'ffprobe', 'gifski'); if (!w) return;
   const input = await clip(w.file('demo.mp4'), { width: 320, height: 240, seconds: 1, fps: 30 });

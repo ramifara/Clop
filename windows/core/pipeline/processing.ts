@@ -222,12 +222,13 @@ export async function runBatch(run: RunState, batch: PipelineStep[], progress: P
 /** The steps that run on their own. */
 export async function runSolo(run: RunState, step: PipelineStep, progress: Progress) {
   const [kind, p] = stepEntry(step), input = run.current, { signal } = run;
-  const place = async (location: string, result: string) => { run.current = await applyLocation(run, location, result, input); };
+  const place = async (location: string, result: string, fromSettings = false) => { run.current = await applyLocation(run, location, result, input, fromSettings); };
   switch (kind) {
     case 'convert': {
       // Only a video to GIF gets here: gifski makes it, outside the ffmpeg pass.
       const gif = await convertVideoToGIF(input, await run.scratch(), { maxWidth: 960, fps: 15, aggressive: run.settings.useAggressiveOptimisationGIF, signal, onProgress: progress });
-      return place(convertLocation(run, p.location), gif.path);
+      const chosen = convertLocation(run, p.location);
+      return place(chosen, gif.path, chosen !== p.location);
     }
     case 'targetSize': {
       if ((await stat(input)).size <= p.bytes) {
