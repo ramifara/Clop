@@ -23,7 +23,7 @@ export function Attachments({ state, send }: { state: EditorState; send: Send })
           <ul className="attached">
             {source.entries.map(entry => <li key={entry.key} className={entry.missing || !entry.readable ? 'bad' : undefined} title={entry.text}>
               <span className="glyph" aria-hidden="true">{glyph(library.find(candidate => candidate.key === entry.libraryID)?.icon)}</span>{entry.name}
-              <button type="button" aria-label={`Detach ${entry.name} from ${source.label}`} onClick={() => void send({ type: 'detach', fileType: kind, source: source.source, key: entry.key })}>×</button></li>)}
+              <button type="button" aria-label={`Detach ${entry.name} from ${source.label}`} onClick={() => void send({ type: 'detach', fileType: kind, source: source.source, key: entry.key, base: entry.revision })}>×</button></li>)}
             {!source.entries.length && <li className="none">Nothing attached</li>}
           </ul>
           <select aria-label={`Attach a pipeline to ${source.label} for ${kind} files`} value="" disabled={!source.configured && !attachable.length} onChange={event => { if (event.target.value) void send({ type: 'attach', fileType: kind, source: source.source, pipelineId: event.target.value }); }}>

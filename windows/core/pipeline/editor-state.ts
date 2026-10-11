@@ -21,6 +21,8 @@ export interface PipelineView {
   readable: true;
   /** The id, which commands name the pipeline by. */
   key: string;
+  /** A fingerprint of the stored entry. Commands that change or remove it carry the one the window saw, so a change made elsewhere is noticed. */
+  revision: string;
   name: string;
   builtin: boolean;
   fileType?: ClopFileType;
@@ -38,10 +40,10 @@ export interface PipelineView {
   problems: string[];
 }
 /** A saved entry this version cannot read. It is kept as it is; the editor shows its JSON so it can be fixed or removed. */
-export interface UnreadableView { readable: false; key: string; id?: string; reason: string; raw: string }
+export interface UnreadableView { readable: false; key: string; revision: string; id?: string; reason: string; raw: string }
 export type LibraryEntry = PipelineView | UnreadableView;
 
-export interface AttachedView { key: string; readable: boolean; name: string; text: string; libraryID?: string; missing?: boolean }
+export interface AttachedView { key: string; revision: string; readable: boolean; name: string; text: string; libraryID?: string; missing?: boolean }
 export interface SourceView {
   source: string;
   label: string;
@@ -52,6 +54,7 @@ export interface SourceView {
 export interface ZoneView {
   readable: boolean;
   key: string;
+  revision: string;
   name: string;
   icon: string;
   type?: ClopFileType;
@@ -70,8 +73,34 @@ export interface EditorState {
 }
 
 const prettyRaw = (raw: unknown) => { try { return JSON.stringify(typeof raw === 'string' ? JSON.parse(raw) : raw, null, 2); } catch { return String(raw); } };
-const unreadableKey = (index: number) => `unreadable:${index}`;
-export const entryKey = (entry: Stored<{ id: string }>, index: number) => isReadable(entry) ? entry.id : unreadableKey(index);
+
+/** A short fingerprint of a stored entry (cyrb53 of its JSON), to tell whether it changed since the window drew it. */
+export function revisionOf(entry: unknown): string {
+  const text = JSON.stringify(entry) ?? '';
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) { const c = text.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+/**
+ * The key of each entry of a stored list, which commands name entries by: a readable entry's id; an unreadable entry's own id
+ * when it has a short one, else a hash of what it holds. Never a position, which shifts whenever anything before it changes.
+ * An id or content that repeats gets a key of its own, so every key is unique.
+ */
+export function entryKeys(entries: readonly Stored<{ id: string }>[]): string[] {
+  const used = new Set<string>();
+  return entries.map(entry => {
+    if (isReadable(entry)) return entry.id;
+    const id = storedId(entry), hash = revisionOf(entry);
+    let key = id !== undefined && id.length <= 64 ? `unreadable:id:${id}` : `unreadable:raw:${hash}`;
+    if (used.has(key)) key = `unreadable:raw:${hash}`;
+    for (let n = 2; used.has(key); n++) key = `unreadable:raw:${hash}~${n}`;
+    used.add(key);
+    return key;
+  });
+}
 
 /** The text a stored pipeline shows: its own words when they still mean its steps, else the steps written out. */
 export function textOf(pipeline: Pipeline): { text: string; exact: boolean } {
@@ -86,13 +115,16 @@ export function textOf(pipeline: Pipeline): { text: string; exact: boolean } {
 export function pipelineView(pipeline: Pipeline): PipelineView {
   const { text, exact } = textOf(pipeline);
   return {
-    readable: true, key: pipeline.id, name: pipeline.name ?? '', builtin: isBuiltin(pipeline), fileType: pipeline.fileType, icon: pipeline.icon, details: pipeline.details,
+    readable: true, key: pipeline.id, revision: revisionOf(pipeline), name: pipeline.name ?? '', builtin: isBuiltin(pipeline), fileType: pipeline.fileType, icon: pipeline.icon, details: pipeline.details,
     skipOptimisation: pipeline.skipOptimisation, hideResult: pipeline.hideResult, text, json: stepsToJsonc(pipeline.steps), exact,
     problems: pipelineProblems(pipeline).map(problem => `Step ${problem.step + 1}: ${problem.message}`),
   };
 }
-const libraryView = (saved: readonly Stored<Pipeline>[]): LibraryEntry[] => saved.map((entry, index) => isReadable(entry) ? pipelineView(entry)
-  : { readable: false, key: unreadableKey(index), id: storedId(entry), reason: entry.reason, raw: prettyRaw(entry.raw) });
+const libraryView = (saved: readonly Stored<Pipeline>[]): LibraryEntry[] => {
+  const keys = entryKeys(saved);
+  return saved.map((entry, index) => isReadable(entry) ? pipelineView(entry)
+    : { readable: false, key: keys[index], revision: revisionOf(entry), id: storedId(entry), reason: entry.reason, raw: prettyRaw(entry.raw) });
+};
 
 /** The entry of `map` stored for `source`: the same key, or one that names the same folder. */
 export function sourceEntry<T>(map: Record<string, T>, source: string, { home, platform }: EditorContext = {}): { key: string; entries: T } | undefined {
@@ -109,11 +141,12 @@ function attachmentsView(settings: EditorSettings, context: EditorContext): Reco
     const view = (source: string, label: string, configured: boolean): SourceView => {
       const found = sourceEntry(map, source, context);
       if (found) shown.add(found.key);
+      const keys = entryKeys(found?.entries ?? []);
       return {
         source, label, configured, entries: (found?.entries ?? []).map((entry, index): AttachedView => {
-          if (!isReadable(entry)) return { key: unreadableKey(index), readable: false, name: 'Unreadable pipeline', text: entry.reason };
+          if (!isReadable(entry)) return { key: keys[index], revision: revisionOf(entry), readable: false, name: 'Unreadable pipeline', text: entry.reason };
           const target = entry.libraryID === undefined ? entry : saved.find(candidate => candidate.id === entry.libraryID);
-          return { key: entry.id, readable: true, libraryID: entry.libraryID, name: target?.name ?? (entry.libraryID ? 'Deleted pipeline' : 'Pipeline'), text: target ? textOf(target).text : '', ...(target ? {} : { missing: true }) };
+          return { key: entry.id, revision: revisionOf(entry), readable: true, libraryID: entry.libraryID, name: target?.name ?? (entry.libraryID ? 'Deleted pipeline' : 'Pipeline'), text: target ? textOf(target).text : '', ...(target ? {} : { missing: true }) };
         }),
       };
     };
@@ -125,11 +158,12 @@ function attachmentsView(settings: EditorSettings, context: EditorContext): Reco
 
 function zoneViews(settings: EditorSettings): ZoneView[] {
   const saved = settings.savedPipelines.filter(isReadable);
+  const keys = entryKeys(settings.presetZones);
   return settings.presetZones.map((zone, index): ZoneView => {
-    if (zone instanceof Unreadable) return { readable: false, key: unreadableKey(index), name: 'Unreadable preset zone', icon: '', pipelineName: '', text: '', reason: zone.reason };
+    if (zone instanceof Unreadable) return { readable: false, key: keys[index], revision: revisionOf(zone), name: 'Unreadable preset zone', icon: '', pipelineName: '', text: '', reason: zone.reason };
     const target = resolveRunnable(zone.pipeline, saved);
     return {
-      readable: true, key: zone.id, name: zone.name, icon: zone.icon, type: zone.type, libraryID: zone.pipeline.libraryID,
+      readable: true, key: zone.id, revision: revisionOf(zone), name: zone.name, icon: zone.icon, type: zone.type, libraryID: zone.pipeline.libraryID,
       pipelineName: target ? target.name ?? 'Custom pipeline' : 'Deleted pipeline', text: target ? textOf(target).text : '', ...(target ? {} : { missing: true }),
     };
   });

@@ -63,8 +63,8 @@ export function Library({ state, send }: { state: EditorState; send: Send }) {
     setNote('Saved.');
   }
   async function remove() {
-    if (!selected) return;
-    const reply = await send({ type: 'pipeline-delete', key: selected });
+    if (!selected || !entry) return;
+    const reply = await send({ type: 'pipeline-delete', key: selected, base: entry.revision });
     if (!reply || reply.issues) return;
     setConfirming(false); setSelected(undefined); setDraft(blank()); setSaved(JSON.stringify(blank()));
     const gone = reply.removed ? [reply.removed.attachments && `${reply.removed.attachments} attachment${reply.removed.attachments === 1 ? '' : 's'}`, reply.removed.zones && `${reply.removed.zones} preset zone${reply.removed.zones === 1 ? '' : 's'}`].filter(Boolean) : [];
@@ -132,8 +132,8 @@ function UnreadableEditor({ entry, send, onDone }: { entry: UnreadableView; send
     <p className="explain">Clop cannot read this pipeline: {entry.reason} It is kept exactly as it is, so it still works on the Mac it came from. Fix its JSON below to use it here, or delete it.</p>
     <StepTextEditor value={json} onChange={value => { setJson(value); setProblems([]); }} mode="json" problems={problems} label="Pipeline JSON"/>
     <footer className="pane-foot">
-      <button type="button" className="primary" onClick={() => void send({ type: 'pipeline-fix', key: entry.key, json }).then(reply => { if (reply?.issues) setProblems(reply.issues); else if (reply) onDone(); })}>Use this JSON</button>
-      <button type="button" className="danger" onClick={() => void send({ type: 'pipeline-delete', key: entry.key }).then(reply => { if (reply && !reply.issues) onDone(); })}>Delete</button>
+      <button type="button" className="primary" onClick={() => void send({ type: 'pipeline-fix', key: entry.key, base: entry.revision, json }).then(reply => { if (reply?.issues) setProblems(reply.issues); else if (reply) onDone(); })}>Use this JSON</button>
+      <button type="button" className="danger" onClick={() => void send({ type: 'pipeline-delete', key: entry.key, base: entry.revision }).then(reply => { if (reply && !reply.issues) onDone(); })}>Delete</button>
     </footer>
   </>;
 }

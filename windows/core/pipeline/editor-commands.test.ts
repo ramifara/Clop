@@ -4,7 +4,7 @@ import { defaultSettings, parseSettings, type ClopSettings } from '../settings/s
 import { Unreadable, decodePipelines, decodePresetZones, isReadable } from './codec';
 import { seedBuiltinPipelines } from './builtins';
 import { LIMITS, applyCommand, parseCommand, type EditorCommand } from './editor-commands';
-import { editorState, type EditorSettings } from './editor-state';
+import { editorState, entryKeys, revisionOf, type EditorSettings } from './editor-state';
 import type { Pipeline, PresetZone } from './model';
 import { pipelinesFor } from './triggers';
 
@@ -21,6 +21,11 @@ function run(settings: ClopSettings, command: unknown) {
   return { result, settings: deepFreeze(parseSettings(result.patch, settings)) };
 }
 const save = (over: Partial<Extract<EditorCommand, { type: 'pipeline-save' }>> = {}): EditorCommand => ({ type: 'pipeline-save', name: 'Small PNGs', fileType: 'image', skipOptimisation: false, hideResult: false, view: 'text', text: 'downscale(factor: 0.5) -> optimise', ...over });
+/** The revision the window would show for the entry with this key. */
+function rev(settings: EditorSettings, key: string): string {
+  const view = editorState(settings, windows), all = [...view.library, ...view.zones, ...Object.values(view.attachments).flat().flatMap(source => source.entries)];
+  return all.find(entry => entry.key === key)?.revision ?? 'missing';
+}
 const named = (settings: EditorSettings, name: string) => settings.savedPipelines.filter(isReadable).find(entry => entry.name === name)!;
 
 test('malformed commands are refused whole, whatever the caller sends', () => {
@@ -29,9 +34,9 @@ test('malformed commands are refused whole, whatever the caller sends', () => {
     { type: 'attach', fileType: 'image', source: 'clipboard', pipelineId: 'x'.repeat(LIMITS.id + 1) },
     { type: 'pipeline-save', name: 'a', skipOptimisation: false, hideResult: false, view: 'text', text: 1 }, { ...save(), view: 'xml' }, { ...save(), name: '  ' }, { ...save(), name: 'x'.repeat(LIMITS.name + 1) },
     { ...save(), text: 'x'.repeat(LIMITS.text + 1) }, { ...save(), skipOptimisation: 'yes' }, { ...save(), icon: '../etc' }, { ...save(), icon: 'a b' }, { ...save(), fileType: 'gif' }, { ...save(), id: 5 },
-    { type: 'zone-save', name: 'a', icon: 'photo', pipelineId: {} }, { type: 'zone-move', key: 'a', to: -1 }, { type: 'zone-move', key: 'a', to: 1.5 }, { type: 'zone-move', key: 'a', to: LIMITS.zones }, { type: 'zone-delete' }];
+    { type: 'zone-save', name: 'a', icon: 'photo', pipelineId: {} }, { type: 'zone-move', key: 'a', to: -1 }, { type: 'zone-move', key: 'a', to: 1.5 }, { type: 'zone-move', key: 'a', to: LIMITS.zones }, { type: 'zone-delete', key: 'z' }, { type: 'pipeline-delete', key: 'p' }];
   for (const command of bad) assert.throws(() => applyCommand(fixture(), command), /invalid|Error/, JSON.stringify(command));
-  assert.deepEqual(parseCommand({ type: 'zone-delete', key: 'z', extra: 'ignored' }), { type: 'zone-delete', key: 'z' }, 'unknown fields are dropped');
+  assert.deepEqual(parseCommand({ type: 'zone-delete', key: 'z', base: 'r', extra: 'ignored' }), { type: 'zone-delete', key: 'z', base: 'r' }, 'unknown fields are dropped');
 });
 
 test('saving a pipeline from text adds it to the library with the text the user wrote, cleaned', () => {
@@ -103,10 +108,10 @@ test('attaching puts a reference in the clipboard, drop zone or watched folder o
   const sources = editorState(settings, windows).attachments.image;
   assert.deepEqual(sources.map(source => [source.label, source.entries.map(entry => entry.name)]), [['Clipboard', ['Small PNGs']], ['Drop zone', ['Small PNGs']], ['C:\\Users\\Rami\\Desktop', ['Small PNGs']], ['~/Pictures/Shots', ['Small PNGs']]]);
   const entry = sources[0].entries[0];
-  settings = run(settings, { type: 'detach', fileType: 'image', source: 'clipboard', key: entry.key }).settings;
+  settings = run(settings, { type: 'detach', fileType: 'image', source: 'clipboard', key: entry.key, base: entry.revision }).settings;
   assert.deepEqual(pipelinesFor('image', 'clipboard', settings, windows), []);
   assert.equal(Object.hasOwn(settings.pipelinesToRunOnImage, 'clipboard'), false, 'an empty source is dropped');
-  assert.match(run(settings, { type: 'detach', fileType: 'image', source: 'clipboard', key: entry.key }).result.issues![0].message, /no longer attached/);
+  assert.match(run(settings, { type: 'detach', fileType: 'image', source: 'clipboard', key: entry.key, base: entry.revision }).result.issues![0].message, /no longer attached/);
 });
 
 test('attaching is refused for the wrong file type, an unwatched folder, a duplicate or a full place', () => {
@@ -142,13 +147,13 @@ test('entries this version cannot read stay in place through every command, and 
   settings = run(settings, { type: 'zone-save', name: 'Small', icon: 'photo', fileType: 'image', pipelineId: id }).settings;
   assert.ok(settings.presetZones[0] instanceof Unreadable && settings.presetZones.length === 2);
 
-  assert.match(run(settings, { type: 'pipeline-fix', key: view.key, json: '{"name":"x","steps":[{"teleport":{}}]}' }).result.issues![0].message, /teleport/);
-  assert.match(run(settings, { type: 'pipeline-fix', key: id, json: '{}' }).result.issues![0].message, /could not be read/);
-  assert.match(run(settings, { type: 'pipeline-fix', key: view.key, json: '{"steps":[{"optimise":{}}]}' }).result.issues![0].message, /name/);
-  const fixed = run(settings, { type: 'pipeline-fix', key: view.key, json: JSON.stringify({ id: 'OTHER', name: 'Fixed', steps: [{ optimise: {} }] }) });
+  assert.match(run(settings, { type: 'pipeline-fix', key: view.key, base: view.revision, json: '{"name":"x","steps":[{"teleport":{}}]}' }).result.issues![0].message, /teleport/);
+  assert.match(run(settings, { type: 'pipeline-fix', key: id, base: rev(settings, id), json: '{}' }).result.issues![0].message, /could not be read/);
+  assert.match(run(settings, { type: 'pipeline-fix', key: view.key, base: view.revision, json: '{"steps":[{"optimise":{}}]}' }).result.issues![0].message, /name/);
+  const fixed = run(settings, { type: 'pipeline-fix', key: view.key, base: view.revision, json: JSON.stringify({ id: 'OTHER', name: 'Fixed', steps: [{ optimise: {} }] }) });
   assert.equal(fixed.result.saved, 'NEW', 'the id stays so references keep working');
   assert.ok(isReadable(fixed.settings.savedPipelines.at(-2)!) && named(fixed.settings, 'Fixed').id === 'NEW');
-  const gone = run(settings, { type: 'pipeline-delete', key: view.key });
+  const gone = run(settings, { type: 'pipeline-delete', key: view.key, base: view.revision });
   assert.equal(gone.settings.savedPipelines.length, settings.savedPipelines.length - 1);
   assert.ok(gone.settings.pipelinesToRunOnImage.clipboard[0] instanceof Unreadable, 'removing one entry leaves the others');
 });
@@ -160,13 +165,13 @@ test('deleting a pipeline detaches it everywhere and removes the preset zones th
   settings = run(settings, { type: 'attach', fileType: 'image', source: 'dropZone', pipelineId: id }).settings;
   settings = run(settings, { type: 'attach', fileType: 'image', source: 'dropZone', pipelineId: 'builtin-image-webp' }).settings;
   settings = run(settings, { type: 'zone-save', name: 'Small', icon: 'photo', fileType: 'image', pipelineId: id }).settings;
-  const { result, settings: after } = run(settings, { type: 'pipeline-delete', key: id });
+  const { result, settings: after } = run(settings, { type: 'pipeline-delete', key: id, base: rev(settings, id) });
   assert.deepEqual(result.removed, { attachments: 2, zones: 1 });
   assert.equal(after.presetZones.length, 0);
   assert.deepEqual(Object.keys(after.pipelinesToRunOnImage), ['dropZone']);
   assert.deepEqual(pipelinesFor('image', 'dropZone', after, windows).map(p => p.id), ['builtin-image-webp']);
   assert.equal(after.savedPipelines.some(entry => isReadable(entry) && entry.id === id), false);
-  assert.match(run(after, { type: 'pipeline-delete', key: id }).result.issues![0].message, /no longer in the library/);
+  assert.match(run(after, { type: 'pipeline-delete', key: id, base: 'x' }).result.issues![0].message, /no longer in the library/);
 });
 
 test('preset zones are added, edited, reordered and removed, running a library pipeline that fits their file type', () => {
@@ -196,11 +201,77 @@ test('preset zones are added, edited, reordered and removed, running a library p
   assert.deepEqual(moved.presetZones.map(z => (z as PresetZone).name), ['Audio', 'Shrink']);
   assert.deepEqual(run(settings, { type: 'zone-move', key: shrink.id, to: 0 }).result.patch, {});
   assert.deepEqual(run(settings, { type: 'zone-move', key: shrink.id, to: 30 }).settings.presetZones.map(z => (z as PresetZone).name), ['Audio', 'Shrink'], 'past the end means last');
-  assert.deepEqual(run(settings, { type: 'zone-delete', key: shrink.id }).settings.presetZones.map(z => (z as PresetZone).name), ['Audio']);
-  assert.match(run(settings, { type: 'zone-delete', key: 'GONE' }).result.issues![0].message, /no longer exists/);
+  assert.deepEqual(run(settings, { type: 'zone-delete', key: shrink.id, base: rev(settings, shrink.id) }).settings.presetZones.map(z => (z as PresetZone).name), ['Audio']);
+  assert.match(run(settings, { type: 'zone-delete', key: 'GONE', base: 'x' }).result.issues![0].message, /no longer exists/);
 
   const full = deepFreeze({ ...settings, presetZones: Array.from({ length: LIMITS.zones }, (_, i) => ({ ...shrink, id: `Z${i}` })) });
   assert.match(applyCommand(full, zone({ pipelineId: small }), windows).issues![0].message, /room for 40/);
   const view = editorState(settings, windows).zones;
   assert.deepEqual(view.map(z => [z.name, z.type, z.pipelineName, z.missing]), [['Shrink', 'image', 'Small PNGs', undefined], ['Audio', 'audio', 'to MP3', undefined]]);
+});
+
+/** Unreadable entries: one with an id, one without, one more with the same id as the first. */
+function withUnreadable() {
+  const entries = decodePipelines([
+    { id: 'FUT-A', name: 'A', steps: [{ teleport: { to: 'moon' } }] },
+    { name: 'No id', steps: [{ warp: {} }] },
+    { id: 'FUT-A', name: 'A again', steps: [{ teleport: { to: 'mars' } }] },
+  ])!;
+  const base = fixture();
+  return fixture({ savedPipelines: [...entries, ...base.savedPipelines] });
+}
+const unreadableViews = (settings: ClopSettings) => editorState(settings, windows).library.filter(entry => !entry.readable);
+
+test('unreadable entries are named by what they are, not where they are, and the keys are unique', () => {
+  const settings = withUnreadable(), [a, noId, again] = unreadableViews(settings);
+  assert.equal(new Set([a.key, noId.key, again.key]).size, 3);
+  assert.equal(a.key, 'unreadable:id:FUT-A');
+  assert.ok(noId.key.startsWith('unreadable:raw:'), 'no id: a hash of what it holds');
+  assert.ok(!a.readable && !noId.readable && a.revision === revisionOf(settings.savedPipelines[0]));
+  // Putting something in front, or taking something out, does not change any key.
+  const shifted = fixture({ savedPipelines: [...fixture().savedPipelines, ...settings.savedPipelines.slice(1)] });
+  const after = unreadableViews(shifted);
+  assert.equal(after[0].key, noId.key);
+  assert.equal(entryKeys(settings.savedPipelines).length, settings.savedPipelines.length);
+});
+
+test('a fix or delete aimed at an unreadable entry that moved or changed is refused, never applied to its neighbour', () => {
+  const settings = withUnreadable(), [a, noId] = unreadableViews(settings);
+  assert.ok(!a.readable && !noId.readable);
+  // Removed elsewhere: the key no longer names anything, even though another entry now sits at its position.
+  const removed = fixture({ savedPipelines: settings.savedPipelines.filter((_, index) => index !== 1) });
+  for (const command of [{ type: 'pipeline-delete', key: noId.key, base: noId.revision }, { type: 'pipeline-fix', key: noId.key, base: noId.revision, json: '{"name":"x","steps":[{"optimise":{}}]}' }]) {
+    const { result } = run(removed, command);
+    assert.deepEqual(result.patch, {});
+    assert.match(result.issues![0].message, /no longer|changed elsewhere/);
+  }
+  // Same id but replaced by other contents: the revision the editor saw no longer matches.
+  const replaced = fixture({ savedPipelines: [...decodePipelines([{ id: 'FUT-A', name: 'Replaced', steps: [{ teleport: { to: 'venus' } }] }])!, ...settings.savedPipelines.slice(1)] });
+  const refused = run(replaced, { type: 'pipeline-delete', key: a.key, base: a.revision });
+  assert.deepEqual(refused.result.patch, {});
+  assert.equal(refused.result.conflict, true);
+  assert.match(refused.result.issues![0].message, /changed elsewhere/);
+  // The right key and revision still work, wherever the entry is now.
+  const front = fixture({ savedPipelines: [...fixture().savedPipelines, ...settings.savedPipelines] });
+  const viewNow = unreadableViews(front).find(view => view.key === noId.key)!;
+  assert.equal(run(front, { type: 'pipeline-delete', key: noId.key, base: noId.revision }).settings.savedPipelines.length, front.savedPipelines.length - 1);
+  assert.ok(viewNow.key === noId.key);
+  // A command that names no revision cannot touch an unreadable entry.
+  assert.throws(() => applyCommand(settings, { type: 'pipeline-delete', key: a.key }), /invalid/);
+});
+
+test('attached and zone unreadable entries are keyed by identity too', () => {
+  const start = fixture({
+    pipelinesToRunOnImage: { clipboard: decodePipelines([{ id: 'X1', steps: [{ teleport: {} }] }, { id: 'X2', steps: [{ teleport: {} }] }])! },
+    presetZones: decodePresetZones([{ id: 'Z1', name: 'Z', icon: 'x', pipeline: { id: 'P', steps: [{ teleport: {} }] } }, { id: 'Z2', name: 'Z', icon: 'x', pipeline: { id: 'Q', steps: [{ teleport: {} }] } }])!,
+  });
+  const view = editorState(start, windows);
+  const [x1, x2] = view.attachments.image[0].entries, [z1, z2] = view.zones;
+  assert.deepEqual([x1.key, x2.key, z1.key, z2.key], ['unreadable:id:X1', 'unreadable:id:X2', 'unreadable:id:Z1', 'unreadable:id:Z2']);
+  const gone = run(start, { type: 'detach', fileType: 'image', source: 'clipboard', key: x1.key, base: x1.revision }).settings;
+  assert.equal(editorState(gone, windows).attachments.image[0].entries[0].key, 'unreadable:id:X2');
+  assert.equal(run(gone, { type: 'detach', fileType: 'image', source: 'clipboard', key: x1.key, base: x1.revision }).result.issues![0].message.includes('no longer'), true);
+  const zoneGone = run(start, { type: 'zone-delete', key: z1.key, base: z1.revision }).settings;
+  assert.equal(zoneGone.presetZones.length, 1);
+  assert.match(run(zoneGone, { type: 'zone-delete', key: z1.key, base: z1.revision }).result.issues![0].message, /no longer/);
 });

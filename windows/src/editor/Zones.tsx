@@ -38,7 +38,7 @@ export function Zones({ state, send }: { state: EditorState; send: Send }) {
 function ZoneRow({ zone, index, count, library, send }: { zone: ZoneView; index: number; count: number; library: PipelineView[]; send: Send }) {
   const [name, setName] = useState(zone.name);
   if (!zone.readable) return <li className="zone bad"><span className="glyph" aria-hidden="true">⚠</span><span className="zone-name">{zone.name}</span><small>{zone.reason}</small>
-    <button type="button" className="danger" onClick={() => void send({ type: 'zone-delete', key: zone.key })}>Remove</button></li>;
+    <button type="button" className="danger" onClick={() => void send({ type: 'zone-delete', key: zone.key, base: zone.revision })}>Remove</button></li>;
   const save = (patch: { name?: string; icon?: string; fileType?: ClopFileType | null; pipelineId?: string }) => {
     const fileType = patch.fileType === undefined ? zone.type : patch.fileType ?? undefined;
     void send({ type: 'zone-save', id: zone.key, name: patch.name ?? zone.name, icon: patch.icon ?? zone.icon, fileType, pipelineId: patch.pipelineId });
@@ -55,6 +55,6 @@ function ZoneRow({ zone, index, count, library, send }: { zone: ZoneView; index:
     <select aria-label={`Pipeline of ${zone.name}`} title={zone.text} value={zone.libraryID && options.some(entry => entry.key === zone.libraryID) ? zone.libraryID : ''} onChange={event => event.target.value && save({ pipelineId: event.target.value })}>
       {!(zone.libraryID && options.some(entry => entry.key === zone.libraryID)) && <option value="">{zone.missing ? 'Pipeline deleted: choose one' : zone.libraryID ? `${zone.pipelineName} (does not fit)` : zone.pipelineName}</option>}
       {options.map(entry => <option key={entry.key} value={entry.key}>{entry.name}</option>)}</select>
-    <button type="button" className="danger" aria-label={`Remove ${zone.name}`} onClick={() => void send({ type: 'zone-delete', key: zone.key })}>Remove</button>
+    <button type="button" className="danger" aria-label={`Remove ${zone.name}`} onClick={() => void send({ type: 'zone-delete', key: zone.key, base: zone.revision })}>Remove</button>
   </li>;
 }

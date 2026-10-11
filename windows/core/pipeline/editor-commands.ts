@@ -1,5 +1,5 @@
 import { Unreadable, decodePipeline, isReadable, storedId, type Stored } from './codec';
-import { DIR_KEYS, FIXED_SOURCES, entryKey, sourceEntry, type EditorContext, type EditorSettings } from './editor-state';
+import { DIR_KEYS, FIXED_SOURCES, entryKeys, revisionOf, sourceEntry, type EditorContext, type EditorSettings } from './editor-state';
 import { parseJsoncSteps } from './jsonc';
 import { FILE_TYPES, newPipelineId, referenceTo, type ClopFileType, type Pipeline, type PresetZone } from './model';
 import { canFormat, cleanupPipelineText, formatSteps, parsePipelineText, type PipelineIssue } from './parser';
@@ -14,18 +14,20 @@ const ICON = /^[\w.-]{1,64}$/;
 
 export type EditorCommand =
   | { type: 'pipeline-save'; id?: string; name: string; fileType?: ClopFileType; icon?: string; details?: string; skipOptimisation: boolean; hideResult: boolean; view: 'text' | 'json'; text: string }
-  | { type: 'pipeline-fix'; key: string; json: string }
-  | { type: 'pipeline-delete'; key: string }
+  | { type: 'pipeline-fix'; key: string; base: string; json: string }
+  | { type: 'pipeline-delete'; key: string; base: string }
   | { type: 'attach'; fileType: ClopFileType; source: string; pipelineId: string }
-  | { type: 'detach'; fileType: ClopFileType; source: string; key: string }
+  | { type: 'detach'; fileType: ClopFileType; source: string; key: string; base: string }
   | { type: 'zone-save'; id?: string; name: string; icon: string; fileType?: ClopFileType; pipelineId?: string }
-  | { type: 'zone-delete'; key: string }
+  | { type: 'zone-delete'; key: string; base: string }
   | { type: 'zone-move'; key: string; to: number };
 export interface CommandResult {
   /** The settings keys the command changes; empty when it changed nothing. */
   patch: Partial<EditorSettings>;
   /** Problems with what the user wrote. The command did nothing. */
   issues?: PipelineIssue[];
+  /** The command did nothing because the entry it names is no longer what the window showed. */
+  conflict?: boolean;
   /** The id of the pipeline or zone the command saved. */
   saved?: string;
   /** Attachments and preset zones removed together with a deleted pipeline. */
@@ -40,6 +42,8 @@ const optional = <T>(value: unknown, read: (value: unknown) => T) => value === u
 const flag = (value: unknown, what: string) => typeof value === 'boolean' ? value : refuse(what);
 const fileType = (value: unknown) => typeof value === 'string' && (FILE_TYPES as readonly string[]).includes(value) ? value as ClopFileType : refuse('file type');
 const idOf = (value: unknown, what = 'id') => text(value, what, LIMITS.id);
+/** The revision of the entry the window showed (`revisionOf`), which the command acts on only while it is still stored. */
+const revision = (value: unknown) => idOf(value, 'revision');
 const icon = (value: unknown) => typeof value === 'string' && ICON.test(value) ? value : refuse('icon');
 
 /** The command as typed data, or an Error when anything is missing, the wrong type or too long. */
@@ -51,14 +55,14 @@ export function parseCommand(value: unknown): EditorCommand {
       details: optional(c.details, v => text(v, 'description', LIMITS.details, { empty: true }).trim() || undefined), skipOptimisation: flag(c.skipOptimisation, 'setting'), hideResult: flag(c.hideResult, 'setting'),
       view: c.view === 'text' || c.view === 'json' ? c.view : refuse('view'), text: text(c.text, 'pipeline text', LIMITS.text, { empty: true }),
     };
-    case 'pipeline-fix': return { type: 'pipeline-fix', key: idOf(c.key, 'entry'), json: text(c.json, 'pipeline JSON', LIMITS.text) };
-    case 'pipeline-delete': return { type: 'pipeline-delete', key: idOf(c.key, 'entry') };
+    case 'pipeline-fix': return { type: 'pipeline-fix', key: idOf(c.key, 'entry'), base: revision(c.base), json: text(c.json, 'pipeline JSON', LIMITS.text) };
+    case 'pipeline-delete': return { type: 'pipeline-delete', key: idOf(c.key, 'entry'), base: revision(c.base) };
     case 'attach': return { type: 'attach', fileType: fileType(c.fileType), source: text(c.source, 'source', LIMITS.path), pipelineId: idOf(c.pipelineId) };
-    case 'detach': return { type: 'detach', fileType: fileType(c.fileType), source: text(c.source, 'source', LIMITS.path), key: idOf(c.key, 'entry') };
+    case 'detach': return { type: 'detach', fileType: fileType(c.fileType), source: text(c.source, 'source', LIMITS.path), key: idOf(c.key, 'entry'), base: revision(c.base) };
     case 'zone-save': return {
       type: 'zone-save', id: optional(c.id, v => idOf(v)), name: text(c.name, 'name', LIMITS.zoneName).trim(), icon: icon(c.icon), fileType: optional(c.fileType, fileType), pipelineId: optional(c.pipelineId, v => idOf(v)),
     };
-    case 'zone-delete': return { type: 'zone-delete', key: idOf(c.key, 'zone') };
+    case 'zone-delete': return { type: 'zone-delete', key: idOf(c.key, 'zone'), base: revision(c.base) };
     case 'zone-move': return { type: 'zone-move', key: idOf(c.key, 'zone'), to: Number.isInteger(c.to) && (c.to as number) >= 0 && (c.to as number) < LIMITS.zones ? c.to as number : refuse('position') };
     default: return refuse('command');
   }
@@ -67,7 +71,11 @@ export function parseCommand(value: unknown): EditorCommand {
 const none = (issues: PipelineIssue[]): CommandResult => ({ patch: {}, issues });
 const problem = (message: string): CommandResult => none([{ message }]);
 const readable = (saved: readonly Stored<Pipeline>[]) => saved.filter(isReadable);
-const libraryIndex = (saved: readonly Stored<Pipeline>[], key: string) => saved.findIndex((entry, index) => entryKey(entry, index) === key);
+const indexOfKey = (entries: readonly Stored<{ id: string }>[], key: string) => entryKeys(entries).indexOf(key);
+const CHANGED = 'It was changed elsewhere since this window showed it. Reload it, then try again.';
+const changed = (): CommandResult => ({ patch: {}, issues: [{ message: CHANGED }], conflict: true });
+/** The entry still holds what the window showed: same revision. */
+const unchanged = (entry: unknown, base: string) => revisionOf(entry) === base;
 /** A pipeline for `type` can serve a zone or attachment of that type; one without a type serves any. */
 const serves = (pipeline: Pipeline, type: ClopFileType | undefined) => !pipeline.fileType || pipeline.fileType === type;
 
@@ -84,7 +92,7 @@ function saveAttachments(settings: EditorSettings, kind: ClopFileType, map: Reco
 }
 
 function savePipeline(settings: EditorSettings, c: Extract<EditorCommand, { type: 'pipeline-save' }>, context: EditorContext): CommandResult {
-  const index = c.id === undefined ? -1 : libraryIndex(settings.savedPipelines, c.id), existing = settings.savedPipelines[index];
+  const index = c.id === undefined ? -1 : indexOfKey(settings.savedPipelines, c.id), existing = settings.savedPipelines[index];
   if (c.id !== undefined && (index < 0 || !isReadable(existing))) return problem('That pipeline is no longer in the library. Save it as a new pipeline.');
   if (index < 0 && settings.savedPipelines.length >= LIMITS.library) return problem(`The library holds at most ${LIMITS.library} pipelines.`);
   const parsed = c.view === 'text' ? parsePipelineText(c.text, { fileType: c.fileType, home: context.home }) : parseJsoncSteps(c.text, { fileType: c.fileType });
@@ -105,8 +113,10 @@ function savePipeline(settings: EditorSettings, c: Extract<EditorCommand, { type
 
 /** Replaces an entry this version cannot read with the JSON the user fixed, keeping its id so what refers to it still does. */
 function fixPipeline(settings: EditorSettings, c: Extract<EditorCommand, { type: 'pipeline-fix' }>): CommandResult {
-  const index = libraryIndex(settings.savedPipelines, c.key), entry = settings.savedPipelines[index];
+  const index = indexOfKey(settings.savedPipelines, c.key), entry = settings.savedPipelines[index];
+  if (index < 0) return problem('That pipeline is no longer in the library.');
   if (!(entry instanceof Unreadable)) return problem('Only a pipeline that could not be read can be replaced this way.');
+  if (!unchanged(entry, c.base)) return changed();
   let pipeline: Pipeline;
   try { pipeline = decodePipeline(c.json); } catch (error) { return problem((error as Error).message); }
   const original = storedId(entry);
@@ -119,8 +129,9 @@ function fixPipeline(settings: EditorSettings, c: Extract<EditorCommand, { type:
 }
 
 function deletePipeline(settings: EditorSettings, c: Extract<EditorCommand, { type: 'pipeline-delete' }>): CommandResult {
-  const index = libraryIndex(settings.savedPipelines, c.key);
+  const index = indexOfKey(settings.savedPipelines, c.key);
   if (index < 0) return problem('That pipeline is no longer in the library.');
+  if (!unchanged(settings.savedPipelines[index], c.base)) return changed();
   const patch: Partial<EditorSettings> = { savedPipelines: settings.savedPipelines.filter((_, i) => i !== index) };
   const removed = { attachments: 0, zones: 0 };
   if (isReadable(settings.savedPipelines[index])) {
@@ -159,14 +170,15 @@ function attach(settings: EditorSettings, c: Extract<EditorCommand, { type: 'att
 
 function detach(settings: EditorSettings, c: Extract<EditorCommand, { type: 'detach' }>, context: EditorContext): CommandResult {
   const map = { ...(settings[PIPELINE_SOURCE_KEYS[c.fileType]] ?? {}) }, found = sourceEntry(map, c.source, context);
-  const index = found?.entries.findIndex((entry, i) => entryKey(entry, i) === c.key) ?? -1;
+  const index = found ? indexOfKey(found.entries, c.key) : -1;
   if (!found || index < 0) return problem('That pipeline is no longer attached there.');
+  if (!unchanged(found.entries[index], c.base)) return changed();
   map[found.key] = found.entries.filter((_, i) => i !== index);
   return { patch: saveAttachments(settings, c.fileType, map) };
 }
 
 function saveZone(settings: EditorSettings, c: Extract<EditorCommand, { type: 'zone-save' }>): CommandResult {
-  const index = c.id === undefined ? -1 : settings.presetZones.findIndex((zone, i) => entryKey(zone, i) === c.id), existing = settings.presetZones[index];
+  const index = c.id === undefined ? -1 : indexOfKey(settings.presetZones, c.id), existing = settings.presetZones[index];
   if (c.id !== undefined && (index < 0 || !isReadable(existing))) return problem('That preset zone no longer exists.');
   if (index < 0 && settings.presetZones.length >= LIMITS.zones) return problem(`There is room for ${LIMITS.zones} preset zones.`);
   const previous = existing && isReadable(existing) ? existing : undefined;
@@ -187,7 +199,7 @@ function saveZone(settings: EditorSettings, c: Extract<EditorCommand, { type: 'z
 }
 
 function moveZone(settings: EditorSettings, c: Extract<EditorCommand, { type: 'zone-move' }>): CommandResult {
-  const index = settings.presetZones.findIndex((zone, i) => entryKey(zone, i) === c.key);
+  const index = indexOfKey(settings.presetZones, c.key);
   if (index < 0) return problem('That preset zone no longer exists.');
   const to = Math.min(c.to, settings.presetZones.length - 1), presetZones = [...settings.presetZones];
   const [zone] = presetZones.splice(index, 1);
@@ -196,8 +208,10 @@ function moveZone(settings: EditorSettings, c: Extract<EditorCommand, { type: 'z
 }
 
 function deleteZone(settings: EditorSettings, c: Extract<EditorCommand, { type: 'zone-delete' }>): CommandResult {
-  const index = settings.presetZones.findIndex((zone, i) => entryKey(zone, i) === c.key);
-  return index < 0 ? problem('That preset zone no longer exists.') : { patch: { presetZones: settings.presetZones.filter((_, i) => i !== index) } };
+  const index = indexOfKey(settings.presetZones, c.key);
+  if (index < 0) return problem('That preset zone no longer exists.');
+  if (!unchanged(settings.presetZones[index], c.base)) return changed();
+  return { patch: { presetZones: settings.presetZones.filter((_, i) => i !== index) } };
 }
 
 /** Applies a checked command to the settings. Never mutates them; `patch` holds the replaced settings values. */

@@ -74,7 +74,7 @@ test('an entry Windows cannot read is written back exactly as it was', async t =
   assert.deepEqual(disk.pipelinesToRunOnImage.clipboard[0], future);
   assert.deepEqual(disk.presetZones[0], { id: 'ZN', name: 'Newer', icon: 'x', pipeline: future });
   assert.equal(disk.pipelinesToRunOnImage.clipboard.length, 2);
-  const fixed = await editor.command({ type: 'pipeline-fix', key: 'unreadable:1', json: JSON.stringify({ name: 'Fixed', steps: [{ optimise: {} }] }) });
+  const fixed = await editor.command({ type: 'pipeline-fix', key: 'unreadable:id:MACSTR', base: editor.state().library.find(entry => entry.key === 'unreadable:id:MACSTR')!.revision, json: JSON.stringify({ name: 'Fixed', steps: [{ optimise: {} }] }) });
   assert.equal(fixed.saved, 'MACSTR');
   assert.equal((await onDisk()).savedPipelines.some((entry: unknown) => entry instanceof Unreadable), false);
 });
