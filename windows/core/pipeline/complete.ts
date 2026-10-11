@@ -110,14 +110,17 @@ export function autoInsertArrow(text: string, cursor: number): Edit | undefined 
   return { text: splice(text, close + 1, cursor - 1, ' -> '), cursor: close + 6 };
 }
 
-/** Closes the step the cursor is in: drops a trailing comma, closes an open quote, adds `)` and starts the next step with ` -> ` (`commitCurrentStep`). */
+/** Closes the step the cursor is in: drops a trailing comma, closes an open quote, adds `)` and starts the next step with ` -> ` (unless a step follows already) (`commitCurrentStep`). */
 export function commitStep(text: string, cursor: number): Edit | undefined {
   const open = text.slice(0, cursor).lastIndexOf('(');
   if (open < 0) return undefined;
   const next = [...text.slice(open).matchAll(SEPARATOR)][0], end = next ? open + next.index : text.length;
   let inside = text.slice(open + 1, end).replace(/[,\s)]*$/, '');
   if ((inside.match(/"/g)?.length ?? 0) % 2) inside += '"';
-  const committed = `${text.slice(0, open + 1)}${inside})${text.slice(end)} -> `;
+  const closed = `${text.slice(0, open + 1)}${inside})`;
+  // A step after this one already has its arrow, so the cursor stays beside the committed step instead of moving past the later steps.
+  if (next) { const gap = next[0] === '->' ? ' ' : ''; return { text: `${closed}${gap}${text.slice(end)}`, cursor: closed.length }; }
+  const committed = `${closed} -> `;
   return { text: committed, cursor: committed.length };
 }
 
