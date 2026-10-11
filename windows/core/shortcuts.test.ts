@@ -1,13 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultSettings, parseSettings } from './settings/schema';
-import { diffShortcuts, hintFor, KEY_ACTIONS, nextDownscale, nextResolution, nextSpeed, shortcutProblem, ShortcutRegistry, shortcutsFor, type ShortcutApi } from './shortcuts';
+import { conflictNotice, diffShortcuts, hintFor, KEY_ACTIONS, nextDownscale, nextResolution, nextSpeed, reservedBy, shortcutProblem, ShortcutRegistry, shortcutsFor, type ShortcutApi } from './shortcuts';
 
 const base = () => defaultSettings();
 const keys = (override: Partial<ReturnType<typeof base>> = {}) => shortcutsFor({ ...base(), ...override }).map(shortcut => shortcut.accelerator);
 
-test('the default settings give the macOS key set under Control+Shift, without a rename key', () => {
-  assert.deepEqual(keys().sort(), ['Control+Shift+-', 'Control+Shift+=', 'Control+Shift+Backspace', 'Control+Shift+Space', 'Control+Shift+Z', 'Control+Shift+P', 'Control+Shift+C', 'Control+Shift+A', 'Control+Shift+X', 'Control+Shift+K', 'Control+Shift+Escape'].sort());
+test('the Windows default is Control+Shift with only the keys that rarely collide', () => {
+  assert.deepEqual(keys().sort(), ['Control+Shift+-', 'Control+Shift+=', 'Control+Shift+Space', 'Control+Shift+C', 'Control+Shift+A'].sort());
+  assert.deepEqual(base().keyComboModifiers, ['Control', 'Shift']);
+});
+
+test('every key the macOS list has is still accepted, for a user who turns it on', () => {
+  const all = ['-', '=', 'Backspace', 'Space', 'Z', 'P', 'C', 'A', 'X', 'K', 'Escape'];
+  assert.equal(keys({ enabledKeys: all }).length, all.length - 1, 'all but Control+Shift+Escape, which is Task Manager');
+  assert.equal(shortcutProblem({ enabledKeys: all.filter(key => key !== 'Escape') }, base()), undefined);
 });
 
 test('modifiers follow the accelerator order whatever order they are saved in, and resize keys add the number keys', () => {
@@ -23,7 +30,7 @@ test('every plan survives the settings parser with its modifiers', () => {
   for (const modifiers of [['Control', 'Shift'], ['Alt', 'Shift'], ['Super'], ['Control', 'Alt', 'Super']]) {
     const settings = parseSettings({ keyComboModifiers: modifiers, quickResizeKeys: ['1', '9'] });
     assert.deepEqual(settings.keyComboModifiers, modifiers);
-    for (const { accelerator } of shortcutsFor(settings)) assert.ok(accelerator.startsWith(`${modifiers.join('+')}+`), accelerator);
+    for (const { accelerator } of shortcutsFor(settings)) assert.deepEqual(accelerator.split('+').slice(0, -1).sort(), [...modifiers].sort(), accelerator);
   }
 });
 
@@ -37,7 +44,7 @@ test('trigger keys that would take ordinary typing register nothing', () => {
   assert.deepEqual(keys({ keyComboModifiers: ['Shift'] }), []);
   assert.deepEqual(keys({ keyComboModifiers: ['Control'] }), [], 'Ctrl+C, Ctrl+Z and the rest belong to every app');
   assert.deepEqual(keys({ keyComboModifiers: ['Alt'] }), []);
-  assert.equal(keys({ keyComboModifiers: ['Super'] }).length, 11);
+  assert.equal(keys({ keyComboModifiers: ['Super'] }).length, 5);
 });
 
 test('validation says why a change cannot be saved', () => {
@@ -78,11 +85,11 @@ const shortcut = (accelerator: string, kind: 'preview' | 'restore' = 'preview') 
 
 test('a settings change registers and releases only the differences', () => {
   const { api, registered, log } = fakeApi(), pressed: string[] = [];
-  const registry = new ShortcutRegistry(api, action => pressed.push(action.kind), () => assert.fail('no conflict expected'));
-  registry.sync([shortcut('A+1'), shortcut('A+2', 'restore')]);
+  const registry = new ShortcutRegistry(api, action => pressed.push(action.kind));
+  assert.deepEqual(registry.sync([shortcut('A+1'), shortcut('A+2', 'restore')]), { registered: ['A+1', 'A+2'], failed: [] });
   assert.deepEqual([...registered.keys()], ['A+1', 'A+2']);
   log.length = 0;
-  registry.sync([shortcut('A+2', 'restore'), shortcut('A+3')]);
+  assert.deepEqual(registry.sync([shortcut('A+2', 'restore'), shortcut('A+3')]), { registered: ['A+3'], failed: [] });
   assert.deepEqual(log, ['-A+1', '+A+3']);
   registered.get('A+3')!(); registered.get('A+2')!();
   assert.deepEqual(pressed, ['preview', 'restore']);
@@ -93,33 +100,61 @@ test('a settings change registers and releases only the differences', () => {
 
 test('a key that changes its action keeps its registration and runs the new action', () => {
   const { api, registered, log } = fakeApi(), pressed: string[] = [];
-  const registry = new ShortcutRegistry(api, action => pressed.push(action.kind), () => {});
+  const registry = new ShortcutRegistry(api, action => pressed.push(action.kind));
   registry.sync([shortcut('A+1')]); log.length = 0;
   registry.sync([shortcut('A+1', 'restore')]);
   registered.get('A+1')!();
   assert.deepEqual(log, []); assert.deepEqual(pressed, ['restore']);
 });
 
-test('a conflict is reported once, nothing is released for it, and it does not stop the others', () => {
-  const { api, registered, log } = fakeApi(['A+1']), conflicts: string[] = [];
-  const registry = new ShortcutRegistry(api, () => {}, accelerator => conflicts.push(accelerator));
-  registry.sync([shortcut('A+1'), shortcut('A+2'), shortcut('bad')]);
-  assert.deepEqual(conflicts, ['A+1', 'bad']);
+test('conflicts come back together, once; nothing is released for them; the others still register', () => {
+  const { api, registered, log } = fakeApi(['A+1']);
+  const registry = new ShortcutRegistry(api, () => {});
+  assert.deepEqual(registry.sync([shortcut('A+1'), shortcut('A+2'), shortcut('bad')]), { registered: ['A+2'], failed: ['A+1', 'bad'] });
   assert.deepEqual([...registered.keys()], ['A+2']);
-  registry.sync([shortcut('A+1'), shortcut('A+2'), shortcut('bad')]);
-  assert.deepEqual(conflicts, ['A+1', 'bad']);
+  assert.deepEqual(registry.sync([shortcut('A+1'), shortcut('A+2'), shortcut('bad')]), { registered: [], failed: [] }, 'not asked again');
   log.length = 0;
   registry.sync([shortcut('A+2')]);
   assert.deepEqual(log, [], 'a shortcut that never registered is not unregistered');
-  registry.sync([shortcut('A+1'), shortcut('A+2')]);
-  assert.deepEqual(conflicts, ['A+1', 'bad', 'A+1'], 'asking for it again after it was dropped tries again');
+  assert.deepEqual(registry.sync([shortcut('A+1'), shortcut('A+2')]).failed, ['A+1'], 'asking for it again after it was dropped tries again');
 });
 
 test('dispose releases what is held', () => {
   const { api, registered } = fakeApi();
-  const registry = new ShortcutRegistry(api, () => {}, () => {});
+  const registry = new ShortcutRegistry(api, () => {});
   registry.sync([shortcut('A+1')]); registry.dispose();
   assert.equal(registered.size, 0);
+});
+
+test('a conflict is announced the first time and not at every launch, and is news again after it has cleared', () => {
+  const wanted = [shortcut('A+1'), shortcut('A+2')];
+  const first = conflictNotice([], { registered: ['A+2'], failed: ['A+1'] }, wanted);
+  assert.deepEqual(first, { announce: ['A+1'], seen: ['A+1'] });
+  const launch = conflictNotice(first.seen, { registered: ['A+2'], failed: ['A+1'] }, wanted);
+  assert.deepEqual(launch, { announce: [], seen: ['A+1'] });
+  const cleared = conflictNotice(launch.seen, { registered: ['A+1', 'A+2'], failed: [] }, wanted);
+  assert.deepEqual(cleared, { announce: [], seen: [] });
+  assert.deepEqual(conflictNotice(cleared.seen, { registered: [], failed: ['A+1'] }, wanted).announce, ['A+1']);
+  assert.deepEqual(conflictNotice(['A+9'], { registered: [], failed: [] }, wanted).seen, [], 'a key that is no longer wanted is forgotten');
+});
+
+test('what Windows keeps for itself is never registered, whatever order the modifiers come in', () => {
+  assert.match(reservedBy('Control+Shift+Escape')!, /Task Manager/);
+  assert.ok(reservedBy('Shift+Control+Esc'), 'order and spelling do not matter');
+  assert.ok(reservedBy('Control+Alt+Delete')); assert.ok(reservedBy('Control+Escape')); assert.ok(reservedBy('Super+L')); assert.ok(reservedBy('Alt+Tab')); assert.ok(reservedBy('Alt+F4')); assert.ok(reservedBy('Shift+Super+S'));
+  assert.equal(reservedBy('Control+Shift+C'), undefined);
+  assert.deepEqual(keys({ enabledKeys: ['Escape', 'C'] }), ['Control+Shift+C']);
+  assert.deepEqual(keys({ keyComboModifiers: ['Alt'], enabledKeys: ['Tab'] }), []);
+  assert.deepEqual(keys({ keyComboModifiers: ['Super'], enabledKeys: ['L', 'C'] }), ['Super+C']);
+});
+
+test('a change that would turn on a reserved accelerator is refused whichever setting it touches', () => {
+  const current = { ...base(), enabledKeys: ['C'] };
+  assert.match(shortcutProblem({ enabledKeys: ['C', 'Escape'] }, current)!, /Ctrl\+Shift\+Escape opens Task Manager/);
+  assert.match(shortcutProblem({ keyComboModifiers: ['Control', 'Shift'] }, { ...current, enabledKeys: ['Escape'], keyComboModifiers: ['Alt', 'Shift'] })!, /Task Manager/);
+  assert.equal(shortcutProblem({ enabledKeys: ['C', 'Z'] }, current), undefined);
+  assert.equal(shortcutProblem({ enabledKeys: ['Escape'] }), undefined, 'without the settings it lands on there is nothing to combine with');
+  assert.equal(shortcutProblem({ stripMetadata: true } as never, { ...current, enabledKeys: ['Escape'] }), undefined, 'an unrelated change is not held up by a stored key');
 });
 
 test('stepping down follows macOS: a quarter above half, a tenth below, on the factors the card menu offers', () => {

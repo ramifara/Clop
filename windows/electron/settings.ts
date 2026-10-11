@@ -44,7 +44,7 @@ export const ACTION_ONLY_SETTINGS = {
 } as const satisfies Partial<Record<SettingKey, string>>;
 /** The settings the renderer may change: every one the Settings window has a row for, except those that only change through an action. */
 export const RENDERER_SETTINGS: readonly SettingKey[] = [...new Set(SETTING_ENTRIES.flatMap(entry => entry.keys))].filter(key => !(key in ACTION_ONLY_SETTINGS));
-export function rendererSettings(value: unknown): Record<string, unknown> {
+export function rendererSettings(value: unknown, current?: ClopSettings): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Choose a setting to change.');
   const blocked = Object.keys(value).filter(key => !(RENDERER_SETTINGS as readonly string[]).includes(key));
   if (blocked.length) throw new Error(`${blocked.join(', ')} cannot be changed from this window.`);
@@ -52,7 +52,7 @@ export function rendererSettings(value: unknown): Record<string, unknown> {
   const invalid = Object.entries(value).filter(([key, entry]) => (settingsSchema[key as SettingKey] as SettingSpec).parse(entry) === undefined).map(([key]) => key);
   if (invalid.length) throw new Error(`${invalid.join(', ')} ${invalid.length === 1 ? 'is not a valid value' : 'are not valid values'}.`);
   // Shortcuts that would take over typing (Shift alone) or that nothing can press are refused here, before they are saved.
-  const problem = shortcutProblem(value);
+  const problem = shortcutProblem(value, current);
   if (problem) throw new Error(problem);
   return value as Record<string, unknown>;
 }

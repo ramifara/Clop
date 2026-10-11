@@ -19,7 +19,7 @@ import { FolderWatcher } from './watcher';
 import { enabledKey, placeholderReply } from './watch-rules';
 import { FolderResults, LastBatch, restoreAll } from './automation';
 import { appsReply } from './apps';
-import { nextDownscale, nextResolution, nextSpeed, ShortcutRegistry, shortcutsFor, type ShortcutAction } from '../core/shortcuts';
+import { conflictNotice, nextDownscale, nextResolution, nextSpeed, shortcutProblem, ShortcutRegistry, shortcutsFor, type ShortcutAction } from '../core/shortcuts';
 import { describeAccelerator } from '../src/settings/accelerator';
 import { guarded, recentClipboard, toTemplate, trayMenu, trayTooltip, trayVariant, type TrayActions, type TrayVariant } from './tray-menu';
 import { allPipelineChoices, appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
@@ -744,8 +744,18 @@ async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
 }
 /** The shortcuts and the windows' screenshot protection follow the settings, whichever way they changed. */
 function applyWindowSettings() {
-  shortcuts?.sync(shortcutsFor(settings));
+  syncShortcuts();
   for (const window of BrowserWindow.getAllWindows()) protectFromCapture(window);
+}
+let lastShortcutProblem: string | undefined;
+/** Registers what the settings ask for. A conflict is announced once, all together, and not again at later launches; unusable trigger keys (set from a file) are said once. */
+function syncShortcuts() {
+  if (!shortcuts) return;
+  const wanted = shortcutsFor(settings), { announce, seen } = conflictNotice(settings.shortcutConflictsSeen, shortcuts.sync(wanted), wanted);
+  if (announce.length) inform(`${announce.map(describeAccelerator).join(', ')} ${announce.length === 1 ? 'is' : 'are'} already in use by another program. Use the tray menu or floating shelf instead.`);
+  if (JSON.stringify(seen) !== JSON.stringify(settings.shortcutConflictsSeen)) store.set({ shortcutConflictsSeen: seen }).catch(error => console.warn(`Could not remember the shortcut conflicts: ${message(error)}`));
+  const problem = shortcutProblem(settings);
+  if (problem !== lastShortcutProblem) { lastShortcutProblem = problem; if (problem) inform(`The global shortcuts are off: ${problem}`); }
 }
 // "Show Clop UI in screenshots": every window of Clop is hidden from screenshots and recordings unless it is on, including windows made later.
 function protectFromCapture(window: BrowserWindow) { if (!window.isDestroyed()) window.setContentProtection(!settings.allowClopToAppearInScreenshots); }
@@ -919,7 +929,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'save': await saveResult(BrowserWindow.fromWebContents(event.sender) ?? undefined, id); break;
     case 'reveal': shell.showItemInFolder(engine.output(id)); break;
     case 'dismiss': await dismiss(id); break;
-    case 'settings': if (event.sender !== main.webContents) throw new Error('Only the settings window can do this.'); await updateSettings(rendererSettings(args[0])); break;
+    case 'settings': if (event.sender !== main.webContents) throw new Error('Only the settings window can do this.'); await updateSettings(rendererSettings(args[0], settings)); break;
     case 'apps': return bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [];
     case 'run-preset': await importFiles(args[1], 'drop', false, args[0]); break;
     case 'pipelines': return pipelineChoices(settings, engine.get(itemId(args[0])).result.kind);
@@ -1060,8 +1070,7 @@ else {
     });
     for (const watcher of watchers) void watcher.update();
     updateTray();
-    shortcuts = new ShortcutRegistry(globalShortcut, action => guarded(() => runShortcut(action), reportFailure),
-      accelerator => inform(`${describeAccelerator(accelerator)} is already in use. Use the tray menu or floating shelf instead.`));
+    shortcuts = new ShortcutRegistry(globalShortcut, action => guarded(() => runShortcut(action), reportFailure));
     applyWindowSettings();
     if (process.platform === 'win32') {
       bridge.on('ready', () => { bridgeReady = true; void bridge.request(nativeSettings()).then(() => { if (settings.enableClipboardOptimiser) void optimiseClipboard(); }).catch(error => inform(message(error))); });

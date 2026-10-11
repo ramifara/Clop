@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { COMPRESSION_TIERS, settingsSchema, SETTING_KEYS, type ClopSettings, type CompressionQuality, type SettingKey, type SettingSpec } from '../settings/schema';
+import { shortcutProblem } from '../shortcuts';
 import { isReadable, type Stored } from '../pipeline/codec';
 import { namesProgramByPath } from '../pipeline/app-resolve';
 import { stepEntry, type Pipeline, type PipelineStep, type PresetZone } from '../pipeline/model';
@@ -269,6 +270,8 @@ export async function handleSettingsRequest(req: SettingsRequest, store: Setting
         if (refused) return refuse(refused);
         const parsed = parseSettingValue(req.key, req.value, current);
         if ('error' in parsed) return refuse(parsed.error);
+        const unusable = shortcutProblem({ [req.key]: parsed.value }, current);
+        if (unusable) return refuse(unusable);
         return { patch: { [req.key]: parsed.value }, result: undefined };
       });
       return written.result ? { ok: false, error: written.result.error } : { ok: true, settings: [settingInfo(req.key as SettingKey, written.settings)] };
@@ -288,6 +291,8 @@ export async function handleSettingsRequest(req: SettingsRequest, store: Setting
         const refusal = req.origin === 'mcp' ? libraryRefusal(values, current) : undefined;
         if (refusal) return refuse(refusal);
         if (req.base && !unchanged(req.base, current)) return refuse(SETTINGS_CHANGED);
+        const unusable = shortcutProblem(Object.fromEntries((['keyComboModifiers', 'enabledKeys', 'quickResizeKeys'] as const).filter(key => key in values).map(key => [key, spec(key).parse(values[key])])), current);
+        if (unusable) return refuse(unusable);
         return { patch: values, result: undefined };
       });
       return written.result ? { ok: false, error: written.result.error } : { ok: true };

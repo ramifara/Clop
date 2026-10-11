@@ -33,9 +33,9 @@ test('action names, action keys and resize keys are values the settings accept',
   assert.equal(new Set(TEMPLATE_VARIABLES.map(([token]) => token)).size, TEMPLATE_VARIABLES.length);
 });
 
-test('the default action keys are all offered, apart from the one Windows has no action for (rename)', () => {
+test('the default action keys are all offered in the window', () => {
   const offered = ACTION_KEYS.map(action => action.key) as string[];
-  assert.deepEqual((schema.enabledKeys.default as string[]).filter(key => !offered.includes(key)), ['R']);
+  assert.deepEqual((schema.enabledKeys.default as string[]).filter(key => !offered.includes(key)), []);
 });
 
 test('a key press becomes the accelerator Electron registers', () => {

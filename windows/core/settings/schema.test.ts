@@ -47,7 +47,7 @@ test('defaults follow Settings.swift and the Windows encodings', () => {
   assert.equal(defaults.optimiseImagePathClipboard, true);
   assert.match(settingsSchema.optimiseImagePathClipboard.encoding!, /Windows default differs from macOS/);
   assert.deepEqual(defaults.keyComboModifiers, ['Control', 'Shift']);
-  assert.deepEqual(defaults.enabledKeys, ['-', '=', 'Backspace', 'Space', 'Z', 'P', 'C', 'A', 'X', 'R', 'K', 'Escape']);
+  assert.deepEqual(defaults.enabledKeys, ['-', '=', 'Space', 'C', 'A'], 'the Windows default drops the keys apps use (macOS has twelve)');
   assert.deepEqual(defaults.imageCompression, { tier: 'custom', factor: 30 });
   assert.deepEqual(defaults.videoCompression, { tier: 'fast', factor: 50 });
   assert.equal(defaults.sameFolderNameTemplateImage, '%f-optimised');

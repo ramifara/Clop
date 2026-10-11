@@ -54,6 +54,9 @@ test('a value the setting cannot hold is refused instead of silently ignored', (
   assert.throws(() => rendererSettings({ keyComboModifiers: [] }), /at least one/i);
   assert.throws(() => rendererSettings({ quickResizeKeys: ['1', 'F5'] }), /F5 cannot downscale/);
   assert.deepEqual(rendererSettings({ quickResizeKeys: ['1', '9'] }), { quickResizeKeys: ['1', '9'] });
+  assert.throws(() => rendererSettings({ keyComboModifiers: ['Control'] }), /Ctrl alone/);
+  assert.throws(() => rendererSettings({ enabledKeys: ['C', 'Escape'] }, defaultSettings()), /Task Manager/);
+  assert.deepEqual(rendererSettings({ enabledKeys: ['C', 'Z'] }, defaultSettings()), { enabledKeys: ['C', 'Z'] });
 });
 test('the window can write only what agents may write, plus these Windows-side keys, so a new row cannot widen the IPC surface unnoticed', () => {
   const beyondAgents = RENDERER_SETTINGS.filter(key => !MCP_WRITABLE.has(key)).sort();

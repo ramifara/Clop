@@ -291,6 +291,7 @@ export const HIDDEN_KEYS: Partial<Record<SettingKey, string>> = {
   cliInstalled: 'Changed by the tray menu item that installs or removes the command-line tool.',
   lastAutoIncrementingNumber: 'The counter behind the %i name template token; the app advances it.',
   builtinPipelinesSeededVersion: 'Bookkeeping for the built-in pipelines.',
+  shortcutConflictsSeen: 'Which shortcut conflicts were already announced; the app keeps it.',
   savedCropSizes: 'Edited in the crop window.',
   useAggressiveOptimisationMP4: 'Legacy flag, superseded by the compression setting of each type.',
   useAggressiveOptimisationJPEG: 'Legacy flag, superseded by the compression setting of each type.',
