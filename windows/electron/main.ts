@@ -471,13 +471,15 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'pipelines': return pipelineChoices(settings, engine.get(itemId(args[0])).result.kind);
     case 'run-pipeline': {
       const target = itemId(args[0]), { kind, source } = engine.get(target).result, pipeline = chosenPipeline(settings, kind, args[1]);
+      // Read before the run: copying the result back must not replace something the user, or the pipeline itself, put on the clipboard since.
+      const sequence = await currentSequence();
       await engine.runPipeline(target, async input => {
         const outcome = await runForApp(pipelineHost, [pipeline], input.optimised ?? await input.fresh(), { kind }, input.signal);
         // Asked for from the card, so the result stays in view whatever the pipeline's hideResult says.
         afterPipelines(target, outcome, source, { hide: false });
         return { file: outcome.file, anyRan: outcome.anyRan, warnings: outcomeNotes(outcome) };
       });
-      if (isReady(target) && copiesBack(target)) await copy([target]);
+      if (isReady(target) && copiesBack(target)) await copy([target], sequence);
       break;
     }
     case 'window':
