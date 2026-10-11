@@ -10,7 +10,7 @@ import { imageDefaults, rendererSettings } from './settings';
 import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { SettingsStore } from '../core/settings/store';
 import { Workdir } from '../core/workdir';
-import { placementsSettled, placing } from '../core/placement';
+import { effectiveBehaviour, placementsSettled, placing } from '../core/placement';
 import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ignoredApp, withIgnored } from './apps';
@@ -19,7 +19,7 @@ import { ClipboardIntake, importClipboardImages, importClipboardList, type Clipb
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
 import { enabledKey, localFile } from './watch-rules';
-import { FolderResults, LastBatch, restoreAll } from './automation';
+import { FolderResults, folderPlacement, LastBatch, restoreAll } from './automation';
 import { appsReply } from './apps';
 import { conflictNotice, shortcutProblem, ShortcutRegistry, shortcutsFor, type ShortcutAction } from '../core/shortcuts';
 import { describeAccelerator } from '../src/settings/accelerator';
@@ -589,7 +589,15 @@ function startClipboardFallback() {
   clipboardTimer = setInterval(() => { if (settings.enableClipboardOptimiser && !polling) { polling = true; void optimiseClipboard(undefined, false, false, true).finally(() => { polling = false; }); } }, 900);
   clipboardTimer.unref();
 }
-const optimiseWithCard = cardOptimiser({ engine: () => engine, makeRoom, defaults });
+// A card for a request on the user's own file places its result there itself, by the placement settings and the request's overrides, so the card's
+// Restore undoes the write. An explicit output, or results kept in the shelf (`temporary`, which the service copies beside the file), stay with the service.
+const optimiseWithCard = cardOptimiser({
+  engine: () => engine, makeRoom, defaults,
+  placement: (file, kind, req) => req.output || effectiveBehaviour(folderEnv(), kind, 'optimised', req.placement) === 'temporary' ? undefined
+    : folderPlacement(file, kind, folderEnv, value => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); }, req.placement),
+});
+/** The placement environment of watched files, Explorer verbs and command-line cards. */
+const folderEnv = () => ({ settings, workdir, marker, home, counter: nameCounter ??= { value: settings.lastAutoIncrementingNumber } });
 /** Requests from `clop` and the MCP server (spec step 24). Settings they change go through `updateSettings`, so they apply at once. */
 async function serveCLI(userData: string) {
   const files = shellEffects();

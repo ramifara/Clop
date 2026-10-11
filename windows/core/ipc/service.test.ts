@@ -162,6 +162,18 @@ test('a request that shows its result lets the app optimise it with a card, then
   assert.deepEqual(s.copied, [[input]]);
 });
 
+test('a card that placed its result itself is the answer, and the service places nothing more', async t => {
+  const s = await setup(t, { async withCard(file) { return { placed: file }; } });
+  const input = s.file('a.png');
+  await graphic(100, 80).png().toFile(input);
+  const before = await readFile(input);
+  const [shown] = answers(await s.send({ urls: [fileURL(input)], hideFloatingResult: false }));
+  assert.ok(shown.kind === 'response');
+  assert.equal(shown.response.path, input);
+  assert.ok(before.equals(await readFile(input)));
+  assert.deepEqual(await readdir(s.workdir.backups), [], 'no second placement and no second backup');
+});
+
 test('stopping a request also cancels the files no worker has taken yet', async t => {
   const started: string[] = [];
   const s = await setup(t, {

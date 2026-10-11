@@ -43,10 +43,11 @@ export interface ServiceDeps {
   /** Puts files on the clipboard, for `copyToClipboard`. */
   copyFiles?(files: string[]): Promise<void>;
   /**
-   * The app's own optimisation with a result card, for a request that shows its result. Returns the optimised file, or
-   * undefined when the app cannot do this request itself and the service should.
+   * The app's own optimisation with a result card, for a request that shows its result. Returns the optimised file for the
+   * service to place, `{ placed }` when the card placed it itself (so its Restore can undo the write), or undefined when the
+   * app cannot do this request itself and the service should.
    */
-  withCard?(file: string, kind: MediaKind, request: OptimisationRequest, signal: AbortSignal): Promise<string | undefined>;
+  withCard?(file: string, kind: MediaKind, request: OptimisationRequest, signal: AbortSignal): Promise<string | { placed: string } | undefined>;
 }
 
 type Emit = (message: ServerMessage) => void;
@@ -296,11 +297,15 @@ export class ClopService {
           if (settingsStep) steps.unshift(settingsStep);
           final = (await runPipeline({ ...pipeline, steps }, input, opts)).file;
         } else {
-          let produced = !req.hideFloatingResult && deps.withCard ? await deps.withCard(input, kind, req, signal) : undefined;
-          if (!produced && kind === 'pdf') ({ produced, dpi } = await this.pdf(run, input, req, settings, progress));
-          produced ??= (await runPipeline({ id: 'request', steps: requestSteps(req, kind as Exclude<MediaKind, 'pdf'>), skipOptimisation: true, hideResult: req.hideFloatingResult }, input, opts)).file;
-          final = await this.place(run, produced, input, kind, req, env);
-          await discard(produced, final);
+          const carded = !req.hideFloatingResult && deps.withCard ? await deps.withCard(input, kind, req, signal) : undefined;
+          if (typeof carded === 'object') final = carded.placed;
+          else {
+            let produced = carded;
+            if (!produced && kind === 'pdf') ({ produced, dpi } = await this.pdf(run, input, req, settings, progress));
+            produced ??= (await runPipeline({ id: 'request', steps: requestSteps(req, kind as Exclude<MediaKind, 'pdf'>), skipOptimisation: true, hideResult: req.hideFloatingResult }, input, opts)).file;
+            final = await this.place(run, produced, input, kind, req, env);
+            await discard(produced, final);
+          }
         }
         run.current = final;
       } finally { await run.cleanup(); }

@@ -1,12 +1,16 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import type { OptimisationRequest } from '../core/ipc/protocol';
 import { needTools } from '../core/testing';
 import { clip } from '../core/media/video.fixtures';
+import { OptimisedMarker } from '../core/marker';
+import { defaultSettings } from '../core/settings/schema';
+import { Workdir } from '../core/workdir';
+import { folderPlacement, restoreAll } from './automation';
 import { cardOptimiser } from './card';
 import { ItemEngine, sampleImage } from './items';
 
@@ -25,7 +29,7 @@ async function fixture(t: TestContext) {
 
 test('a plain request is optimised with a card, in the file\'s own format whatever the image format setting says', async t => {
   const f = await fixture(t); if (!f) return;
-  const output = await f.card(f.png, 'image', f.request(), new AbortController().signal);
+  const output = await f.card(f.png, 'image', f.request(), new AbortController().signal) as string;
   assert.ok(output && output !== f.png);
   assert.equal((await sharp(output).metadata()).format, 'png');
   assert.deepEqual(f.made, ['room']);
@@ -33,10 +37,10 @@ test('a plain request is optimised with a card, in the file\'s own format whatev
 
 test('a downscale below 1 scales the card, and a factor of 1 or more changes nothing instead of failing', async t => {
   const f = await fixture(t); if (!f) return;
-  const half = await f.card(f.png, 'image', f.request({ downscaleFactor: 0.5 }), new AbortController().signal);
-  assert.equal((await sharp(half!).metadata()).width, 1200);
-  const more = await f.card(f.png, 'image', f.request({ downscaleFactor: 1.5 }), new AbortController().signal);
-  assert.equal((await sharp(more!).metadata()).width, 2400);
+  const half = await f.card(f.png, 'image', f.request({ downscaleFactor: 0.5 }), new AbortController().signal) as string;
+  assert.equal((await sharp(half).metadata()).width, 1200);
+  const more = await f.card(f.png, 'image', f.request({ downscaleFactor: 1.5 }), new AbortController().signal) as string;
+  assert.equal((await sharp(more).metadata()).width, 2400);
 });
 
 test('what the engine\'s plain optimisation does not express is left to the pipe service', async t => {
@@ -56,4 +60,16 @@ test('a request stopped while its card is optimising ends with Stopped. and leav
   while (!f.engine.list().length || f.engine.list()[0].status !== 'processing') await new Promise(resolve => setTimeout(resolve, 10));
   stop.abort();
   await assert.rejects(job, /Stopped\./);
+});
+
+test('with a placement the card writes over the file itself, so its Restore and a revert give the original back', async t => {
+  const f = await fixture(t); if (!f) return;
+  const workdir = await new Workdir(path.join(f.dir, 'work')).ensure(), marker = new OptimisedMarker(path.join(f.dir, 'optimised.json'));
+  const env = () => ({ settings: defaultSettings(), workdir, marker, counter: { value: 0 } });
+  const card = cardOptimiser({ engine: () => f.engine, makeRoom: async () => {}, defaults: () => ({ mode: 'balanced', format: 'auto', scale: 1 }), placement: file => folderPlacement(file, 'image', env) });
+  const original = await readFile(f.png);
+  assert.deepEqual(await card(f.png, 'image', f.request(), new AbortController().signal), { placed: f.png });
+  assert.ok((await readFile(f.png)).length < original.length, 'the file itself was optimised');
+  await restoreAll(f.engine, f.engine.list().map(item => item.id));
+  assert.ok(original.equals(await readFile(f.png)), 'Restore put the original back over the file');
 });

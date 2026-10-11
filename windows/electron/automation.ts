@@ -2,7 +2,7 @@ import { rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { copyTo, exists, samePath } from '../core/fileops';
 import type { OptimisedMarker } from '../core/marker';
-import { executePlacement, placedExtension, planPlacement, type PlacementEnv } from '../core/placement';
+import { executePlacement, placedExtension, planPlacement, type PlacementEnv, type PlacementOverride } from '../core/placement';
 import type { ClopSettings } from '../core/settings/schema';
 import type { MediaKind, MediaOutput } from '../core/media/types';
 import type { ImageOptions } from '../src/types';
@@ -16,9 +16,10 @@ export type FolderEnv = PlacementEnv & { marker: OptimisedMarker };
  * original moves into the working directory's backups first. Placed files are marked optimised, so the watcher leaves them
  * alone. `restore` puts the original back where the result went and marks it too, as macOS marks a restored original, and
  * gives back any file of the user's that a result replaced. It refuses when the result was moved, deleted or edited since,
- * so a revert never undoes the user's own changes. `saved` hears the `%i` counter after a name template advanced it.
+ * so a revert never undoes the user's own changes. `saved` hears the `%i` counter after a name template advanced it. `overrides` are
+ * a request's own placement (the command line's `--behaviour` and templates).
  */
-export function folderPlacement(file: string, kind: MediaKind, env: () => FolderEnv, saved?: (counter: number) => void): ItemPlacement {
+export function folderPlacement(file: string, kind: MediaKind, env: () => FolderEnv, saved?: (counter: number) => void, overrides?: PlacementOverride): ItemPlacement {
   /** The first backup: the file as it was before Clop wrote over it. */
   let backup: string | undefined, placed: string | undefined;
   /** Backups of the user's own files that results took the place of, by where they were. */
@@ -58,7 +59,7 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
       const e = env(), before = e.counter.value;
       // A result in another format is a conversion, placed by the settings for converted files: the card's format menu by the manual ones.
       const converted = placedExtension(output.path, file) !== path.extname(file);
-      const plan = await planPlacement(e, { produced: output.path, original: file, type: kind, kind: converted ? manual ? 'manualConvert' : 'autoConvert' : 'optimised' });
+      const plan = await planPlacement(e, { produced: output.path, original: file, type: kind, kind: converted ? manual ? 'manualConvert' : 'autoConvert' : 'optimised', overrides });
       // `temporary` keeps results in the shelf only.
       if (!plan.dest) return output.path;
       const result = await executePlacement(e, plan, output.path, file);
