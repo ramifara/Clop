@@ -1,7 +1,9 @@
 import { isDeepStrictEqual } from 'node:util';
 import { COMPRESSION_TIERS, settingsSchema, SETTING_KEYS, type ClopSettings, type CompressionQuality, type SettingKey, type SettingSpec } from '../settings/schema';
 import { isReadable, type Stored } from '../pipeline/codec';
-import { stepKind, type Pipeline, type PresetZone } from '../pipeline/model';
+import { namesProgramByPath } from '../pipeline/app-resolve';
+import { stepEntry, type Pipeline, type PipelineStep, type PresetZone } from '../pipeline/model';
+import { parsePipelineText } from '../pipeline/parser';
 import type { MCPSettingInfo, SettingsRequest, SettingsResponse } from './protocol';
 
 // `MCPSettingsBridge` (Clop/MCPSettings.swift): every setting as an agent or `clop settings` sees it, each value as a
@@ -47,7 +49,12 @@ const LIBRARY_KEYS: readonly SettingKey[] = [
 ];
 /** Steps that run code: `runScript`, and `runShortcut`, which on Windows runs a script or program of that name. */
 const SCRIPT_STEP = /\brun(Script|Shortcut)\b/;
-const scriptRefusal = (step: string) => `Clop is not accepting script steps from agents, and this pipeline has a ${step} step. Use a built-in step if one can do the job, or ask the user to allow script steps in Clop Settings, MCP.`;
+const SCRIPT_KINDS: readonly string[] = ['runScript', 'runShortcut'];
+/** Steps that open the file with an app. Named by an exe path or any other path, the app is a program Clop starts: as much a script as `runScript`. */
+const OPEN_KINDS: readonly string[] = ['openWith', 'shelveWith', 'uploadWith'];
+/** A call in text, whatever its arguments look like: `kind` and everything up to the closing bracket, if there is one. */
+const OPEN_STEP = /\b(openWith|shelveWith|uploadWith)\s*\(([^)]*)/g;
+const scriptRefusal = (what: string) => `Clop is not accepting script steps from agents, and this pipeline has ${what}. Use a built-in step if one can do the job, or ask the user to allow script steps in Clop Settings, MCP.`;
 const spec = (key: SettingKey) => settingsSchema[key] as SettingSpec;
 const isCompression = (key: SettingKey) => spec(key).type === 'object' && isDeepStrictEqual(Object.keys(spec(key).default as object).sort(), ['factor', 'tier']);
 /** Keys `clop settings` shows: everything Windows uses. */
@@ -145,8 +152,22 @@ const isKey = (key: string | undefined): key is SettingKey => !!key && Object.ha
 export function mcpRefusal(origin: string | undefined, pipeline: string | undefined, settings: Pick<ClopSettings, 'mcpEnabled' | 'mcpAllowScriptSteps'>): string | undefined {
   if (origin !== 'mcp') return undefined;
   if (!settings.mcpEnabled) return 'Clop is not accepting changes from agents. Ask the user to allow it in Clop Settings, MCP.';
-  const step = pipeline && !settings.mcpAllowScriptSteps ? SCRIPT_STEP.exec(pipeline)?.[0] : undefined;
-  return step ? scriptRefusal(step) : undefined;
+  if (!pipeline || settings.mcpAllowScriptSteps) return undefined;
+  const step = SCRIPT_STEP.exec(pipeline)?.[0] ?? undefined;
+  const what = step ? `a ${step} step` : openedByPath(pipeline);
+  return what ? scriptRefusal(what) : undefined;
+}
+
+/** The first `openWith`, `shelveWith` or `uploadWith` in pipeline text that names a program by path. Text that does not parse is judged by its own words. */
+function openedByPath(text: string): string | undefined {
+  if (!/\b(?:openWith|shelveWith|uploadWith)\b/.test(text)) return undefined;
+  try {
+    const { steps, issues } = parsePipelineText(text, { checkValues: false });
+    const found = steps.map(scriptClass).find(Boolean);
+    if (found || !issues.length) return found;
+  } catch { /* Judged by the words below. */ }
+  for (const [, kind, args] of text.matchAll(OPEN_STEP)) if (namesProgramByPath(args.replace(/^\s*app\s*:/, ''))) return `an ${kind} step that names a program by path`;
+  return undefined;
 }
 
 /** The pipelines of a decoded library value, grouped by where they sit: one group per watched source, one for the library or the zones. */
@@ -156,8 +177,13 @@ function placedPipelines(key: SettingKey, decoded: unknown): Map<string, Stored<
   if (key.startsWith('pipelinesToRunOn')) return new Map(Object.entries(decoded as Record<string, Stored<Pipeline>[]>));
   return new Map();
 }
-const SCRIPT_KINDS: readonly string[] = ['runScript', 'runShortcut'];
-const scriptKind = (pipeline: Pipeline) => pipeline.steps.map(stepKind).find(kind => SCRIPT_KINDS.includes(kind));
+/** What makes a step script-class, in words for the refusal: it runs code, or opens a program by path. */
+function scriptClass(step: PipelineStep): string | undefined {
+  const [kind, params] = stepEntry(step), app = (params as { app?: unknown } | undefined)?.app;
+  if (SCRIPT_KINDS.includes(kind)) return `a ${kind} step`;
+  return OPEN_KINDS.includes(kind) && typeof app === 'string' && namesProgramByPath(app) ? `an ${kind} step that names a program by path` : undefined;
+}
+const scriptKind = (pipeline: Pipeline) => pipeline.steps.map(scriptClass).find(Boolean);
 
 /**
  * An agent's library write: refused, unless the user allowed script steps, when it puts a pipeline with a script step

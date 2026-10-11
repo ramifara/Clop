@@ -166,3 +166,46 @@ test('agents may not add pipelines Clop cannot read, but keep the ones already s
   store.current.savedPipelines = settingsSchema.savedPipelines.parse([future])!;
   assert.equal((await update({ savedPipelines: [future, { id: 'SAFE', steps: parseSteps('convert(to: webp)'), skipOptimisation: false, hideResult: false }] })).ok, true);
 });
+
+test('the script gate treats opening a program by path as a script step, and lets app names through', async () => {
+  const { store, update } = agentLibrary();
+  const pipeline = (id: string, text: string) => ({ id, name: id, steps: parseSteps(text), skipOptimisation: false, hideResult: false });
+  for (const app of ['C:\\\\evil.exe', 'C:/evil.exe', '\\\\\\\\server\\\\share\\\\evil.exe', '..\\\\evil', 'tools\\\\evil.cmd', 'C:evil.exe', '\\"C:\\\\evil.exe\\"']) {
+    const text = `openWith(app: "${app}")`;
+    assert.match((await update({ savedPipelines: [pipeline('NEW', text)] })).error!, /openWith step that names a program by path/, text);
+  }
+  // Where the app will read the pipeline from does not matter: attached to the clipboard, a preset zone, or a stored reference.
+  const open = pipeline('OPEN', 'openWith(app: "C:\\\\evil.exe")');
+  assert.match((await update({ pipelinesToRunOnImage: { clipboard: [open] } })).error!, /openWith step/);
+  assert.match((await update({ presetZones: [{ id: 'z', icon: 'x', name: 'z', pipeline: open }] })).error!, /openWith step/);
+  const reference = { id: 'REF', steps: [], skipOptimisation: false, hideResult: false, libraryID: 'OPEN' };
+  store.current.savedPipelines = [open];
+  assert.match((await update({ pipelinesToRunOnImage: { clipboard: [reference] } })).error!, /openWith step/, 'a reference to a pipeline that opens a program by path');
+  // shelveWith and uploadWith are checked by the app they name, but a path stored in one is the same program.
+  for (const kind of ['shelveWith', 'uploadWith']) {
+    const stored = JSON.stringify({ id: kind, steps: [{ [kind]: { app: 'C:\\evil.exe' } }], skipOptimisation: false, hideResult: false });
+    assert.match((await update({ savedPipelines: [stored] })).error!, new RegExp(`${kind} step that names a program by path`), kind);
+  }
+  // An app by name is what Windows resolves from its Start menu, running apps and App Paths: no permission needed.
+  store.current.savedPipelines = [];
+  for (const text of ['openWith(app: "Paint")', 'openWith(app: Photoshop)', 'openWith(app: "notepad.exe")', 'openWith(app: "Microsoft.Paint_8wekyb3d8bbwe!App")', 'shelveWith(app: yoink)', 'uploadWith(app: dropshare)']) {
+    assert.equal((await update({ savedPipelines: [pipeline('OK', text)] })).ok, true, text);
+  }
+  // The user's own pipelines already stored are not judged, and the permission opens it all.
+  store.current.savedPipelines = [open];
+  assert.equal((await update({ savedPipelines: [open, pipeline('PLAIN', 'convert(to: webp)')] })).ok, true);
+  store.current.savedPipelines = [];
+  store.current.mcpAllowScriptSteps = true;
+  assert.equal((await update({ savedPipelines: [open] })).ok, true);
+});
+
+test('the MCP gate refuses pipeline text that opens a program by path, whether or not it parses', () => {
+  const settings = { mcpEnabled: true, mcpAllowScriptSteps: false };
+  for (const text of ['openWith(app: "C:\\\\evil.exe")', 'openWith(app: C:\\\\evil.exe) -> convert(to: webp)', 'optimise -> shelveWith(app: "C:\\\\x.exe")', 'uploadWith(app: "\\\\\\\\server\\\\x.exe")',
+    'openWith(app: "C:\\\\evil.exe"', 'openWith(app "C:\\\\evil.exe")', 'convert(to: webp)\nopenWith(app: "..\\\\evil.exe")']) {
+    assert.match(mcpRefusal('mcp', text, settings)!, /names a program by path/, text);
+  }
+  for (const text of ['openWith(app: "Paint")', 'openWith(app: Paint) -> convert(to: webp)', 'optimise', 'my saved pipeline', 'shelveWith(app: yoink)']) assert.equal(mcpRefusal('mcp', text, settings), undefined, text);
+  assert.equal(mcpRefusal('mcp', 'openWith(app: "C:\\\\evil.exe")', { ...settings, mcpAllowScriptSteps: true }), undefined, 'allowed script steps allow it');
+  assert.equal(mcpRefusal(undefined, 'openWith(app: "C:\\\\evil.exe")', settings), undefined, 'a person using the CLI needs no permission');
+});
