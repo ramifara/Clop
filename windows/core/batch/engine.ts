@@ -12,7 +12,7 @@ import { cropPDF, optimisePDF } from '../media/pdf';
 import type { MediaKind, MediaOutput } from '../media/types';
 import { optimiseVideo } from '../media/video';
 import { planPlacement, type PlacementOverride } from '../placement';
-import { limiter, ToolError, type Limiter } from '../run';
+import { CONCURRENCY, limiter, ToolError, type Limiter } from '../run';
 import type { ClopSettings } from '../settings/schema';
 import type { Counter } from '../template';
 import type { Workdir } from '../workdir';
@@ -50,8 +50,6 @@ export interface BatchEnv {
   platform?: NodeJS.Platform;
 }
 
-/** How many files of each kind are in flight at once: the shared tool queues' widths, so a batch never holds more working files than can run. */
-const CONCURRENCY: Record<MediaKind, number> = { image: 2, video: 1, pdf: 2, audio: 2 };
 const LOSSLESS_AUDIO = new Set(['wav', 'aiff', 'aif', 'flac']);
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const firstLine = (text: string) => text.split(/\r?\n/)[0];
@@ -83,6 +81,8 @@ export class Batch extends EventEmitter {
   private running?: Promise<void>;
   private readonly limits = new Map<MediaKind, Limiter>();
   private backupsDeleted = false;
+  private deleting = false;
+  private reverting?: Promise<string[]>;
   constructor(files: readonly BatchFile[], readonly params: BatchParams, private readonly env: BatchEnv) {
     super();
     checkOutputTemplate(params.output);
@@ -268,6 +268,12 @@ export class Batch extends EventEmitter {
    * Returns a message for each file that could not be reverted.
    */
   async revert(): Promise<string[]> {
+    if (this.backupsDeleted || this.deleting) throw new Error('The backups of this batch were deleted, so its originals cannot be restored.');
+    // A second request while one runs (a double click) gets the answer of the first rather than a second pass over the same files.
+    return this.reverting ??= this.revertAll().finally(() => { this.reverting = undefined; });
+  }
+
+  private async revertAll(): Promise<string[]> {
     this.cancel();
     await this.running;
     this.phase = 'reverting'; this.changed();
@@ -290,12 +296,15 @@ export class Batch extends EventEmitter {
     const name = path.basename(result.path), info = await stat(result.path).catch(() => undefined);
     if (!info) throw new Error(`${name} was moved or deleted after Clop optimised it, so its original stays in the batch backups.`);
     if (info.size !== result.size || info.mtimeMs !== result.mtimeMs) throw new Error(`${name} changed after Clop optimised it, so Clop left it as it is. Its original is in the batch backups.`);
-    if (result.originalRemoved && await exists(original)) throw new Error(`A new ${path.basename(original)} is where the original was, so Clop left both as they are. The original is in the batch backups.`);
     const over = samePath(result.path, original, this.env.platform);
-    if (over || result.originalRemoved) {
+    // An original that an earlier, unfinished revert already gave back is not a new file in its place.
+    if (result.originalRemoved && !result.originalRestored && await exists(original)) throw new Error(`A new ${path.basename(original)} is where the original was, so Clop left both as they are. The original is in the batch backups.`);
+    if ((over || result.originalRemoved) && !result.originalRestored) {
       await this.backup.restore(original);
       // Marked, so a watched folder does not optimise the original again.
       await this.env.marker.markOptimised(original).catch(() => {});
+      // Remembered before the rest, so a retry after a failure below carries on from here.
+      if (!over) await this.backup.recordResult({ ...result, originalRestored: true });
     }
     if (over) return;
     // A file of the user's that the result took the place of comes back; otherwise the result goes.
@@ -306,7 +315,8 @@ export class Batch extends EventEmitter {
   /** Removes the batch's backups. Only once nothing is running, since running files may still need them. */
   async deleteBackups() {
     if (this.phase === 'running' || this.phase === 'reverting') throw new Error('Wait for the batch to finish before deleting its backups.');
-    await this.backup.delete();
+    this.deleting = true;
+    try { await this.backup.delete(); } finally { this.deleting = false; }
     this.backupsDeleted = true; this.changed();
   }
 }

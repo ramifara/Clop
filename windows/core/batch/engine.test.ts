@@ -320,3 +320,45 @@ test('a batch refuses a name template that would put a result outside its folder
   assert.throws(() => new Batch([{ path: a, kind: 'image', bytes: 1, format: 'JPG' }], params({ output: { location: 'sameFolder', template: '../%f' } }), env), /names a file/);
   assert.equal(await exists(path.join(dir, 'out')), false);
 });
+
+test('reverting twice at once runs once, and reverting after the backups were deleted says so', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { files, env, params } = await setup(t);
+  const a = await write(path.join(files, 'a.jpg'), await jpeg(320, 240, 1)), original = await digest(a);
+  const batch = await batchOf(env, [a], params());
+  await batch.run();
+  const restore = mock.method(batch.backup, 'restore');
+  const [first, second] = await Promise.all([batch.revert(), batch.revert()]);
+  assert.deepEqual([first, second], [[], []]);
+  assert.equal(first, second, 'both callers got the one revert\'s answer');
+  assert.equal(restore.mock.callCount(), 1, 'the original was restored once');
+  assert.equal(await digest(a), original);
+  await batch.deleteBackups();
+  await assert.rejects(batch.revert(), /backups of this batch were deleted/);
+  assert.equal(batch.phase, 'reverted');
+});
+
+test('a revert that restored the original but not the file it displaced finishes on the next try', async t => {
+  if (!needTools(t, 'jpegoptim', 'pngquant', 'exiftool')) return;
+  const { files, env, params } = await setup(t);
+  const shot = await write(path.join(files, 'shot.png'), await png(400, 300, 3)), mine = await write(path.join(files, 'shot.jpeg'), Buffer.from('my own jpeg'));
+  const original = await digest(shot);
+  const p = params(); p.image = { ...p.image, convert: 'jpeg' };
+  const batch = new Batch((await scanBatch([shot])).files, p, env);
+  await batch.run();
+  assert.deepEqual(statuses(batch), ['done']);
+  const restore = batch.backup.restore.bind(batch.backup);
+  // The first restore (the original) works; the second (the user's file the result took the place of) fails.
+  let calls = 0;
+  const fake = mock.method(batch.backup, 'restore', (file: string) => ++calls === 2 ? Promise.reject(new Error('access denied')) : restore(file));
+  const failures = await batch.revert();
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /access denied/);
+  assert.equal(await digest(shot), original, 'the original is back');
+  assert.deepEqual(statuses(batch), ['done'], 'the file still counts as not reverted');
+  fake.mock.restore();
+  assert.deepEqual(await batch.revert(), [], 'the retry is not stopped by the original that is already back');
+  assert.deepEqual(statuses(batch), ['reverted']);
+  assert.equal(await readFile(mine, 'utf8'), 'my own jpeg');
+  assert.equal(await digest(shot), original);
+});

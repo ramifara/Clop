@@ -12,8 +12,11 @@ import type { Workdir } from '../workdir';
 
 /** A file Clop moved aside: an original a result replaced, or a file of the user's that sat where a result went. */
 export interface BackupEntry { path: string; backup: string; size: number; mtimeMs: number }
-/** Where a result went, as it was when placed; `originalRemoved` when a converted result replaced its original under a new name. */
-export interface ResultEntry { original: string; path: string; size: number; mtimeMs: number; originalRemoved: boolean }
+/**
+ * Where a result went, as it was when placed; `originalRemoved` when a converted result replaced its original under a new name,
+ * and `originalRestored` once a revert has given that original back (so a revert that stopped half way can finish).
+ */
+export interface ResultEntry { original: string; path: string; size: number; mtimeMs: number; originalRemoved: boolean; originalRestored?: boolean }
 interface Manifest { id: string; entries: BackupEntry[]; results: ResultEntry[] }
 
 const hash = (file: string) => new Promise<string>((resolve, reject) => {

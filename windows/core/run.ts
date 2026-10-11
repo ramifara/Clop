@@ -83,7 +83,8 @@ export function run(tool: ToolName | string, args: string[], opts: RunOptions = 
 
 export type QueueKind = 'image' | 'video' | 'pdf' | 'audio';
 export type Limiter = <T>(task: () => Promise<T>) => Promise<T>;
-const CONCURRENCY: Record<QueueKind, number> = { image: 2, video: 1, pdf: 2, audio: 2 };
+/** How many files of each kind run at once. */
+export const CONCURRENCY: Record<QueueKind, number> = { image: 2, video: 1, pdf: 2, audio: 2 };
 const limiters = new Map<QueueKind, Limiter>();
 
 /** Runs at most `max` tasks at once; the rest wait in order. */
