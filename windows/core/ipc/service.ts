@@ -159,6 +159,8 @@ async function discard(produced: string, final: string) {
 
 export class ClopService {
   private readonly running = new Map<string, Set<AbortController>>();
+  /** The files of each request that no worker has taken yet, so a stop reaches them too. */
+  private readonly waiting = new Set<{ queue: [number, string][]; stopped: (index: number, url: string) => void }>();
   constructor(private readonly deps: ServiceDeps) {}
 
   /** The pipe server's handler. */
@@ -172,6 +174,7 @@ export class ClopService {
 
   /** `handleStopOptimisationRequest`: the ids are the request's URL strings. */
   stop({ ids }: StopOptimisationRequest) {
+    for (const { queue, stopped } of this.waiting) for (const entry of queue.filter(([, url]) => ids.includes(url))) { queue.splice(queue.indexOf(entry), 1); stopped(...entry); }
     for (const id of ids) for (const controller of this.running.get(id) ?? []) controller.abort(new Error('Stopped.'));
   }
 
@@ -187,6 +190,8 @@ export class ClopService {
 
     const counter = { value: settings.lastAutoIncrementingNumber }, copied: string[] = [];
     const queue = [...req.urls.entries()];
+    const waiting = { queue, stopped: (index: number, url: string) => { copied[index] = urlPath(url) ?? ''; emit({ kind: 'error', error: { error: 'Stopped.', forURL: url } }); } };
+    this.waiting.add(waiting);
     const worker = async () => {
       for (let next = queue.shift(); next; next = queue.shift()) {
         const [index, url] = next;
@@ -200,7 +205,7 @@ export class ClopService {
         }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(CONCURRENT_FILES, queue.length) }, worker));
+    try { await Promise.all(Array.from({ length: Math.min(CONCURRENT_FILES, queue.length) }, worker)); } finally { this.waiting.delete(waiting); }
     if (counter.value !== settings.lastAutoIncrementingNumber) await store.update(() => ({ patch: { lastAutoIncrementingNumber: counter.value }, result: undefined })).catch(() => {});
     // One file per input: the result, or the original when it failed, as macOS does for --copy.
     if (req.copyToClipboard && this.deps.copyFiles) await this.deps.copyFiles(copied.filter(Boolean)).catch(error => console.warn(`Could not copy the results: ${message(error)}`));

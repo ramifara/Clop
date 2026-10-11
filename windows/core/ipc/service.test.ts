@@ -125,6 +125,22 @@ test('a request that shows its result lets the app optimise it with a card, then
   assert.deepEqual(s.copied, [[input]]);
 });
 
+test('stopping a request also cancels the files no worker has taken yet', async t => {
+  const started: string[] = [];
+  const s = await setup(t, {
+    withCard: (file, _kind, _request, signal) => new Promise((_, reject) => { started.push(path.basename(file)); signal.addEventListener('abort', () => reject(signal.reason)); }),
+  });
+  const urls: string[] = [];
+  for (let i = 0; i < 7; i++) { const file = s.file(`f${i}.png`); await graphic(20, 20).png().toFile(file); urls.push(fileURL(file)); }
+  const sent = s.send({ urls, hideFloatingResult: false });
+  while (started.length < 4) await new Promise(resolve => setTimeout(resolve, 10));
+  s.service.stop({ ids: urls, remove: false });
+  const messages = answers(await sent);
+  assert.deepEqual(started.sort(), ['f0.png', 'f1.png', 'f2.png', 'f3.png']);
+  assert.equal(messages.filter(m => m.kind === 'error' && m.error.error === 'Stopped.').length, 7);
+  assert.equal(messages.at(-1)?.kind, 'done');
+});
+
 test('only the user\'s own pipelines may open a program by path; an agent without script permission opens apps by name', async t => {
   if (!needTools(t, 'pngquant')) return;
   const seen: boolean[] = [];
