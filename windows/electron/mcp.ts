@@ -55,7 +55,7 @@ export function mcpSettings(deps: MCPSettingsDeps) {
     const rows = await Promise.all(clients.map(async client => {
       const configured = await configState(client), file = configOf(client).path, failure = failures.get(client.id);
       // Once it is added, the useful detail is where it landed.
-      const detail = failure ?? (configured === 'unusable' ? `${file} is not a JSON object.` : configured === 'installed' || isPresent(client) ? file : 'Not installed on this PC.');
+      const detail = failure ?? (configured === 'unusable' ? `${file} can't be edited safely.` : configured === 'installed' || isPresent(client) ? file : 'Not installed on this PC.');
       return { id: client.id, name: client.name, featured: client.featured, state: configured, detail, failed: failure !== undefined };
     }));
     const s = server();
@@ -77,7 +77,7 @@ export function mcpSettings(deps: MCPSettingsDeps) {
           const s = server();
           if (!s) throw new Error(deps.missing);
           // The state the pane showed may be old: the file is checked again here, and the editor refuses it too.
-          if (await configState(client) === 'unusable') throw new Error(`${configOf(client).path} is not a JSON object.`);
+          if (await configState(client) === 'unusable') throw new Error(`${configOf(client).path} can't be edited safely.`);
           await installClient(client, s, { backups });
         }); break;
         case 'remove': await edit(request.id, client => removeClient(client, { backups })); break;

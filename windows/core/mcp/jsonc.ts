@@ -62,6 +62,19 @@ export function readObject(text: string): Record<string, unknown> {
 }
 
 /**
+ * Whether the container is listed twice at the top, or `name` twice inside it. Parsers keep the last of a repeated key and
+ * the scanner here finds the first, so an edit could land on the one that is ignored.
+ */
+export function repeatsMember(text: string, container: string, name: string): boolean {
+  const clean = sanitized(text), root = firstBrace(clean);
+  if (root === undefined) return false;
+  const unescaped = (key: string) => { try { return JSON.parse(`"${key}"`) as string; } catch { return key; } };
+  const count = (brace: number, wanted: string) => { const spans: number[] = []; forEachMember(clean, brace, (key, _, value) => { if (unescaped(key) === wanted) spans.push(value[0]); return false; }); return spans; };
+  const containers = count(root, container);
+  return containers.length > 1 || containers.some(start => clean[start] === '{' && count(start, name).length > 1);
+}
+
+/**
  * Whether a splice did only what was asked: `after` parses, `root[container][name]` is there (or gone), and everything else,
  * every other top-level key and every other member of the container, is what it was. Checked before anything is written.
  */

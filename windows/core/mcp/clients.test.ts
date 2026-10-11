@@ -170,6 +170,49 @@ test('a JSON file that is not valid JSON is refused whole: nothing is written, n
   await assert.rejects(readdir(p.backups), { code: 'ENOENT' });
 });
 
+test('a key listed twice where Clop writes makes the file unusable', async t => {
+  const p = await profile(t);
+  const cases: [string, string][] = [
+    ['cursor', '{ "mcpServers": { "a": { "command": "x" } }, "mcpServers": { "b": { "command": "y" } } }\n'],
+    ['cursor', '{ "mcpServers": { "clop": { "command": "old" }, "clop": { "command": "older" } } }\n'],
+    ['zed', '{ "context_servers": {}, // first\n  "context_servers": { "clop": { "command": "old" } } }\n'],
+  ];
+  for (const [id, content] of cases) {
+    const file = configOf(p.client(id)).path;
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, content);
+    assert.equal(await configState(p.client(id)), 'unusable', content);
+    await assert.rejects(installClient(p.client(id), SERVER, { backups: p.backups }), /more than once/, content);
+    await assert.rejects(removeClient(p.client(id), { backups: p.backups }), /more than once/, content);
+    assert.equal(await readFile(file, 'utf8'), content);
+  }
+  // A repeated key somewhere else is the user's business.
+  const file = configOf(p.client('claude-code')).path;
+  await writeFile(file, '{ "theme": "a", "theme": "b", "mcpServers": {} }\n');
+  await installClient(p.client('claude-code'), SERVER);
+  assert.equal(await configState(p.client('claude-code')), 'installed');
+});
+
+test('a config that is not UTF-8 text is refused instead of being rewritten with replacement characters', async t => {
+  const p = await profile(t);
+  const cases: [string, Buffer][] = [
+    ['cursor', Buffer.concat([Buffer.from('{ "note": "caf'), Buffer.from([0xe9]), Buffer.from('", "mcpServers": {} }\n')])],
+    ['codex', Buffer.concat([Buffer.from('# caf'), Buffer.from([0xe9]), Buffer.from('\nmodel = "x"\n')])],
+    ['goose', Buffer.concat([Buffer.from('extensions:\n  # caf'), Buffer.from([0xe9]), Buffer.from('\n')])],
+  ];
+  for (const [id, bytes] of cases) {
+    const file = configOf(p.client(id)).path;
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, bytes);
+    assert.equal(await configState(p.client(id)), 'unusable', id);
+    assert.equal(await installedCommand(p.client(id)), undefined);
+    await assert.rejects(installClient(p.client(id), SERVER, { backups: p.backups }), /is not UTF-8 text/, id);
+    await assert.rejects(removeClient(p.client(id), { backups: p.backups }), /is not UTF-8 text/, id);
+    assert.deepEqual(await readFile(file), bytes);
+  }
+  await assert.rejects(readdir(p.backups), { code: 'ENOENT' });
+});
+
 test('removing from a file that never held the entry writes nothing', async t => {
   const p = await profile(t), original = await p.place('zed', 'zed-settings.json');
   await removeClient(p.client('zed'), { backups: p.backups });

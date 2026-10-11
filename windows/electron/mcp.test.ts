@@ -41,7 +41,7 @@ test('install and remove from the pane, with the detail line saying where the en
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, '"not an object"');
   state = await p.settings.handle({ action: 'install', id: 'cursor' });
-  assert.deepEqual(state.clients.find(c => c.id === 'cursor'), { id: 'cursor', name: 'Cursor', featured: false, state: 'unusable', detail: `${file} is not a JSON object.`, failed: true });
+  assert.deepEqual(state.clients.find(c => c.id === 'cursor'), { id: 'cursor', name: 'Cursor', featured: false, state: 'unusable', detail: `${file} can't be edited safely.`, failed: true });
   await p.settings.handle({ action: 'reveal', id: 'cursor' });
   assert.deepEqual(p.revealed, [file]);
 });
@@ -52,7 +52,7 @@ test('install checks the file again: one the pane called unusable is never writt
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, json5);
   const state = await p.settings.handle({ action: 'install', id: 'cursor' });
-  assert.deepEqual(state.clients.find(c => c.id === 'cursor'), { id: 'cursor', name: 'Cursor', featured: false, state: 'unusable', detail: `${file} is not a JSON object.`, failed: true });
+  assert.deepEqual(state.clients.find(c => c.id === 'cursor'), { id: 'cursor', name: 'Cursor', featured: false, state: 'unusable', detail: `${file} can't be edited safely.`, failed: true });
   assert.equal(await readFile(file, 'utf8'), json5);
 });
 

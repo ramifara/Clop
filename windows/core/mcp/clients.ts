@@ -4,7 +4,7 @@ import { chmod, copyFile, lstat, mkdir, readdir, readFile, readlink, rename, rm,
 import os from 'node:os';
 import path from 'node:path';
 import { retryBusy } from '../run';
-import { NotAnObjectError, onlyMemberChanged, readObject, removeMember, setMember } from './jsonc';
+import { NotAnObjectError, onlyMemberChanged, readObject, removeMember, repeatsMember, setMember } from './jsonc';
 import { ConfigLayoutError } from './lines';
 import { commandWords, removeCommand, setCommand, shellQuote } from './shellrc';
 import { removeTable, setTable, tableValues, tomlStrings } from './toml';
@@ -151,14 +151,23 @@ function textEntry(text: string, style: Style): { command?: string; args: string
   return { command, args };
 }
 
-const read = (file: string) => readFile(file, 'utf8').then(text => text.replace(/^﻿/, ''), (error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
+/** A config whose bytes are not UTF-8 text: rewriting it would turn what it holds into replacement characters. */
+class NotUTF8Error extends Error {}
+/** The text of a config, byte order mark and all. */
+function decode(bytes: Buffer): string {
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); } catch { throw new NotUTF8Error('not UTF-8 text'); }
+}
+const readRaw = (file: string) => readFile(file).then(decode, (error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
+const read = (file: string) => readRaw(file).then(text => text?.replace(/^﻿/, ''));
 
 /** What the client's config says. Only a JSON file that is not an object, even with its comments out, is unusable. */
 export async function configState(client: Client): Promise<ConfigState> {
-  const config = configOf(client), key = container(config.style), text = await read(config.path).catch(() => undefined);
+  const config = configOf(client), key = container(config.style);
+  let text: string | undefined;
+  try { text = await read(config.path); } catch (error) { return error instanceof NotUTF8Error ? 'unusable' : 'notInstalled'; }
   if (text === undefined) return 'notInstalled';
   if (!key) return textEntry(text, config.style) ? 'installed' : 'notInstalled';
-  try { const servers = readObject(text)[key]; return servers && typeof servers === 'object' && Object.hasOwn(servers, SERVER_NAME) ? 'installed' : 'notInstalled'; } catch { return 'unusable'; }
+  try { const servers = readObject(text)[key]; if (repeatsMember(text, key, SERVER_NAME)) return 'unusable'; return servers && typeof servers === 'object' && Object.hasOwn(servers, SERVER_NAME) ? 'installed' : 'notInstalled'; } catch { return 'unusable'; }
 }
 
 /** The command and arguments a client's entry points at, or undefined when there is none or it cannot be read. */
@@ -232,7 +241,9 @@ export async function resolvedConfigPath(file: string): Promise<string> {
  * while they run. A UTF-8 byte order mark and the file's permissions are kept.
  */
 async function edit(client: Client, config: Config, change: (text: string) => string | undefined, options: EditOptions, installing: boolean) {
-  const target = await resolvedConfigPath(config.path), raw = await readFile(target, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
+  const target = await resolvedConfigPath(config.path);
+  let raw: string | undefined;
+  try { raw = await readRaw(target); } catch (error) { throw error instanceof NotUTF8Error ? new Error(`${config.path} is not UTF-8 text, so it was left as it was.`) : error; }
   const bom = raw?.startsWith('﻿') ? '﻿' : '', existing = raw === undefined ? '' : raw.slice(bom.length);
   const key = container(config.style);
   let updated: string | undefined;
@@ -240,6 +251,7 @@ async function edit(client: Client, config: Config, change: (text: string) => st
     // A file that does not parse as JSON (JSON5, a syntax error) is one the splicing cannot be trusted with: it would find no
     // `mcpServers` of its own and write a second one. Refuse it before anything is written.
     if (key) readObject(existing);
+    if (key && repeatsMember(existing, key, SERVER_NAME)) throw new Error(`${config.path} lists "${key}" or "${SERVER_NAME}" more than once, so it was left as it was.`);
     updated = change(existing);
   } catch (error) {
     if (error instanceof ConfigLayoutError) throw new Error(`${config.path} has a layout that can't be edited safely.`);
