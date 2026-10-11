@@ -253,7 +253,11 @@ test('repair repoints entries whose clop.exe is gone, and leaves working ones al
   const current = { command: exe, args: SERVER.args };
   await installClient(p.client('cursor'), { command: path.join(p.home, 'gone', 'clop.exe'), args: SERVER.args });
   await installClient(p.client('codex'), { command: other, args: SERVER.args });
-  assert.equal(entryIsBroken({ command: other, args: ['mcp', path.join(p.home, 'missing.py')] }), true);
+  // Only a command that is an absolute path to something missing is broken: `clop` on PATH, a `cmd /c` wrapper or an argument is the user's own.
+  assert.equal(entryIsBroken({ command: path.join(p.home, 'gone', 'clop.exe'), args: SERVER.args }), true);
+  assert.equal(entryIsBroken({ command: other, args: ['mcp', path.join(p.home, 'missing.py')] }), false);
+  assert.equal(entryIsBroken({ command: 'clop', args: SERVER.args }), false);
+  assert.equal(entryIsBroken({ command: 'cmd', args: ['/c', path.join(p.home, 'gone', 'clop.exe'), ...SERVER.args] }), false);
   assert.deepEqual(await repairClients(p.clients, current), ['Cursor']);
   assert.deepEqual(await installedCommand(p.client('cursor')), current);
   assert.deepEqual(await installedCommand(p.client('codex')), { command: other, args: SERVER.args });

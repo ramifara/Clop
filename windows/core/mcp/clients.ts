@@ -281,11 +281,12 @@ async function backup(file: string, dir: string) {
   await Promise.all(old.map(name => rm(path.join(dir, name), { force: true })));
 }
 
-/** Whether an entry runs something that is no longer there. An entry pointing at another working copy of Clop is left alone. */
-export function entryIsBroken({ command, args }: ServerCommand): boolean {
-  if (!existsSync(command)) return true;
-  // Only arguments that are absolute paths, so `mcp` and `serve` are never mistaken for files.
-  return args.some(arg => path.isAbsolute(arg) && !existsSync(arg));
+/**
+ * Whether an entry runs a program that is no longer there: its command is an absolute path to a file that is gone. A bare
+ * `clop` found on PATH, a `cmd /c` wrapper, and an entry pointing at another working copy of Clop are the user's own.
+ */
+export function entryIsBroken({ command }: ServerCommand): boolean {
+  return path.isAbsolute(command) && !existsSync(command);
 }
 
 /** Repairs entries that no longer start anything, such as one left by a copy of Clop that moved. Never adds Clop to a client. */
