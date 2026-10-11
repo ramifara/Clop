@@ -305,6 +305,29 @@ test('a failing manifest write gives back a file of the user\'s that sat where a
   assert.deepEqual((await readdir(files)).sort(), ['shot.jpeg', 'shot.png']);
 });
 
+test('an original a converted result is about to replace is noted until the result is in, so a start after a crash gives it back', async t => {
+  if (!needTools(t, 'jpegoptim', 'pngquant', 'exiftool')) return;
+  const { files, env, params, workdir } = await setup(t);
+  const shot = await write(path.join(files, 'shot.png'), await png(400, 300, 3)), before = await digest(shot);
+  const p = params(); p.image = { ...p.image, convert: 'jpeg' };
+  const batch = await batchOf(env, [shot], p);
+  let away = false, repaired: string[] = [];
+  const record = batch.backup.recordResult.bind(batch.backup);
+  // The app is killed here: the original has moved into the batch backup and the result is in place, but nothing is recorded.
+  mock.method(batch.backup, 'recordResult', async (result: Parameters<typeof record>[0]) => { away = !await exists(shot); repaired = await workdir.repair(); await record(result); });
+  await batch.run();
+  assert.equal(away, true);
+  assert.deepEqual(repaired, [shot]);
+  assert.equal(await digest(shot), before, 'the original is back where it was');
+  assert.deepEqual(await readdir(path.join(workdir.root, 'placing')).catch(() => []), []);
+  // A placement that ends normally leaves no note.
+  const second = await write(path.join(files, 'next.png'), await png(300, 200, 5));
+  const again = await batchOf(env, [second], p);
+  await again.run();
+  assert.deepEqual(statuses(again), ['done']);
+  assert.deepEqual(await readdir(path.join(workdir.root, 'placing')).catch(() => []), []);
+});
+
 test('a failure after the original was taken restores it, and leaves a new result file out', async t => {
   if (!needTools(t, 'jpegoptim', 'exiftool')) return;
   const { dir, files, env, params } = await setup(t);

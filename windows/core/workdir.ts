@@ -156,7 +156,7 @@ export class Workdir {
 
   /**
    * Finishes what a placement that never ended left: an original that is not at its path is copied back from its backup (which
-   * stays in the backups), and the note is removed. A note stays when the copy back failed (a drive that is not there yet, a file
+   * stays in the backups or the batch backups), and the note is removed. A note stays when the copy back failed (a drive that is not there yet, a file
    * in use), so the backup stays protected and the next start tries again. Returns the files put back.
    */
   async repair(): Promise<string[]> {
@@ -166,7 +166,7 @@ export class Workdir {
       let original: unknown, backup: unknown;
       // A note that cannot be read or acted on is dropped; its backup stays in the backups.
       try { ({ original, backup } = JSON.parse(await readFile(note, 'utf8')) as { original?: unknown; backup?: unknown }); } catch { await rm(note, { force: true }); continue; }
-      if (typeof original === 'string' && typeof backup === 'string' && within(this.backups, backup) && !await exists(original) && await exists(backup)) {
+      if (typeof original === 'string' && typeof backup === 'string' && (within(this.backups, backup) || within(this.batchBackups, backup)) && !await exists(original) && await exists(backup)) {
         try { await copyTo(backup, original); restored.push(original); } catch { continue; }
       }
       await rm(note, { force: true });

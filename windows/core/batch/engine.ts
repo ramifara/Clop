@@ -273,6 +273,8 @@ export class Batch extends EventEmitter {
     const removes = over || this.params.output.location === 'inPlace';
     // Whatever was taken aside or created goes back if anything below fails, the manifest write included, so a failed file is exactly as it was.
     const undo: (() => Promise<void>)[] = [];
+    /** The note that an original is away from its path until its result is in (`Workdir.journal`): a start after a crash puts it back from the batch backup. */
+    let note: (() => Promise<void>) | undefined;
     try {
       if (!over) {
         // A file of the user's at the destination is copied, not moved, so the result replaces it atomically.
@@ -284,13 +286,17 @@ export class Batch extends EventEmitter {
         const kept = await this.backup.keep(original, { copy: over, before });
         // A copy leaves the original where it is, so it is only given back if the result had already replaced it.
         undo.push(async () => { if (!over || !await isAsKept(original, kept)) await copyTo(kept.backup, original); await this.backup.discard(original); });
+        if (!over) note = await env.workdir.journal(original, kept.backup);
       }
       await copyTo(produced, dest);
       await env.marker.markOptimised(dest).catch(() => {});
       const info = await stat(dest);
       await this.backup.recordResult({ original, path: dest, size: info.size, mtimeMs: info.mtimeMs, originalRemoved: removes && !over });
+      await note?.().catch(() => {});
     } catch (error) {
       for (const step of undo.reverse()) await step().catch(() => {});
+      // The note goes once the original is back; if it could not be put back, the note stays for the next start.
+      if (note && await exists(original)) await note().catch(() => {});
       throw error;
     }
     return dest;
