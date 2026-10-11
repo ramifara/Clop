@@ -530,7 +530,7 @@ async function serveCLI(userData: string) {
   const files = shellEffects();
   // The same effects as pipelines run from the app, per request: an agent without the permission for script steps cannot open a program by path.
   const service = new ClopService({
-    store: { get: () => store.get(), set: async value => { await updateSettings(value); return settings; } },
+    store: { get: () => store.get(), update: async change => { const wasEnabled = settings.mcpEnabled, reply = await store.update(change); await settingsChanged(reply.settings, wasEnabled); return reply; } },
     workdir, marker, effects: options => pipelineEffects(options), copyFiles: list => files.copyFiles(list), home: app.getPath('home'), withCard: optimiseWithCard,
   });
   pipe = await startPipeServer(newPipePath(), (request, emit) => { console.log(`CLI request: ${request.kind}`); return service.handle(request, emit); });
@@ -589,7 +589,11 @@ function updateTray() {
 function toggleSetting(value: unknown) { updateSettings(value).catch(error => { updateTray(); inform(message(error)); }); }
 async function updateSettings(value: unknown) {
   const wasEnabled = settings.mcpEnabled;
-  settings = await store.set(value);
+  await settingsChanged(await store.set(value), wasEnabled);
+}
+/** Brings the app in line with settings that were just saved. */
+async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
+  settings = saved;
   if (settings.mcpEnabled !== wasEnabled && app.isPackaged) void mcp.writeCard().catch(error => console.warn(`Could not write the MCP server card: ${message(error)}`));
   if (!settings.enableClipboardOptimiser || paused()) pickup.cancel();
   floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop);

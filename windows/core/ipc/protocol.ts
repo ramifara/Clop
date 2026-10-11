@@ -83,7 +83,15 @@ export interface SettingsRequest {
   pipeline?: string;
   /** `update` only: stored values by key, in the settings file's shape. */
   values?: Record<string, unknown>;
+  /**
+   * `update` only: the values these keys had when the client read them. The change is refused, with `SETTINGS_CHANGED`, when
+   * any of them is different by the time its turn comes, so a pipeline edit built on a stale read never overwrites what the
+   * editor or another command saved in between.
+   */
+  base?: Record<string, unknown>;
 }
+/** What an `update` with a stale `base` is answered with. */
+export const SETTINGS_CHANGED = 'Clop\'s pipelines or settings changed while this change was being prepared, so it was not saved. Run it again.';
 export interface MCPSettingInfo { key: string; type: string; value: string; allowed?: string[]; title: string; subtitle: string; keywords: string[]; pane: string; section: string; entryID: string }
 export interface SettingsResponse { ok: boolean; error?: string; settings?: MCPSettingInfo[]; values?: Record<string, unknown> }
 
@@ -193,7 +201,7 @@ export function parseSettingsRequest(value: unknown): SettingsRequest {
   return compact({
     action: oneOf(SETTINGS_ACTIONS, v.action, 'action'), key: optional(v.key, x => str(x, 'key', 256)), value: optional(v.value, x => str(x, 'value', MAX_MESSAGE_BYTES)),
     query: optional(v.query, x => str(x, 'query', 4096)), origin: optional(v.origin, x => str(x, 'origin', 64)), pipeline: optional(v.pipeline, x => str(x, 'pipeline', MAX_MESSAGE_BYTES)),
-    values: optional(v.values, x => record(x, 'values')),
+    values: optional(v.values, x => record(x, 'values')), base: optional(v.base, x => record(x, 'base')),
   });
 }
 

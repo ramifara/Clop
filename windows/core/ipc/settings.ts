@@ -4,14 +4,21 @@ import { isReadable, type Stored } from '../pipeline/codec';
 import { namesProgramByPath } from '../pipeline/app-resolve';
 import { stepEntry, type Pipeline, type PipelineStep, type PresetZone } from '../pipeline/model';
 import { parsePipelineText } from '../pipeline/parser';
-import type { MCPSettingInfo, SettingsRequest, SettingsResponse } from './protocol';
+import { SETTINGS_CHANGED, type MCPSettingInfo, type SettingsRequest, type SettingsResponse } from './protocol';
 
 // `MCPSettingsBridge` (Clop/MCPSettings.swift): every setting as an agent or `clop settings` sees it, each value as a
 // string that can be written back unchanged, and the MCP gate. macOS words each row from the Settings window's search
 // index; until the Windows settings window has one, a row is the key and its schema description.
 
-/** What the settings bridge needs from a settings store. `SettingsStore` fits. */
-export interface SettingsAccess { get(): ClopSettings; set(partial: unknown): Promise<ClopSettings> }
+/**
+ * What the settings bridge needs from a settings store. `SettingsStore` fits. Every write that depends on what is stored
+ * (all of an agent's or the CLI's) goes through `update`, which runs after every write queued before it, so it cannot undo
+ * what the pipeline editor or another command saved a moment earlier.
+ */
+export interface SettingsAccess {
+  get(): ClopSettings;
+  update<T>(change: (current: ClopSettings) => { patch?: unknown; result: T }): Promise<{ settings: ClopSettings; result: T }>;
+}
 
 /** Switches only the user may flip: an agent that could turn them on would need no permission at all. */
 const USER_ONLY: readonly SettingKey[] = ['mcpEnabled', 'mcpAllowScriptSteps'];
@@ -232,15 +239,20 @@ function keyRefusal(key: SettingKey, settings: ClopSettings, viaLibrary: boolean
   return `${key} cannot be changed by agents.`;
 }
 
-/** Answers a `SettingsRequest` (`MCPSettingsBridge.handle`), enforcing the MCP gate on writes. */
+/** What a write's checks come to: the reason it is refused, or nothing. */
+type Refusal = { error: string } | undefined;
+const refuse = (error: string) => ({ result: { error } as Refusal });
+/** Whether `current` still holds, for every key in `base`, the value the client based its change on. Both are compared as JSON, as `read` sends them. */
+const unchanged = (base: Record<string, unknown>, current: ClopSettings) => Object.entries(base).every(([key, value]) => isKey(key) && isDeepStrictEqual(JSON.parse(JSON.stringify(current[key])), value));
+
+/** Answers a `SettingsRequest` (`MCPSettingsBridge.handle`), enforcing the MCP gate on writes. Writes are checked against the settings as they are when their turn comes. */
 export async function handleSettingsRequest(req: SettingsRequest, store: SettingsAccess): Promise<SettingsResponse> {
-  const settings = store.get(), writes = req.action === 'set' || req.action === 'update' || req.action === 'gate';
-  if (writes) {
-    const refusal = mcpRefusal(req.origin, req.pipeline, settings);
-    if (refusal) return { ok: false, error: refusal };
-  }
+  const settings = store.get();
   switch (req.action) {
-    case 'gate': return { ok: true };
+    case 'gate': {
+      const refusal = mcpRefusal(req.origin, req.pipeline, settings);
+      return refusal ? { ok: false, error: refusal } : { ok: true };
+    }
     case 'schema': return { ok: true, settings: matchSettings(req.query ?? '').map(key => settingInfo(key, settings)) };
     case 'read': return { ok: true, values: JSON.parse(JSON.stringify(settings)) };
     case 'get':
@@ -248,28 +260,37 @@ export async function handleSettingsRequest(req: SettingsRequest, store: Setting
       if (!isKey(req.key)) return { ok: false, error: `no setting named '${req.key}'. Ask for the schema to see every key.` };
       return { ok: true, settings: [settingInfo(req.key, settings)] };
     case 'set': {
-      if (!req.key || req.value === undefined) return { ok: false, error: 'set needs a key and a value' };
-      if (!isKey(req.key)) return { ok: false, error: `no setting named '${req.key}'. Call the schema tool to see every key.` };
-      const refused = req.origin === 'mcp' ? keyRefusal(req.key, settings, false) : undefined;
-      if (refused) return { ok: false, error: refused };
-      const parsed = parseSettingValue(req.key, req.value, settings);
-      if ('error' in parsed) return { ok: false, error: parsed.error };
-      const next = await store.set({ [req.key]: parsed.value });
-      return { ok: true, settings: [settingInfo(req.key, next)] };
+      const written = await store.update((current): { patch?: unknown; result: Refusal } => {
+        const gate = mcpRefusal(req.origin, req.pipeline, current);
+        if (gate) return refuse(gate);
+        if (!req.key || req.value === undefined) return refuse('set needs a key and a value');
+        if (!isKey(req.key)) return refuse(`no setting named '${req.key}'. Call the schema tool to see every key.`);
+        const refused = req.origin === 'mcp' ? keyRefusal(req.key, current, false) : undefined;
+        if (refused) return refuse(refused);
+        const parsed = parseSettingValue(req.key, req.value, current);
+        if ('error' in parsed) return refuse(parsed.error);
+        return { patch: { [req.key]: parsed.value }, result: undefined };
+      });
+      return written.result ? { ok: false, error: written.result.error } : { ok: true, settings: [settingInfo(req.key as SettingKey, written.settings)] };
     }
     case 'update': {
       const values = req.values ?? {};
-      for (const [key, value] of Object.entries(values)) {
-        if (!isKey(key)) return { ok: false, error: `no setting named '${key}'.` };
-        const refused = req.origin === 'mcp' ? keyRefusal(key, settings, true) : undefined;
-        if (refused) return { ok: false, error: refused };
-        if (spec(key).parse(value) === undefined) return { ok: false, error: `${key} does not accept that value.` };
-      }
-      // The payload itself is checked: the `pipeline` text an agent sends alongside proves nothing.
-      const refusal = req.origin === 'mcp' ? libraryRefusal(values, settings) : undefined;
-      if (refusal) return { ok: false, error: refusal };
-      await store.set(values);
-      return { ok: true };
+      const written = await store.update((current): { patch?: unknown; result: Refusal } => {
+        const gate = mcpRefusal(req.origin, req.pipeline, current);
+        if (gate) return refuse(gate);
+        for (const [key, value] of Object.entries(values)) {
+          if (!isKey(key)) return refuse(`no setting named '${key}'.`);
+          const refused = req.origin === 'mcp' ? keyRefusal(key, current, true) : undefined;
+          if (refused) return refuse(refused);
+          if (spec(key).parse(value) === undefined) return refuse(`${key} does not accept that value.`);
+        }
+        // The payload itself is checked: the `pipeline` text an agent sends alongside proves nothing.
+        const refusal = req.origin === 'mcp' ? libraryRefusal(values, current) : undefined;
+        if (refusal) return refuse(refusal);
+        if (req.base && !unchanged(req.base, current)) return refuse(SETTINGS_CHANGED);
+        return { patch: values, result: undefined };
+      });
+      return written.result ? { ok: false, error: written.result.error } : { ok: true };
     }
   }
 }

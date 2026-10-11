@@ -3,13 +3,18 @@ import test from 'node:test';
 import { defaultSettings, settingsSchema, type ClopSettings } from '../settings/schema';
 import { parseSteps } from '../pipeline/parser';
 import type { SettingsRequest } from './protocol';
+import { SETTINGS_CHANGED } from './protocol';
 import { formatSettingValue, handleSettingsRequest, matchSettings, MCP_WRITABLE, mcpRefusal, parseSettingValue, VISIBLE_KEYS, type SettingsAccess } from './settings';
 
 function memoryStore(values: Partial<ClopSettings> = {}): SettingsAccess & { current: ClopSettings } {
   const store = {
     current: { ...defaultSettings(), ...values },
     get: () => store.current,
-    async set(partial: unknown) { store.current = { ...store.current, ...(partial as object) }; return store.current; },
+    async update<T>(change: (current: ClopSettings) => { patch?: unknown; result: T }) {
+      const { patch, result } = change(store.current);
+      if (patch !== undefined) store.current = { ...store.current, ...(patch as object) };
+      return { settings: store.current, result };
+    },
   };
   return store;
 }
@@ -83,6 +88,16 @@ test('update writes stored values after checking every one', async () => {
   assert.equal(store.current.pdfDPI, 150);
   const read = await handleSettingsRequest({ action: 'read' }, store);
   assert.equal(read.values?.stripMetadata, false);
+});
+
+test('an update built on stale values is refused, so it cannot undo what was saved in between', async () => {
+  const store = memoryStore();
+  const read = (await handleSettingsRequest({ action: 'read' }, store)).values!;
+  const base = { savedPipelines: read.savedPipelines };
+  assert.deepEqual(await handleSettingsRequest({ action: 'update', values: { savedPipelines: [] }, base }, store), { ok: true }, 'values unchanged since the read are written');
+  const stale = { savedPipelines: [{ id: 'elsewhere' }] };
+  assert.deepEqual(await handleSettingsRequest({ action: 'update', values: { stripMetadata: false }, base: stale }, store), { ok: false, error: SETTINGS_CHANGED });
+  assert.equal(store.current.stripMetadata, true, 'a refused update writes nothing');
 });
 
 test('agents write only the keys the macOS bridge lists, and never plant script steps through the library', async () => {
