@@ -195,9 +195,9 @@ function IgnoredApps({ ignored, run }: { ignored: string[]; run: Run }) {
   }, []);
   const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
   const name = (entry: string) => apps?.find(app => same(app.path, entry))?.name ?? entry.split(/[\\/]/).pop();
-  const save = (list: string[]) => void run(() => api.settings({ clipboardIgnoredAppBundleIds: list }));
+  const add = (entry: string) => void run(() => api.prefs({ action: 'ignore', op: 'add', entry })), remove = (entry: string) => void run(() => api.prefs({ action: 'ignore', op: 'remove', entry }));
   return <div className="ignored-apps"><span>Ignore copies from these apps</span>
-    {ignored.length ? <ul>{ignored.map(entry => <li key={entry} title={entry}><span>{name(entry)}</span><button aria-label={`Stop ignoring ${name(entry)}`} onClick={() => save(ignored.filter(other => other !== entry))}><Icon name="close" size={9}/></button></li>)}</ul> : <small>None: copies from every app are optimised.</small>}
-    <select aria-label="Ignore an app" value="" onChange={event => { if (event.target.value) save([...ignored, event.target.value]); }}><option value="">{apps ? 'Add an app…' : 'Loading apps…'}</option>{apps?.filter(app => !ignored.some(entry => same(entry, app.path))).map(app => <option key={app.path} value={app.path} title={app.path}>{app.running ? `${app.name} (running)` : app.name}</option>)}</select>
+    {ignored.length ? <ul>{ignored.map(entry => <li key={entry} title={entry}><span>{name(entry)}</span><button aria-label={`Stop ignoring ${name(entry)}`} onClick={() => remove(entry)}><Icon name="close" size={9}/></button></li>)}</ul> : <small>None: copies from every app are optimised.</small>}
+    <select aria-label="Ignore an app" value="" onChange={event => { if (event.target.value) add(event.target.value); }}><option value="">{apps ? 'Add an app…' : 'Loading apps…'}</option>{apps?.filter(app => !ignored.some(entry => same(entry, app.path))).map(app => <option key={app.path} value={app.path} title={app.path}>{app.running ? `${app.name} (running)` : app.name}</option>)}</select>
   </div>;
 }

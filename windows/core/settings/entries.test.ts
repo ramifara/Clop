@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { controlFor, type SettingMeta } from './controls';
-import { HIDDEN_KEYS, SETTING_ENTRIES, entryById, entryForRow, hostRow } from './entries';
+import { HIDDEN_KEYS, SETTING_ENTRIES, entryById, entryForRow, hostRow, settingsTarget } from './entries';
 import { settingsMeta } from './meta';
 import { SETTING_KEYS, settingsSchema } from './schema';
 import { searchSettings } from './search';
@@ -70,4 +70,12 @@ test('Windows rows do not talk about the Mac', () => {
   const mac = /\b(finder|macs?|icloud|menubar|menu bar|quicklook|photos\.app|dropshare|⌘|⌥|option key|cmd)\b/i;
   const offenders = SETTING_ENTRIES.filter(entry => mac.test([entry.title, entry.subtitle].join(' ')) || entry.keywords.some(word => /^(finder|icloud|menubar|quicklook|dropshare)$/i.test(word)));
   assert.deepEqual(offenders.map(entry => `${entry.id}: ${entry.title}`), []);
+});
+
+test('a link opens the tab of its row, whatever tab it names', () => {
+  assert.deepEqual(settingsTarget('video', 'general.optimisation.stripMetadata'), { tab: 'general', row: 'general.optimisation.stripMetadata' });
+  assert.deepEqual(settingsTarget(undefined, 'enabledKeys'), { tab: 'keys', row: 'keys.actionkeys.enabledKeys' });
+  assert.deepEqual(settingsTarget('images'), { tab: 'images' });
+  assert.deepEqual(settingsTarget('images', 'no such row'), { tab: 'images' });
+  assert.deepEqual(settingsTarget(), { tab: 'general' });
 });

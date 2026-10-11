@@ -28,7 +28,10 @@ import { pipelinesSkipOptimisation, type PipelinesOutcome } from '../core/pipeli
 import type { PipelineEffects } from '../core/pipeline/executor';
 import type { MediaKind } from '../core/media/types';
 import { spawn } from 'node:child_process';
-import type { AppEntry, AppState, ImageOptions, ItemResult, PresetTiles } from '../src/types';
+import type { AppEntry, AppState, ImageOptions, ItemResult, PresetTiles, SettingsRequest } from '../src/types';
+import { settingsTarget } from '../core/settings/entries';
+import type { SettingsTab } from '../core/settings/tabs';
+import { createPrefs } from './prefs';
 import { publishPipe, startPipeServer, type PipeServer } from './pipe-server';
 import { clopURLs, type ClopURL } from './clop-url';
 import { installPortableCLI, isPortable, portableCLIDir, portableCLIInstalled, refreshPortableCLI, removePortableCLI } from './cli-install';
@@ -48,9 +51,9 @@ protocol.registerSchemesAsPrivileged([{ scheme: MEDIA_SCHEME, privileges: { stan
 let main: BrowserWindow, floating: BrowserWindow, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray, engine: ItemEngine, media: MediaFiles;
 /** Open crop and compare windows, by `crop:<id>` and `compare:<id>`. */
 const views = new Map<string, BrowserWindow>();
-let settings = defaultSettings(), notice: string | undefined, quitting = false, bridgeReady = false;
+let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
-let mcp: ReturnType<typeof mcpSettings>;
+let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
 let dropActive = false, dragging = false, importsRunning = 0, hovered = false;
 /** The files being dragged, and whether Ctrl or Alt is held, as the Windows helper reports them: Ctrl or Alt shows the preset zone tiles. */
 let dragFiles: string[] = [], dragModifiers = { ctrl: false, alt: false }, presetsLatched = false;
@@ -95,7 +98,7 @@ const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 const presetsRevealed = () => dragModifiers.ctrl || dragModifiers.alt;
 /** The preset zone tiles for the files being dragged. */
 function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, draggedType(dragFiles, mediaKind)) }; }
-const state = (): AppState => ({ items: engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id)), settings, native: true, platform: process.platform, dropActive, notice, presets: presets() });
+const state = (): AppState => ({ items: engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id)), settings, native: true, platform: process.platform, dropActive, notice, presets: presets(), settingsRequest });
 function broadcast() {
   for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
   // The crop and compare windows follow their result even after its card hid, so they get every result.
@@ -251,7 +254,7 @@ async function openEditor(tab?: 'zones') {
 }
 async function createWindows() {
   const windowPreferences = webPreferences();
-  main = new BrowserWindow({ width: 390, height: 500, resizable: false, show: false, backgroundColor: '#f3f1ef', title: 'Clop settings', autoHideMenuBar: true, webPreferences: windowPreferences });
+  main = new BrowserWindow({ width: 920, height: 660, minWidth: 720, minHeight: 480, show: false, backgroundColor: '#f3f1ef', title: 'Clop settings', autoHideMenuBar: true, webPreferences: windowPreferences });
   floating = new BrowserWindow({ width: 236, height: 206, frame: false, resizable: false, transparent: true, show: false, skipTaskbar: true, alwaysOnTop: settings.floatingResultsAlwaysOnTop, backgroundColor: '#00000000', webPreferences: windowPreferences });
   configure(main); configure(floating);
   await load(main, { preferences: '1' }); await load(floating, { floating: '1' });
@@ -536,9 +539,9 @@ async function serveCLI(userData: string) {
   pipe = await startPipeServer(newPipePath(), (request, emit) => { console.log(`CLI request: ${request.kind}`); return service.handle(request, emit); });
   withdrawPipe = await publishPipe(userData, pipe);
 }
-/** `clop://settings/…` opens Settings (tabs arrive with the settings window) and `clop://mcp/start|stop` flips the MCP switch; start asks first. */
+/** `clop://settings/…` opens Settings on a tab and row and `clop://mcp/start|stop` flips the MCP switch; start asks first. */
 async function openClopURL(link: ClopURL) {
-  if (link.kind === 'settings') { console.log(`Settings link: ${link.tab ?? 'general'}${link.row ? ` / ${link.row}` : ''}`); main.show(); main.focus(); return; }
+  if (link.kind === 'settings') { showSettings(link.tab, link.row); return; }
   if (link.action === 'stop') return updateSettings({ mcpEnabled: false });
   // Repeated start links while the question is open ask nothing more.
   if (settings.mcpEnabled || askingMCP) return;
@@ -565,6 +568,13 @@ function toggleCLI() {
     .then(() => { cliInstalled = !cliInstalled; updateTray(); void mcp.writeCard().catch(() => {}); inform(cliInstalled ? 'Open a new terminal to use the clop command.' : 'The clop command is removed.'); })
     .catch(error => inform(message(error)));
 }
+/** Opens the Settings window, on a tab and row when asked. The request travels with the state, so a window that has not finished loading still gets it. */
+function showSettings(tab?: SettingsTab, row?: string) {
+  settingsRequest = { ...settingsTarget(tab, row), nonce: (settingsRequest?.nonce ?? 0) + 1 };
+  if (main.isMinimized()) main.restore();
+  main.show(); main.focus();
+  broadcast();
+}
 function updateTray() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show latest results', click: showLatest },
@@ -579,7 +589,7 @@ function updateTray() {
     { label: 'Stop all', click: () => engine.stop() },
     { type: 'separator' },
     { label: 'Pipelines…', click: () => { openEditor().catch(error => inform(message(error))); } },
-    { label: 'Settings…', click: () => main.show() },
+    { label: 'Settings…', click: () => showSettings() },
     { label: 'Open originals and results', click: () => { void shell.openPath(workdir.temp); } },
     ...(isPortable() ? [{ label: cliInstalled ? 'Remove command-line tool' : 'Install command-line tool', click: toggleCLI }] : []),
     { type: 'separator' }, { label: 'Quit Clop', click: () => app.quit() },
@@ -654,6 +664,8 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'crop-sizes': return settings.savedCropSizes;
     case 'save-crop-sizes': settings = await store.set({ savedCropSizes: parseSavedCropSizes(args[0]) }); broadcast(); return settings.savedCropSizes;
     case 'compare-sources': return compareSources(engine.get(id), parseCompareView(args[1]), media);
+    // The picker-backed and list-editing settings actions come only from the Settings window.
+    case 'prefs': if (event.sender !== main.webContents) throw new Error('Only the settings window can do this.'); return prefs(args[0]);
     case 'window':
       switch (args[0]) {
         case 'hide': BrowserWindow.fromWebContents(event.sender)?.hide(); break;
@@ -707,6 +719,16 @@ else {
     // The built-in pipelines join the library once per version. Not over a settings file that could not be read: saving would replace it.
     if (!settingsError) settings = await store.update(current => ({ patch: seedBuiltinPipelines(current.savedPipelines, current.builtinPipelinesSeededVersion), result: undefined })).then(reply => reply.settings, error => { settingsError = error; return settings; });
     mirrorConsoleToFile(path.join(userData, 'logs', 'clop.log'), () => settings.persistDebugLogs);
+    const paths = { home: app.getPath('home'), desktop: app.getPath('desktop'), userData };
+    prefs = createPrefs({
+      settings: () => settings, defaults: () => defaultSettings(paths), set: async partial => { await updateSettings(partial); }, home: paths.home,
+      chooseFolder: async (title, defaultPath) => { const picked = await dialog.showOpenDialog(main, { title, defaultPath, properties: ['openDirectory', 'createDirectory'] }); return picked.canceled ? undefined : picked.filePaths[0]; },
+      chooseProgram: async title => { const picked = await dialog.showOpenDialog(main, { title, properties: ['openFile'], filters: process.platform === 'win32' ? [{ name: 'Programs', extensions: ['exe'] }] : [] }); return picked.canceled ? undefined : picked.filePaths[0]; },
+      apps: async () => bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [],
+      // The pipeline editor window arrives later; until then the link does nothing.
+      openEditor: () => {},
+      openExternal: url => shell.openExternal(url), version: () => ({ name: app.getVersion(), platform: process.platform }),
+    });
     mcp = mcpSettings({
       userData, home: app.getPath('home'), cliPath: mcpServerPath(), missing: mcpServerMissing(), version: app.getVersion(), appPath: process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath,
       setSwitches: updateSettings, switches: () => settings, confirmScripts, reveal: file => shell.showItemInFolder(file), copy: text => clipboard.writeText(text),

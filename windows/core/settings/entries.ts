@@ -305,3 +305,10 @@ export const entryForRow = (row: string): SettingEntry | undefined => {
 };
 /** The row to scroll to for `entry`: the row it is drawn inside, when it has no control of its own. */
 export const hostRow = (entry: SettingEntry) => (entry.ui?.within ? entryById(entry.ui.within) : undefined) ?? entry;
+
+export interface SettingsTarget { tab: SettingsTab; row?: string }
+/** Where `clop://settings/<tab>/<row>` opens: a row the index knows opens on the tab the index puts it on, whatever tab the link names, so a copied link survives a row moving. */
+export function settingsTarget(tab?: SettingsTab, row?: string): SettingsTarget {
+  const entry = row ? entryForRow(row) : undefined;
+  return { tab: entry?.tab ?? tab ?? 'general', ...(entry ? { row: entry.id } : {}) };
+}

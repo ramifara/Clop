@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultSettings, migrateLegacy, parseSettings } from '../core/settings/schema';
-import { RENDERER_SETTINGS, imageCompression, imageDefaults, imageMode, parseOptions, rendererSettings } from './settings';
+import { HIDDEN_KEYS } from '../core/settings/entries';
+import { SETTING_KEYS, defaultSettings, migrateLegacy, settingsSchema, type ClopSettings, type SettingSpec } from '../core/settings/schema';
+import { ACTION_ONLY_SETTINGS, RENDERER_SETTINGS, imageCompression, imageDefaults, imageMode, parseOptions, rendererSettings } from './settings';
 test('new images use the compression and format settings', () => {
   assert.deepEqual(imageDefaults(defaultSettings()), { mode: 'balanced', format: 'auto', scale: 1 });
   for (const mode of ['balanced', 'aggressive', 'lossless'] as const) assert.equal(imageDefaults(migrateLegacy({ defaultMode: mode, defaultFormat: 'webp' })).mode, mode);
@@ -25,15 +26,27 @@ test('rejects invalid dimensions, formats and non-finite scales', () => {
   assert.throws(() => parseOptions({ mode: 'balanced', format: 'png', scale: 1, maxEdge: 1.5 }));
   assert.throws(() => parseOptions({ mode: 'balanced', format: 'png', scale: 1, maxEdge: 20000 }));
 });
-test('the renderer may only change the settings its window writes', () => {
+test('the renderer may change the settings its window has rows for, and not those that change only through an action', () => {
   assert.deepEqual(rendererSettings({ floatingResultsCorner: 'topLeft', keepDropZoneVisible: true }), { floatingResultsCorner: 'topLeft', keepDropZoneVisible: true });
-  for (const key of RENDERER_SETTINGS) assert.doesNotThrow(() => rendererSettings({ [key]: true }));
-  for (const key of ['editorAppImage', 'workdir', 'mcpEnabled', 'mcpAllowScriptSteps', 'pipelinesToRunOnImage', 'pipelinesToRunOnVideo', 'savedPipelines', 'presetZones', 'imageDirs', '__proto__', 'unknown']) assert.throws(() => rendererSettings(JSON.parse(`{"${key}": 1}`)), /cannot be changed from this window/, key);
+  const schema = settingsSchema as Record<string, SettingSpec>;
+  for (const key of RENDERER_SETTINGS) assert.doesNotThrow(() => rendererSettings({ [key]: schema[key].default instanceof Function ? defaultSettings()[key] : schema[key].default }), key);
+  for (const key of Object.keys(ACTION_ONLY_SETTINGS)) {
+    assert.ok(!(RENDERER_SETTINGS as readonly string[]).includes(key), key);
+    assert.throws(() => rendererSettings({ [key]: defaultSettings()[key as keyof ClopSettings] }), /cannot be changed from this window/, key);
+  }
+  for (const key of ['__proto__', 'unknown', 'finishedOnboarding', 'savedCropSizes', 'cliInstalled', 'lastAutoIncrementingNumber', 'syncSettingsCloud', 'enablePhotosIntegration', 'useAggressiveOptimisationMP4']) assert.throws(() => rendererSettings(JSON.parse(`{"${key}": 1}`)), /cannot be changed from this window/, key);
   assert.throws(() => rendererSettings({ keepDropZoneVisible: true, workdir: 'C:\\' }), /workdir cannot be changed/);
   for (const bad of [null, 'x', [], 1]) assert.throws(() => rendererSettings(bad));
 });
-test('the ignored-apps list from the settings window is kept only as a list of strings', () => {
-  const current = { ...defaultSettings(), clipboardIgnoredAppBundleIds: ['C:\\Apps\\keep.exe'] };
-  assert.deepEqual(parseSettings(rendererSettings({ clipboardIgnoredAppBundleIds: ['a.exe', 'A.exe', 'Contoso.Notes_abc!App'] }), current).clipboardIgnoredAppBundleIds, ['a.exe', 'A.exe', 'Contoso.Notes_abc!App']);
-  for (const bad of ['a.exe', [1], [{}], [null]]) assert.deepEqual(parseSettings(rendererSettings({ clipboardIgnoredAppBundleIds: bad }), current).clipboardIgnoredAppBundleIds, ['C:\\Apps\\keep.exe'], JSON.stringify(bad));
+test('the allowlist covers what the window edits: every row\'s settings, minus the action-only ones', () => {
+  for (const key of ['stripMetadata', 'videoEncoder', 'keyComboModifiers', 'enabledKeys', 'quickResizeKeys', 'floatingResultActions', 'imageCompression', 'persistDebugLogs', 'launchAtLogin', 'sameFolderNameTemplateImage', 'minVideoSizeKB', 'maxVideoSizeMB']) assert.ok((RENDERER_SETTINGS as readonly string[]).includes(key), key);
+  const covered = new Set<string>([...RENDERER_SETTINGS, ...Object.keys(ACTION_ONLY_SETTINGS), ...Object.keys(HIDDEN_KEYS)]);
+  for (const key of SETTING_KEYS) assert.ok(covered.has(key) || settingsSchema[key].unsupportedOnWindows, `${key} is neither editable, action-only, hidden nor unsupported`);
+});
+test('a value the setting cannot hold is refused instead of silently ignored', () => {
+  assert.throws(() => rendererSettings({ floatingResultsCorner: 'middle' }), /floatingResultsCorner is not a valid value/);
+  assert.throws(() => rendererSettings({ batchModeFileCountThreshold: -1, stripMetadata: 'yes' }), /batchModeFileCountThreshold, stripMetadata are not valid values/);
+  assert.throws(() => rendererSettings({ enabledKeys: ['Not a key'] }), /enabledKeys/);
+  assert.throws(() => rendererSettings({ videoEncoder: 'rm -rf' }), /videoEncoder/);
+  assert.deepEqual(rendererSettings({ keyComboModifiers: ['Control', 'Alt'], enabledKeys: ['C', 'Space'] }), { keyComboModifiers: ['Control', 'Alt'], enabledKeys: ['C', 'Space'] });
 });

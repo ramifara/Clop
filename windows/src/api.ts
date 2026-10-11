@@ -7,6 +7,12 @@ async function request<T = AppState>(action: string, body?: unknown): Promise<T>
   if (!response.ok) throw new Error(data.error || 'The image operation failed. Try again.');
   return data;
 }
+async function post<T>(action: string, body: unknown): Promise<T> {
+  const response = await fetch(`/api/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'The settings action failed. Try again.');
+  return data;
+}
 async function importFiles(files: File[], aggressive = false) {
   if (files.length > 20) throw new Error('Drop up to 20 images at a time.');
   for (const file of files) {
@@ -51,6 +57,7 @@ const browser: ClopApi = {
   apps: async () => [],
   pipelines: async () => [],
   runPipeline: async () => { throw new Error('Pipelines run in the Clop app.'); },
+  prefs: request => post('prefs', request),
   mcp: async () => ({ clients: [], missing: 'Installing the MCP server into agents works in the desktop app.' }),
   runPreset: async () => { throw new Error('Preset zones run in the Clop app.'); },
   editor: { state: () => request<EditorState>('editor-state'), command: command => request<EditorReply>('editor-command', command), subscribe: () => () => {} },
