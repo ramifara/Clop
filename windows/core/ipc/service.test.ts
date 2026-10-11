@@ -151,6 +151,21 @@ test('the same file twice in one request is worked on one pass after the other',
   assert.equal(messages.filter(m => m.kind === 'error').length, 2);
 });
 
+test('an agent\'s pipeline cannot replace a file by naming the same location text as the placement setting', async t => {
+  if (!needTools(t, 'pngquant')) return;
+  const s = await setup(t, {}, { mcpEnabled: true, optimisedImageBehaviour: 'sameFolder', sameFolderNameTemplateImage: '%f-optimised' });
+  const input = s.file('a.png'), earlier = s.file('a-optimised.png');
+  await graphic(60, 40).png().toFile(input);
+  await writeFile(earlier, 'earlier result');
+  const [explicit] = answers(await s.send({ urls: [fileURL(input)], origin: 'mcp', pipeline: 'optimise(location: "%f-optimised")' }));
+  assert.ok(explicit.kind === 'error' && /already exists/.test(explicit.error.error), JSON.stringify(explicit));
+  assert.equal(await readFile(earlier, 'utf8'), 'earlier result');
+  s.store.current.savedPipelines = [{ id: 'HALF', name: 'Half', steps: parseSteps('downscale(factor: 0.5)'), skipOptimisation: false, hideResult: false }];
+  const [saved] = answers(await s.send({ urls: [fileURL(input)], origin: 'mcp', pipeline: 'half' }));
+  assert.ok(saved.kind === 'response', JSON.stringify(saved));
+  assert.notEqual(await readFile(earlier, 'utf8'), 'earlier result', 'the placement setting itself may replace an earlier result');
+});
+
 test('only the user\'s own pipelines may open a program by path; an agent without script permission opens apps by name', async t => {
   if (!needTools(t, 'pngquant')) return;
   const seen: boolean[] = [];

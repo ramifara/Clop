@@ -234,10 +234,11 @@ export class ClopService {
       const env: PlacementEnv = { settings: requestSettings(settings, req, kind), workdir: deps.workdir, counter, marker: deps.marker, home: deps.home };
       // Agents only run script steps, and open programs by path, when the user allowed them; anyone else runs their own pipelines.
       const allowScripts = req.origin !== 'mcp' || settings.mcpAllowScriptSteps;
+      const settingsStep = pipeline && !pipeline.skipOptimisation ? makeStep('optimise', { encoder: req.aggressiveOptimisation ? 'aggressive' : 'medium', adaptive: false, location: optimisedLocation(env, kind, req.placement) }) : undefined;
       const opts: PipelineRunOptions = {
         fileType: kind, env, effects: typeof deps.effects === 'function' ? await deps.effects({ allowExe: allowScripts }) : deps.effects, placementOverride: req.placement, signal, allowScripts,
         // An explicit output from an agent may not replace a file, as the user's placement settings may.
-        refuseExisting: req.origin === 'mcp' ? { settingsLocation: pipeline ? optimisedLocation(env, kind, req.placement) : undefined } : undefined,
+        refuseExisting: req.origin === 'mcp' ? { settingsStep } : undefined,
         onProgress: p => progress(Math.min(1, (p.step + p.fraction) / Math.max(1, p.steps))),
       };
       const run = new RunState(input, opts);
@@ -246,7 +247,7 @@ export class ClopService {
         if (pipeline) {
           const steps = [...(kind === 'audio' && req.audioBitrate !== undefined ? [makeStep('lowerBitrate', { kbps: req.audioBitrate })] : []), ...pipeline.steps];
           // A saved pipeline optimises first unless it says to skip that; the optimise joins the pipeline's first pass.
-          if (!pipeline.skipOptimisation) steps.unshift(makeStep('optimise', { encoder: req.aggressiveOptimisation ? 'aggressive' : 'medium', adaptive: false, location: optimisedLocation(env, kind, req.placement) }));
+          if (settingsStep) steps.unshift(settingsStep);
           final = (await runPipeline({ ...pipeline, steps }, input, opts)).file;
         } else {
           let produced = !req.hideFloatingResult && deps.withCard ? await deps.withCard(input, kind, req, signal) : undefined;

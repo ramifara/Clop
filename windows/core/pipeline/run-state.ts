@@ -3,7 +3,7 @@ import path from 'node:path';
 import { defaultMarker } from '../marker';
 import type { PlacementEnv, PlacementOverride } from '../placement';
 import { expandTemplate, resolveHome } from '../template';
-import type { ClopFileType } from './model';
+import type { ClopFileType, PipelineStep } from './model';
 
 // What one pipeline run carries from step to step: `PipelineExecution` (Clop/PipelineExecution.swift) without the UI.
 
@@ -37,9 +37,9 @@ export interface PipelineRunOptions {
   allowScripts: boolean;
   /**
    * For an agent: a location that names a file that already exists is refused, so a result never lands on a user's file.
-   * `settingsLocation` is the one location the user's own placement settings chose, which may meet an earlier result.
+   * `settingsStep` is the step the user's own placement settings added, whose location may meet an earlier result.
    */
-  refuseExisting?: { settingsLocation?: string };
+  refuseExisting?: { settingsStep?: PipelineStep };
   /** Where `runShortcut(name:)` finds its scripts; `%APPDATA%\Clop for Windows\scripts` by default. */
   scriptsDir?: string;
   /** The app that copied a clipboard item, for `if(copiedBy:)`: its executable path or app ID, and its name. */

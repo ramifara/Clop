@@ -70,7 +70,7 @@ export async function applyLocation(run: RunState, location: string, result: str
   }
   if (!hasFileExtension(path.basename(dest), [extension(result), extension(original)]) && ext) dest = `${dest}.${ext}`;
   if (samePath(dest, result)) return result;
-  if (run.opts.refuseExisting && !fromSettings && location !== run.opts.refuseExisting.settingsLocation && ![original, run.original].some(file => samePath(dest, file)) && await exists(dest)) {
+  if (run.opts.refuseExisting && !fromSettings && ![original, run.original].some(file => samePath(dest, file)) && await exists(dest)) {
     throw new Error(`${dest} already exists. Agents can't replace a file that is already there: ask for an output path that doesn't exist yet.`);
   }
   await mkdir(path.dirname(dest), { recursive: true });
