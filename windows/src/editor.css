@@ -66,6 +66,8 @@ body:has(.editor) { color: #302d32; font-size: 12px; }
 .code-box { position: relative; background: #fff; border: 1px solid #d6cfce; border-radius: 6px; min-height: 96px; }
 .code-box:focus-within { border-color: #8b7fa6; box-shadow: 0 0 0 2px #8b7fa633; }
 .code-highlight, .code-input { margin: 0; padding: 10px 12px; font: 13px/1.6 'Cascadia Code', Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; letter-spacing: 0; border: 0; }
+/* `.editor textarea { font: inherit }` is more specific than `.code-input`, which left the text box on a tighter line height than the highlighted copy under it, so the box ended before its text did. */
+.editor .code-input { font: 13px/1.6 'Cascadia Code', Consolas, monospace; }
 .code-highlight { position: absolute; inset: 0; pointer-events: none; color: #302d32; overflow: hidden; }
 .code-input { position: relative; display: block; width: 100%; min-height: 96px; resize: none; background: transparent; color: transparent; caret-color: #302d32; outline: none; overflow: hidden; }
 .code-input::placeholder { color: #a39aa2; }
@@ -116,3 +118,5 @@ body:has(.editor) { color: #302d32; font-size: 12px; }
 .zone-fields input { width: 170px; }
 .conflict { margin: 0; padding: 8px 12px; background: #f9ecd2; color: #6b4a0a; border: 1px solid #e6cf9c; border-radius: 6px; }
 .conflict button { margin-left: 6px; }
+/* The panes scroll; a text box never shrinks to the height the pane has left, which would clip its text. */
+.library-pane > *, .code, .code-box { flex: none; }
