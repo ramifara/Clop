@@ -44,6 +44,8 @@ export function App() {
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLElement && (['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName) || event.target.isContentEditable)) return;
+      // The settings window has no results to act on: its keys are its own.
+      if (preferences) { if (event.key === 'Escape') void api.window('hide'); return; }
       const item = state?.items.find(item => item.id === selected) ?? state?.items[0];
       if (event.key === 'Escape') { void api.window('hide'); return; }
       if (!item || item.status !== 'ready' || event.ctrlKey || event.metaKey || event.altKey) return;
