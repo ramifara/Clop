@@ -29,7 +29,11 @@ import { handleSettingsRequest, mcpRefusal, type SettingsAccess } from './settin
 export interface ServiceDeps {
   store: SettingsAccess;
   workdir: Workdir;
-  effects: PipelineEffects;
+  /**
+   * What pipeline steps do outside the files. A function gets whether this run may open programs by path (`allowExe`), which
+   * is the user's own pipelines only: an agent's, unless the user allows script steps, may only open apps Windows knows.
+   */
+  effects: PipelineEffects | ((options: { allowExe: boolean }) => PipelineEffects | Promise<PipelineEffects>);
   marker?: OptimisedMarker;
   home?: string;
   /** Puts files on the clipboard, for `copyToClipboard`. */
@@ -215,10 +219,10 @@ export class ClopService {
       if (!kind) throw new Error(`Clop cannot optimise ${path.basename(input)}: it is not an image, video, audio file or PDF.`);
       const before = await facts(input, kind), settings = deps.store.get();
       const env: PlacementEnv = { settings: requestSettings(settings, req, kind), workdir: deps.workdir, counter, marker: deps.marker, home: deps.home };
+      // Agents only run script steps, and open programs by path, when the user allowed them; anyone else runs their own pipelines.
+      const allowScripts = req.origin !== 'mcp' || settings.mcpAllowScriptSteps;
       const opts: PipelineRunOptions = {
-        fileType: kind, env, effects: deps.effects, placementOverride: req.placement, signal,
-        // Agents only run script steps the user allowed; anyone else runs their own pipelines.
-        allowScripts: req.origin !== 'mcp' || settings.mcpAllowScriptSteps,
+        fileType: kind, env, effects: typeof deps.effects === 'function' ? await deps.effects({ allowExe: allowScripts }) : deps.effects, placementOverride: req.placement, signal, allowScripts,
         onProgress: p => progress(Math.min(1, (p.step + p.fraction) / Math.max(1, p.steps))),
       };
       const run = new RunState(input, opts);

@@ -7,6 +7,7 @@ import { handleSettingsRequest } from '../core/ipc/settings';
 import { OptimisedMarker } from '../core/marker';
 import { defaultPaths } from '../core/settings/paths';
 import { SettingsStore } from '../core/settings/store';
+import { watchedFolders } from '../core/pipeline/app-resolve';
 import { shellEffects } from '../core/shell-effects';
 import { Workdir } from '../core/workdir';
 
@@ -69,8 +70,9 @@ class HeadlessBackend implements Backend {
       const store = await this.loadStore(), { home, userData } = this.options;
       // As the app does: a working directory that cannot be used falls back to the default one.
       const workdir = await new Workdir(store.get('workdir'), { home }).ensure().catch(() => new Workdir(path.join(userData, 'work'), { home }).ensure());
-      const effects = shellEffects();
-      return new ClopService({ store, workdir, effects, copyFiles: files => effects.copyFiles(files), marker: new OptimisedMarker(path.join(userData, 'optimised.json')), home });
+      // Programs by path are only for the user's own pipelines, and never from a watched folder, as in the app.
+      const effects = (options: { allowExe: boolean }) => shellEffects({ ...options, watched: watchedFolders(store.get(), home) });
+      return new ClopService({ store, workdir, effects, copyFiles: files => shellEffects().copyFiles(files), marker: new OptimisedMarker(path.join(userData, 'optimised.json')), home });
     })();
   }
 

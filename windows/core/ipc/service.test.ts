@@ -12,6 +12,7 @@ import { FakeEffects } from '../pipeline/executor.fixtures';
 import { parseSteps } from '../pipeline/parser';
 import { defaultSettings, type ClopSettings } from '../settings/schema';
 import { needTools } from '../testing';
+import { shellEffects } from '../shell-effects';
 import { Workdir } from '../workdir';
 import { fileURL, type OptimisationRequest, type ServerMessage } from './protocol';
 import { ClopService, cropSizeText, factorText, requestSteps, type ServiceDeps } from './service';
@@ -122,6 +123,27 @@ test('a request that shows its result lets the app optimise it with a card, then
   assert.ok(shown.kind === 'response');
   assert.deepEqual(shown.response.newWidthHeight, [10, 8]);
   assert.deepEqual(s.copied, [[input]]);
+});
+
+test('only the user\'s own pipelines may open a program by path; an agent without script permission opens apps by name', async t => {
+  if (!needTools(t, 'pngquant')) return;
+  const seen: boolean[] = [];
+  const saved = { id: 'OPEN', name: 'open', steps: parseSteps('openWith(app: "C:\\\\Tools\\\\viewer.exe")'), skipOptimisation: true, hideResult: false };
+  // The headless effects the CLI uses, which resolve the app by the app's rule before starting anything.
+  const s = await setup(t, { effects: options => { seen.push(options.allowExe); return shellEffects(options); } }, { savedPipelines: [saved], mcpEnabled: true });
+  const input = s.file('a.png');
+  await graphic(60, 40).png().toFile(input);
+  const message = async (request: Partial<OptimisationRequest>) => {
+    const [result] = answers(await s.send({ urls: [fileURL(input)], pipeline: 'open', ...request }));
+    return result.kind === 'error' ? result.error.error : 'ok';
+  };
+  // The user's pipeline may name the program: it is looked up, and a program that is not there is not found (not refused).
+  assert.match(await message({}), /not found/);
+  assert.match(await message({ origin: 'mcp' }), /cannot open programs by path/);
+  assert.deepEqual(seen, [true, false]);
+  s.store.current = { ...s.store.current, mcpAllowScriptSteps: true };
+  assert.match(await message({ origin: 'mcp' }), /not found/, 'with script steps allowed an agent is the user\'s hands');
+  assert.deepEqual(seen, [true, false, true]);
 });
 
 test('PDFs are cropped to the request size ratio and compressed at its DPI', async t => {

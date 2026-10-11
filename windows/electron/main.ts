@@ -447,10 +447,11 @@ async function optimiseWithCard(file: string, kind: MediaKind, req: Optimisation
 }
 /** Requests from `clop` and the MCP server (spec step 24). Settings they change go through `updateSettings`, so they apply at once. */
 async function serveCLI(userData: string) {
-  const effects = shellEffects();
+  const files = shellEffects();
+  // The same effects as pipelines run from the app, per request: an agent without the permission for script steps cannot open a program by path.
   const service = new ClopService({
     store: { get: () => store.get(), set: async value => { await updateSettings(value); return settings; } },
-    workdir, effects, copyFiles: files => effects.copyFiles(files), home: app.getPath('home'), withCard: optimiseWithCard,
+    workdir, marker, effects: options => pipelineEffects(options), copyFiles: list => files.copyFiles(list), home: app.getPath('home'), withCard: optimiseWithCard,
   });
   pipe = await startPipeServer(newPipePath(), (request, emit) => { console.log(`CLI request: ${request.kind}`); return service.handle(request, emit); });
   withdrawPipe = await publishPipe(userData, pipe);

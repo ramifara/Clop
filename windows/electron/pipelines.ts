@@ -5,12 +5,13 @@ import type { PipelineEffects } from '../core/pipeline/executor';
 import { isBuiltin, type Pipeline } from '../core/pipeline/model';
 import { formatSteps } from '../core/pipeline/parser';
 import { pipelinesFor, pipelinesSkipOptimisation, runPipelines, type PipelinesOutcome } from '../core/pipeline/triggers';
+import { watchedFolders, isAumid, resolveApp, type AppLookup } from '../core/pipeline/app-resolve';
 import type { PlacementEnv } from '../core/placement';
-import { expandHome } from '../core/settings/paths';
 import type { ClopSettings } from '../core/settings/schema';
-import type { AppEntry, PipelineChoice } from '../src/types';
+import type { PipelineChoice } from '../src/types';
 import type { ItemAutomation, ItemPipelineOutcome, ItemPipelineRun } from './items';
 
+export { isAumid, resolveApp, watchedFolders, type AppLookup };
 // The app's side of pipelines (spec step 21): the pipelines attached to the clipboard and to watched folders run after, or
 // instead of, Clop's usual optimisation, as ClopApp.swift and FileOptimisationWatcher.swift run them, and the card can run
 // a saved pipeline. `PipelineEffects` is implemented here for the executor: the clipboard, opening apps and the Recycle Bin.
@@ -101,51 +102,6 @@ export function tempRoots(temp: string, session: string, files: readonly string[
   }
   return [...roots];
 }
-
-// openWith: a pipeline can only open a file with an app Windows knows (a running app, a Start menu app or packaged app, an
-// App Paths entry), or, for the user's own pipelines, with a program it names by full path.
-
-export interface AppLookup {
-  apps: () => Promise<AppEntry[]>;
-  /** The program an App Paths registry entry (`HKCU`/`HKLM\…\App Paths\<name>.exe`) names. */
-  appPath: (exeName: string) => Promise<string | undefined>;
-  isFile: (file: string) => Promise<boolean>;
-  /** Watched folders, where a program is never run from: a file arriving there could be loaded into it. */
-  watched: string[];
-  allowExe: boolean;
-}
-const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-const exeName = (file: string) => path.win32.basename(file).replace(/\.exe$/i, '');
-/** The exe path or AUMID that `openWith(app:)` means, or an error saying the app was not found. */
-export async function resolveApp(app: string, lookup: AppLookup): Promise<string> {
-  const wanted = app.trim().replace(/^"(.*)"$/, '$1');
-  if (!wanted) throw new Error('openWith needs the name of an app.');
-  // Whatever names a program, it is never run from a watched folder: a file arriving there could be loaded into it. AUMIDs are not paths.
-  const checked = (target: string) => {
-    const inside = isAumid(target) ? undefined : lookup.watched.find(dir => { const relative = path.win32.relative(dir.toLowerCase(), target.toLowerCase()); return !!relative && !relative.startsWith('..') && !path.win32.isAbsolute(relative); });
-    if (inside) throw new Error(`${target} is inside the watched folder ${inside}, so Clop does not run it.`);
-    return target;
-  };
-  const apps = await lookup.apps();
-  const known = apps.find(entry => same(entry.path, wanted)) ?? apps.find(entry => same(entry.name, wanted))
-    ?? apps.find(entry => !isAumid(entry.path) && same(exeName(entry.path), exeName(wanted)) && !/[\\/]/.test(wanted));
-  if (known) return checked(known.path);
-  if (/^[\w .+-]+$/.test(exeName(wanted)) && !/[\\/]/.test(wanted)) {
-    const registered = await lookup.appPath(`${exeName(wanted)}.exe`);
-    if (registered && await lookup.isFile(registered)) return checked(registered);
-  }
-  if (path.win32.isAbsolute(wanted) && /\.exe$/i.test(wanted)) {
-    if (!lookup.allowExe) throw new Error(`This pipeline cannot open programs by path: ${wanted}. Use an app's name from the Start menu.`);
-    checked(wanted);
-    if (await lookup.isFile(wanted)) return wanted;
-  }
-  throw new Error(`App '${app}' not found. Use the name of an app in the Start menu, or one you have running.`);
-}
-/** A packaged app's ID (`Publisher.App_hash!App`), as opposed to a program's path. */
-export const isAumid = (target: string) => !path.win32.isAbsolute(target);
-/** Watched folders of every kind, expanded. */
-export const watchedFolders = (settings: Pick<ClopSettings, 'imageDirs' | 'videoDirs' | 'pdfDirs' | 'audioDirs'>, home?: string) =>
-  [...settings.imageDirs, ...settings.videoDirs, ...settings.pdfDirs, ...settings.audioDirs].map(dir => path.resolve(expandHome(dir, home)));
 
 /** The program an `app-path` reply from the Windows helper names, or undefined when there is no entry or it is not a full path. */
 export function appPathReply(reply: unknown): string | undefined {
