@@ -108,5 +108,11 @@ export class Updates {
 }
 interface Timers { setTimeout(run: () => void, delay: number): ReturnType<typeof setTimeout>; clearTimeout(handle: ReturnType<typeof setTimeout>): void }
 
-/** electron-updater's `autoUpdater`, loaded when first needed so a run that never checks never loads it. */
-export const loadAutoUpdater = async (): Promise<UpdateDriver> => (await import('electron-updater')).autoUpdater as unknown as UpdateDriver;
+/**
+ * electron-updater's `autoUpdater`, loaded when first needed so a run that never checks never loads it. The package is CommonJS and defines
+ * `autoUpdater` as a getter Node cannot see from ESM, so it comes from the default export.
+ */
+export const loadAutoUpdater = async (): Promise<UpdateDriver> => {
+  const module = await import('electron-updater');
+  return (module.default ?? module).autoUpdater as unknown as UpdateDriver;
+};

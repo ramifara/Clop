@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { Updates, updateGate, type UpdateDriver, type UpdateEnv } from './updates';
 
 const allowed: UpdateEnv & { beta: boolean } = { packaged: true, platform: 'win32', enabled: true, beta: false };
@@ -108,4 +112,10 @@ test('the schedule checks once after the first delay and again each interval, an
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(calls.check, 2);
   assert.deepEqual(timers.map(timer => timer.delay), [100, 1000], 'stopped: no further timer');
+});
+
+test('Node\'s ESM import of electron-updater puts autoUpdater on the default export only, which is where the app loads it from', async () => {
+  const script = "import('electron-updater').then(m => console.log(JSON.stringify([!!Object.getOwnPropertyDescriptor(m.default, 'autoUpdater'), 'autoUpdater' in m])))";
+  const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], { cwd: path.dirname(fileURLToPath(import.meta.url)) });
+  assert.deepEqual(JSON.parse(stdout), [true, false]);
 });
