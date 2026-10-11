@@ -36,6 +36,9 @@ export function marquee(from: { x: number; y: number }, to: { x: number; y: numb
   if (aspect) {
     if (Math.abs(w) / aspect >= Math.abs(h)) h = (Math.abs(w) / aspect) * (h < 0 ? -1 : 1);
     else w = Math.abs(h) * aspect * (w < 0 ? -1 : 1);
+    // Reaching an edge shrinks both sides together, so the locked aspect holds (macOS clips each side alone and loses it).
+    const fit = Math.min(1, (w < 0 ? from.x : view.width - from.x) / Math.abs(w), (h < 0 ? from.y : view.height - from.y) / Math.abs(h));
+    if (fit < 1) { w *= fit; h *= fit; }
   }
   const x0 = Math.max(w < 0 ? from.x + w : from.x, 0), y0 = Math.max(h < 0 ? from.y + h : from.y, 0);
   const x1 = Math.min((w < 0 ? from.x + w : from.x) + Math.abs(w), view.width), y1 = Math.min((h < 0 ? from.y + h : from.y) + Math.abs(h), view.height);

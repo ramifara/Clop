@@ -47,6 +47,9 @@ test('draws a new selection by marquee, at the locked aspect, ignoring tiny drag
   assert.deepEqual(marquee({ x: 50, y: 50 }, { x: 150, y: 60 }, view, 1), { x: 50, y: 50, width: 100, height: 100 });
   assert.deepEqual(marquee({ x: 350, y: 150 }, { x: 450, y: 250 }, view), { x: 350, y: 150, width: 50, height: 50 });
   assert.equal(marquee({ x: 50, y: 50 }, { x: 55, y: 90 }, view), undefined);
+  // At an edge both sides shrink together, so a locked square stays square (view is 400 × 200).
+  assert.deepEqual(marquee({ x: 350, y: 100 }, { x: 450, y: 200 }, view, 1), { x: 350, y: 100, width: 50, height: 50 });
+  assert.deepEqual(marquee({ x: 100, y: 150 }, { x: 40, y: 230 }, view, 1), { x: 50, y: 150, width: 50, height: 50 });
 });
 
 test('fits presets: centred largest regions, orientations, typed sizes and the result size', () => {
