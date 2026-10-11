@@ -149,6 +149,19 @@ test('files that cannot be edited safely are refused and left alone', async t =>
   assert.equal(await configState(p.client('claude-code')), 'unusable');
 });
 
+test('a member whose key is written with escapes is found as the parser reads it', async t => {
+  const p = await profile(t);
+  const file = configOf(p.client('cursor')).path;
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, '{ "mcpServers": { "cl\\u006fp": { "command": "old" }, "other": { "command": "x" } } }\n');
+  assert.equal(await configState(p.client('cursor')), 'installed');
+  await installClient(p.client('cursor'), SERVER);
+  assert.deepEqual(Object.keys(readObject(await readFile(file, 'utf8')).mcpServers as object), ['clop', 'other'], 'replaced in place, not added twice');
+  assert.deepEqual(await installedCommand(p.client('cursor')), SERVER);
+  await removeClient(p.client('cursor'));
+  assert.deepEqual(Object.keys(readObject(await readFile(file, 'utf8')).mcpServers as object), ['other']);
+});
+
 test('a JSON file that is not valid JSON is refused whole: nothing is written, not even a backup', async t => {
   const p = await profile(t);
   const cases: [string, string][] = [

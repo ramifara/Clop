@@ -71,8 +71,7 @@ export function readObject(text: string): Record<string, unknown> {
 export function repeatsMember(text: string, container: string, name: string): boolean {
   const clean = sanitized(text), root = firstBrace(clean);
   if (root === undefined) return false;
-  const unescaped = (key: string) => { try { return JSON.parse(`"${key}"`) as string; } catch { return key; } };
-  const count = (brace: number, wanted: string) => { const spans: number[] = []; forEachMember(clean, brace, (key, _, value) => { if (unescaped(key) === wanted) spans.push(value[0]); return false; }); return spans; };
+  const count = (brace: number, wanted: string) => { const spans: number[] = []; forEachMember(clean, brace, (key, _, value) => { if (key === wanted) spans.push(value[0]); return false; }); return spans; };
   const containers = count(root, container);
   return containers.length > 1 || containers.some(start => clean[start] === '{' && count(start, name).length > 1);
 }
@@ -172,7 +171,10 @@ function endOfValue(clean: string, start: number): number | undefined {
   return i;
 }
 
-/** Each member of the object opening at `brace`: its key, the whole `"key": value` span and the value's span. Stops when `body` returns true. */
+/** A key as the parser reads it, so `"cl\u006fp"` is `clop`. */
+const unescaped = (key: string) => { try { return JSON.parse(`"${key}"`) as string; } catch { return key; } };
+
+/** Each member of the object opening at `brace`: its key (unescaped), the whole `"key": value` span and the value's span. Stops when `body` returns true. */
 function forEachMember(clean: string, brace: number, body: (key: string, member: [number, number], value: [number, number]) => boolean) {
   let i = brace + 1;
   while (i < clean.length) {
@@ -185,7 +187,7 @@ function forEachMember(clean: string, brace: number, body: (key: string, member:
     j = skipSpace(clean, j + 1);
     const valueEnd = j < clean.length ? endOfValue(clean, j) : undefined;
     if (valueEnd === undefined) return;
-    if (body(clean.slice(i + 1, keyEnd), [i, valueEnd], [j, valueEnd])) return;
+    if (body(unescaped(clean.slice(i + 1, keyEnd)), [i, valueEnd], [j, valueEnd])) return;
     i = skipSpace(clean, valueEnd);
     if (clean[i] === ',') i++;
   }
