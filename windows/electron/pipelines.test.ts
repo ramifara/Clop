@@ -74,6 +74,13 @@ test('openWith only opens apps Windows knows, and programs by path only for the 
   await assert.rejects(resolveApp('C:\\Tools\\missing.exe', lookup), /App 'C:\\Tools\\missing.exe' not found/);
   await assert.rejects(resolveApp('Photoshop', lookup), /App 'Photoshop' not found/);
   await assert.rejects(resolveApp('..\\viewer', lookup), /not found/);
+  // Interpreters and launchers are refused without script permission, however they are named or found.
+  const launchers = { ...lookup, allowExe: false, apps: async () => [...apps, { name: 'Windows PowerShell', path: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', running: true }, { name: 'Files', path: 'C:\\Windows\\explorer.exe', running: true }],
+    appPath: async (exe: string) => ({ 'friendly.exe': 'C:\\Windows\\System32\\PowerShell.EXE', 'mshta.exe': 'C:\\Windows\\System32\\mshta.exe', 'affinity.exe': 'C:\\Program Files\\Affinity\\Photo.exe' } as Record<string, string>)[exe.toLowerCase()], isFile: async () => true };
+  for (const name of ['cmd', 'powershell', 'PowerShell.exe', 'pwsh', 'wscript', 'cscript', 'mshta', 'rundll32', 'regsvr32', 'msiexec', 'python3.12', 'pythonw', 'py', 'node', 'bash', 'wsl', 'conhost', 'explorer', 'schtasks', 'certutil', 'bitsadmin', 'msbuild', 'installutil', 'regasm', 'regsvcs', 'cmstp', 'forfiles', 'hh', 'wmic', 'powershell.', '"C:\\Windows\\System32\\cmd.exe"', 'Windows PowerShell', 'Files', 'friendly'])
+    await assert.rejects(resolveApp(name, launchers), /runs other programs/, name);
+  assert.equal(await resolveApp('Affinity', launchers), 'C:\\Program Files\\Affinity\\Photo.exe', 'an ordinary App Paths app still opens');
+  assert.equal(await resolveApp('powershell', { ...launchers, apps: async () => [], allowExe: true, appPath: async () => 'C:\\Windows\\System32\\powershell.exe' }), 'C:\\Windows\\System32\\powershell.exe', 'the user\'s own pipelines may');
   // Apps Windows lists and App Paths entries are held to the same rule as programs named by path.
   const risky = { ...lookup, apps: async () => [...apps, { name: 'Dropped', path: 'C:\\Users\\me\\Desktop\\dropped.exe', running: true }], appPath: async () => 'C:\\Users\\me\\Desktop\\registered.exe', isFile: async () => true };
   await assert.rejects(resolveApp('Dropped', risky), /inside the watched folder/);

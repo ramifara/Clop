@@ -10,7 +10,9 @@ test('openWith without permission refuses a program by path and any app Windows 
   for (const app of ['C:\\evil.exe', '"C:\\evil.exe"', 'C:/evil.exe', '\\\\server\\share\\evil.exe']) {
     await assert.rejects(effects.openWith('C:\\a.png', app), /cannot open programs by path/, app);
   }
-  for (const app of ['cmd', 'powershell', 'evil', '..\\evil', 'C:evil.exe']) await assert.rejects(effects.openWith('C:\\a.png', app), /not found/, app);
+  for (const app of ['evil', '..\\evil', 'C:evil.exe']) await assert.rejects(effects.openWith('C:\\a.png', app), /not found/, app);
+  // Interpreters and launchers are refused whether or not Windows knows them (on Windows `powershell` has an App Paths entry).
+  for (const app of ['cmd', 'powershell', 'PowerShell.EXE', 'pwsh', 'wscript', 'mshta', 'rundll32', 'explorer', 'python']) await assert.rejects(effects.openWith('C:\\a.png', app), /runs other programs/, app);
   await assert.rejects(effects.openWith('C:\\a.png', ' '), /needs the name of an app/);
 });
 

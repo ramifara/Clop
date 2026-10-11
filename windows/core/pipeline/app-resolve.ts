@@ -14,6 +14,23 @@ export interface AppLookup {
   watched: string[];
   allowExe: boolean;
 }
+/**
+ * Programs that run whatever they are handed, or launch other programs: interpreters, shells, script hosts, and the system's
+ * launchers. Without script permission (`allowExe`) a file is never opened with one, however it is named or found (a bare name, an
+ * App Paths entry, a Start menu entry), since it would run the file or its contents instead of showing it.
+ */
+const LAUNCHERS = new Set([
+  'cmd', 'powershell', 'powershell_ise', 'pwsh', 'pwsh-preview', 'wscript', 'cscript', 'mshta', 'rundll32', 'regsvr32', 'msiexec', 'conhost', 'explorer',
+  'schtasks', 'certutil', 'bitsadmin', 'msbuild', 'installutil', 'regasm', 'regsvcs', 'cmstp', 'forfiles', 'hh', 'wmic', 'wsl', 'bash', 'wt',
+  'node', 'py', 'pyw', 'python', 'pythonw', 'ruby', 'perl', 'java', 'javaw', 'deno', 'bun', 'ssh', 'curl', 'regedit', 'mmc', 'pcalua',
+  'odbcconf', 'msxsl', 'ieexec', 'mavinject', 'presentationhost', 'winrs', 'csc', 'vbc', 'jsc',
+]);
+/** Whether a program or app name (with or without a folder and `.exe`) is one of the launcher-class programs. */
+export function isLauncher(nameOrPath: string): boolean {
+  // Windows ignores trailing dots and spaces in a file name, and the extension decides little here: `cmd.com` runs too.
+  const base = path.win32.basename(nameOrPath.trim().replace(/^"(.*)"$/, '$1')).replace(/[. ]+$/, '').toLowerCase().replace(/\.(exe|com|bat|cmd|scr)$/, '');
+  return LAUNCHERS.has(base) || /^python\d+(\.\d+)*w?$/.test(base);
+}
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const exeName = (file: string) => path.win32.basename(file).replace(/\.exe$/i, '');
 /** The exe path or AUMID that `openWith(app:)` means, or an error saying the app was not found. */
@@ -21,11 +38,15 @@ export async function resolveApp(app: string, lookup: AppLookup): Promise<string
   const wanted = app.trim().replace(/^"(.*)"$/, '$1');
   if (!wanted) throw new Error('openWith needs the name of an app.');
   // Whatever names a program, it is never run from a watched folder: a file arriving there could be loaded into it. AUMIDs are not paths.
-  const checked = (target: string) => {
+  const inWatched = (target: string) => {
     const inside = isAumid(target) ? undefined : lookup.watched.find(dir => { const relative = path.win32.relative(dir.toLowerCase(), target.toLowerCase()); return !!relative && !relative.startsWith('..') && !path.win32.isAbsolute(relative); });
     if (inside) throw new Error(`${target} is inside the watched folder ${inside}, so Clop does not run it.`);
     return target;
   };
+  const refuse = () => new Error(`This pipeline cannot open files with ${exeName(wanted)}: it is a program that runs other programs. Use an app's name from the Start menu.`);
+  if (!lookup.allowExe && isLauncher(wanted)) throw refuse();
+  // The same rule for what a name turned out to be (an App Paths entry or Start menu app named something harmless).
+  const checked = (target: string) => { if (!lookup.allowExe && !isAumid(target) && isLauncher(target)) throw refuse(); return inWatched(target); };
   const apps = await lookup.apps();
   const known = apps.find(entry => same(entry.path, wanted)) ?? apps.find(entry => same(entry.name, wanted))
     ?? apps.find(entry => !isAumid(entry.path) && same(exeName(entry.path), exeName(wanted)) && !/[\\/]/.test(wanted));
