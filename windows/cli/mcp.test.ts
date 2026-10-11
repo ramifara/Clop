@@ -1,45 +1,17 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import test, { type TestContext } from 'node:test';
+import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { ElicitRequestSchema, type CallToolResult, type ElicitResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { fileURL } from '../core/ipc/protocol';
 import { graphic } from '../core/media/image.fixtures';
 import { needTools } from '../core/testing';
-import { createServer } from './mcp';
 import { DECLINED_PREFIX, INSTRUCTIONS, SMALLER_OPTIONS_TEXT } from './mcp-copy';
+import { connect, folder } from './mcp.fixtures';
 import { TOOLS } from './mcp-table';
 import { speedSteps, withFrames } from './mcp-tools';
-
-/** A folder with an app data folder holding `settings`, and no running app, so every tool runs headless. */
-async function folder(t: TestContext, settings: Record<string, unknown> = {}) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-mcp-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const userData = path.join(dir, 'data'), file = (name: string) => path.join(dir, name);
-  const settle = (values: Record<string, unknown>) => writeFile(path.join(userData, 'settings.json'), JSON.stringify(values));
-  await import('node:fs/promises').then(fs => fs.mkdir(userData, { recursive: true }));
-  await settle(settings);
-  return { dir, userData, file, settle, settings: async () => JSON.parse(await readFile(path.join(userData, 'settings.json'), 'utf8')) };
-}
-
-/** A client connected in memory to a server for `dir`. `answer` answers questions when given; without it the client cannot show one. */
-async function connect(t: TestContext, f: Awaited<ReturnType<typeof folder>>, { answer, opened }: { answer?: () => ElicitResult; opened?: string[] } = {}) {
-  const server = createServer({ options: { userData: f.userData, home: f.dir }, cwd: f.dir, home: f.dir, env: {}, log: () => {}, startWaitMs: 3000, openURL: async url => { opened?.push(url); if (url.endsWith('start')) await f.settle({ ...await f.settings(), mcpEnabled: true }); } });
-  const client = new Client({ name: 'test', version: '1' }, answer ? { capabilities: { elicitation: { form: {} } } } : {});
-  if (answer) client.setRequestHandler(ElicitRequestSchema, async () => answer());
-  const [a, b] = InMemoryTransport.createLinkedPair();
-  await Promise.all([server.connect(a), client.connect(b)]);
-  t.after(() => client.close());
-  const call = async (name: string, args: Record<string, unknown> = {}) => {
-    const result = await client.callTool({ name, arguments: args }) as CallToolResult;
-    return { error: result.isError === true, text: (result.content[0] as { text: string }).text };
-  };
-  return { client, call };
-}
 
 test('stdio: initialize, 23 tools, and clop_optimise headless on a file', async t => {
   if (!needTools(t, 'pngquant')) return;

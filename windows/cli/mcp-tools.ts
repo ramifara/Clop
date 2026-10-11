@@ -69,9 +69,15 @@ async function runCommand(call: Call, args: string[], timeoutSeconds: number) {
   } finally { clearTimeout(timer); call.signal?.removeEventListener('abort', abort); }
 }
 
+/** `--json` has to come before the `--` that ends the options, or the CLI would read it as a file. */
+function withJSON(args: string[]) {
+  const end = args.indexOf('--');
+  return end < 0 ? [...args, '--json'] : [...args.slice(0, end), '--json', ...args.slice(end)];
+}
+
 /** Runs a command with `--json` and reads what it prints. Per-file failures carry the next step, and nothing done is an error. */
 export async function run(call: Call, args: string[], timeout = 30): Promise<ToolOutput> {
-  const result = await runCommand(call, [...args, '--json'], timeout);
+  const result = await runCommand(call, withJSON(args), timeout);
   const complaint = result.message || result.err;
   if (!result.out) throw new ClopMCPError(annotate(complaint || `Clop exited ${result.code} with no output`));
   let parsed: unknown;
@@ -132,7 +138,14 @@ export function argument(value: unknown): string {
   if (typeof value === 'number') return String(value);
   return String(value ?? '');
 }
-const opt = (a: Args, flag: string, key: string) => { const value = a[key]; if (value === undefined || value === null) return []; const s = argument(value); return s ? [flag, s] : []; };
+/** An option and its value as one `--name=value` argument, so a value that starts with a dash is still only a value. */
+const opt = (a: Args, flag: string, key: string) => { const value = a[key]; if (value === undefined || value === null) return []; const s = argument(value); return s ? [`${flag}=${s}`] : []; };
+const given = (flag: string, value: string) => [`${flag}=${value}`];
+/**
+ * A command line from an agent's request: the command words, its options, then everything the agent wrote as data after
+ * `--`. Nothing an agent sends can be read as a flag, whatever it looks like (`-h`, `--output=/x`, `--async`).
+ */
+export const command = (words: string[], options: string[] = [], positionals: string[] = []) => [...words, ...options, ...(positionals.length ? ['--', ...positionals] : [])];
 const flag = (a: Args, key: string, name: string) => a[key] === true ? [name] : [];
 const isURL = (item: string) => /^(https?|file):\/\//i.test(item);
 
@@ -312,7 +325,7 @@ function mayContainVideo(call: Call, list: string[]) {
 /** The playbackSpeedFrameBehaviour setting in the DSL's words; `keep`, its default, when it can't be read. */
 async function currentFrames(call: Call) {
   try {
-    const result = await run(call, ['settings', 'get', 'playbackSpeedFrameBehaviour'], 10);
+    const result = await run(call, command(['settings', 'get'], [], ['playbackSpeedFrameBehaviour']), 10);
     return 'json' in result && (result.json as { settings?: { value?: string }[] }).settings?.[0]?.value === 'dropFrames' ? 'drop' : 'keep';
   } catch { return 'keep'; }
 }
@@ -358,12 +371,12 @@ export async function optimise(a: Args, call: Call): Promise<ToolOutput> {
     if ('askInChat' in answer) return answer.askInChat;
     frames = answer.settled;
   }
-  const argv = ['optimise', 'files', ...files, ...commonFlags(a)];
-  if (compression !== undefined) argv.push('--compression', compression);
-  if (smallerBy === 'resolution' || smallerBy === 'both') argv.push('--downscale-factor', factor === undefined ? '0.5' : argument(factor));
-  else if (factor !== undefined) argv.push('--downscale-factor', argument(factor));
-  argv.push(...opt(a, '--crop', 'crop'), ...opt(a, '--pdf-dpi', 'pdfDPI'), ...opt(a, '--playback-speed-factor', 'playbackSpeedFactor'), ...(frames ? ['--playback-speed-frames', frames] : []), ...flag(a, 'removeAudio', '--remove-audio'));
-  return run(call, argv, FILE_TIMEOUT);
+  const flags = commonFlags(a);
+  if (compression !== undefined) flags.push(...given('--compression', compression));
+  if (smallerBy === 'resolution' || smallerBy === 'both') flags.push(...given('--downscale-factor', factor === undefined ? '0.5' : argument(factor)));
+  else if (factor !== undefined) flags.push(...given('--downscale-factor', argument(factor)));
+  flags.push(...opt(a, '--crop', 'crop'), ...opt(a, '--pdf-dpi', 'pdfDPI'), ...opt(a, '--playback-speed-factor', 'playbackSpeedFactor'), ...(frames ? given('--playback-speed-frames', frames) : []), ...flag(a, 'removeAudio', '--remove-audio'));
+  return run(call, command(['optimise', 'files'], flags, files), FILE_TIMEOUT);
 }
 
 export async function downscale(a: Args, call: Call): Promise<ToolOutput> {
@@ -375,24 +388,24 @@ export async function downscale(a: Args, call: Call): Promise<ToolOutput> {
     if (typeof outcome !== 'object') return options(outcome, FACTOR_OPTIONS_TEXT);
     factor = String(asNumber(outcome.answered, 'factor') ?? 0.5);
   }
-  return run(call, ['downscale', ...files, '--factor', factor, ...commonFlags(a), ...flag(a, 'removeAudio', '--remove-audio')], FILE_TIMEOUT);
+  return run(call, command(['downscale'], [...given('--factor', factor), ...commonFlags(a), ...flag(a, 'removeAudio', '--remove-audio')], files), FILE_TIMEOUT);
 }
 
 export async function convert(a: Args, call: Call): Promise<ToolOutput> {
   const kind = typeof a.kind === 'string' ? a.kind : '';
   if (!['image', 'video', 'audio'].includes(kind)) throw new ClopMCPError('kind must be image, video or audio');
-  return run(call, ['convert', kind, '--to', argument(a.to), ...paths(a, call), ...commonFlags(a), ...opt(a, '--compression', 'compression'), ...opt(a, '--bitrate', 'bitrate'), ...opt(a, '--convert-behaviour', 'convertBehaviour')], FILE_TIMEOUT);
+  return run(call, command(['convert', kind], [...given('--to', argument(a.to)), ...commonFlags(a), ...opt(a, '--compression', 'compression'), ...opt(a, '--bitrate', 'bitrate'), ...opt(a, '--convert-behaviour', 'convertBehaviour')], paths(a, call)), FILE_TIMEOUT);
 }
 
 /** Every flag is written long, since the crop command's `-s` is `--size`. */
-export const crop: Handler = (a, call) => run(call, ['crop', ...paths(a, call), '--size', argument(a.size), ...commonFlags(a), ...flag(a, 'longEdge', '--long-edge'), ...flag(a, 'smartCrop', '--smart-crop'), ...flag(a, 'removeAudio', '--remove-audio')], FILE_TIMEOUT);
+export const crop: Handler = (a, call) => run(call, command(['crop'], [...given('--size', argument(a.size)), ...commonFlags(a), ...flag(a, 'longEdge', '--long-edge'), ...flag(a, 'smartCrop', '--smart-crop'), ...flag(a, 'removeAudio', '--remove-audio')], paths(a, call)), FILE_TIMEOUT);
 
-export const stripExif: Handler = (a, call) => text(call, ['strip-exif', ...paths(a, call), ...flag(a, 'recursive', '--recursive'), ...opt(a, '--types', 'types')], FILE_TIMEOUT);
+export const stripExif: Handler = (a, call) => text(call, command(['strip-exif'], [...flag(a, 'recursive', '--recursive'), ...opt(a, '--types', 'types')], paths(a, call)), FILE_TIMEOUT);
 
 export async function cropPDF(a: Args, call: Call): Promise<ToolOutput> {
   if (a.forDevice === undefined && a.paperSize === undefined && a.aspectRatio === undefined) throw new ClopMCPError('give one of forDevice, paperSize or aspectRatio');
   try {
-    return await text(call, ['crop-pdf', ...paths(a, call), ...opt(a, '--for-device', 'forDevice'), ...opt(a, '--paper-size', 'paperSize'), ...opt(a, '--aspect-ratio', 'aspectRatio'), ...opt(a, '--page-layout', 'pageLayout'), ...opt(a, '--output', 'output'), ...flag(a, 'recursive', '--recursive'), ...flag(a, 'extend', '--extend')], FILE_TIMEOUT);
+    return await text(call, command(['crop-pdf'], [...opt(a, '--for-device', 'forDevice'), ...opt(a, '--paper-size', 'paperSize'), ...opt(a, '--aspect-ratio', 'aspectRatio'), ...opt(a, '--page-layout', 'pageLayout'), ...opt(a, '--output', 'output'), ...flag(a, 'recursive', '--recursive'), ...flag(a, 'extend', '--extend')], paths(a, call)), FILE_TIMEOUT);
   } catch (error) {
     // The CLI points a person at a listing flag; the agent gets the listing itself, and the pointer goes.
     if (!(error instanceof ClopMCPError)) throw error;
@@ -413,18 +426,18 @@ function deviceListing(message: string) {
   return undefined;
 }
 
-export const uncropPDF: Handler = (a, call) => text(call, ['uncrop-pdf', ...paths(a, call), ...flag(a, 'recursive', '--recursive'), ...opt(a, '--output', 'output')], FILE_TIMEOUT);
+export const uncropPDF: Handler = (a, call) => text(call, command(['uncrop-pdf'], [...flag(a, 'recursive', '--recursive'), ...opt(a, '--output', 'output')], paths(a, call)), FILE_TIMEOUT);
 
 // MARK: Settings and pipelines
 
-export const settingsSchema: Handler = (a, call) => { const query = typeof a.query === 'string' ? a.query : ''; return run(call, ['settings', 'schema', ...(query ? [query] : [])]); };
-export const settingsGet: Handler = (a, call) => run(call, ['settings', 'get', argument(a.key)]);
-export const settingsSet: Handler = (a, call) => run(call, ['settings', 'set', argument(a.key), argument(a.value)]);
+export const settingsSchema: Handler = (a, call) => { const query = typeof a.query === 'string' ? a.query : ''; return run(call, command(['settings', 'schema'], [], query ? [query] : [])); };
+export const settingsGet: Handler = (a, call) => run(call, command(['settings', 'get'], [], [argument(a.key)]));
+export const settingsSet: Handler = (a, call) => run(call, command(['settings', 'set'], [], [argument(a.key), argument(a.value)]));
 
-export const pipelinePrompt: Handler = (a, call) => { const task = typeof a.task === 'string' ? a.task : ''; return text(call, ['pipeline', 'prompt', ...flag(a, 'compact', '--compact'), ...(task ? [task] : [])], 45); };
+export const pipelinePrompt: Handler = (a, call) => { const task = typeof a.task === 'string' ? a.task : ''; return text(call, command(['pipeline', 'prompt'], flag(a, 'compact', '--compact'), task ? [task] : []), 45); };
 export const pipelineList: Handler = (a, call) => run(call, ['pipeline', 'list', ...flag(a, 'all', '--all')]);
-export const pipelineShow: Handler = (a, call) => run(call, ['pipeline', 'show', argument(a.name)]);
-export const pipelineDelete: Handler = (a, call) => text(call, ['pipeline', 'delete', argument(a.name)], 60);
+export const pipelineShow: Handler = (a, call) => run(call, command(['pipeline', 'show'], [], [argument(a.name)]));
+export const pipelineDelete: Handler = (a, call) => text(call, command(['pipeline', 'delete'], [], [argument(a.name)]), 60);
 
 /** Whether a pipeline for `type` can reach a video. No type means every type. */
 const takesVideo = (type: unknown) => ['', 'video'].includes(argument(type).toLowerCase());
@@ -439,7 +452,7 @@ export async function pipelineRun(a: Args, call: Call): Promise<ToolOutput> {
     if ('askInChat' in settled) return settled.askInChat;
     pipeline = settled.settled;
   }
-  return run(call, ['pipeline', 'run', pipeline, ...files, ...flag(a, 'recursive', '--recursive'), ...flag(a, 'skipErrors', '--skip-errors'), ...flag(a, 'hideResult', '--hide-result'), ...opt(a, '--types', 'types'), ...opt(a, '--optimise-behaviour', 'optimiseBehaviour'), ...opt(a, '--convert-behaviour', 'convertBehaviour'), '--no-progress'], FILE_TIMEOUT);
+  return run(call, command(['pipeline', 'run'], [...flag(a, 'recursive', '--recursive'), ...flag(a, 'skipErrors', '--skip-errors'), ...flag(a, 'hideResult', '--hide-result'), ...opt(a, '--types', 'types'), ...opt(a, '--optimise-behaviour', 'optimiseBehaviour'), ...opt(a, '--convert-behaviour', 'convertBehaviour'), '--no-progress'], [pipeline, ...files]), FILE_TIMEOUT);
 }
 
 export async function pipelineWrite(a: Args, call: Call): Promise<ToolOutput> {
@@ -450,7 +463,7 @@ export async function pipelineWrite(a: Args, call: Call): Promise<ToolOutput> {
     if ('askInChat' in settled) return settled.askInChat;
     steps = settled.settled;
   }
-  return text(call, ['pipeline', 'add', name, steps, ...opt(a, '--file-type', 'fileType'), ...flag(a, 'skipOptimisation', '--skip-optimisation'), ...flag(a, 'hideResult', '--hide-result'), ...flag(a, 'replace', '--force')], 60);
+  return text(call, command(['pipeline', 'add'], [...opt(a, '--file-type', 'fileType'), ...flag(a, 'skipOptimisation', '--skip-optimisation'), ...flag(a, 'hideResult', '--hide-result'), ...flag(a, 'replace', '--force')], [name, steps]), 60);
 }
 
 export async function pipelineAttach(a: Args, call: Call): Promise<ToolOutput> {
@@ -461,17 +474,17 @@ export async function pipelineAttach(a: Args, call: Call): Promise<ToolOutput> {
     if ('askInChat' in settled) return settled.askInChat;
     pipeline = settled.settled;
   }
-  return text(call, ['pipeline', 'attach', pipeline, '--source', source, '--type', argument(a.type), ...flag(a, 'skipOptimisation', '--skip-optimisation'), ...flag(a, 'hideResult', '--hide-result')], 60);
+  return text(call, command(['pipeline', 'attach'], [...given('--source', source), ...given('--type', argument(a.type)), ...flag(a, 'skipOptimisation', '--skip-optimisation'), ...flag(a, 'hideResult', '--hide-result')], [pipeline]), 60);
 }
 
 export async function pipelineDetach(a: Args, call: Call): Promise<ToolOutput> {
   if (a.index !== undefined && a.all === true) throw new ClopMCPError('pass index or all, not both');
-  return text(call, ['pipeline', 'detach', '--source', argument(a.source), '--type', argument(a.type), ...opt(a, '--index', 'index'), ...flag(a, 'all', '--all')], 60);
+  return text(call, command(['pipeline', 'detach'], [...given('--source', argument(a.source)), ...given('--type', argument(a.type)), ...opt(a, '--index', 'index'), ...flag(a, 'all', '--all')]), 60);
 }
 
 export async function pipelinePreset(a: Args, call: Call): Promise<ToolOutput> {
   const action = typeof a.action === 'string' ? a.action : 'add';
-  if (action === 'remove') return text(call, ['pipeline', 'preset', 'remove', argument(a.name), ...opt(a, '--type', 'type')], 60);
+  if (action === 'remove') return text(call, command(['pipeline', 'preset', 'remove'], opt(a, '--type', 'type'), [argument(a.name)]), 60);
   let pipeline = argument(a.pipeline);
   if (!pipeline) throw new ClopMCPError('adding a preset zone needs a pipeline: a saved name or inline steps');
   const name = argument(a.name);
@@ -480,7 +493,7 @@ export async function pipelinePreset(a: Args, call: Call): Promise<ToolOutput> {
     if ('askInChat' in settled) return settled.askInChat;
     pipeline = settled.settled;
   }
-  return text(call, ['pipeline', 'preset', 'add', name, pipeline, ...opt(a, '--type', 'type'), ...opt(a, '--icon', 'icon'), ...flag(a, 'skipOptimisation', '--skip-optimisation'), ...flag(a, 'hideResult', '--hide-result'), ...flag(a, 'replace', '--force')], 60);
+  return text(call, command(['pipeline', 'preset', 'add'], [...opt(a, '--type', 'type'), ...opt(a, '--icon', 'icon'), ...flag(a, 'skipOptimisation', '--skip-optimisation'), ...flag(a, 'hideResult', '--hide-result'), ...flag(a, 'replace', '--force')], [name, pipeline]), 60);
 }
 
 /** `clop logs persist`. Windows needs no administrator for Clop's own log file, so the MCP switch is the gate. */
