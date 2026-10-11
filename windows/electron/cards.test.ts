@@ -132,7 +132,9 @@ test('HDR video converts to SDR and a video becomes a GIF', async t => {
   const f = await setup(t, {}, 'gifski'); if (!f) return;
   const hdr = f.file('hdr.mov'); await hdrClip(hdr, { seconds: 1, audio: false });
   const hdrId = await f.add(hdr);
-  assert.equal((await probe(f.engine.output(hdrId)) as VideoInfo).hdr, true, 'the fixture is HDR and optimising keeps it');
+  // Optimising to H.264 tone maps already, and whether that result is kept depends on the encoder's size; the original is HDR.
+  await f.engine.restore(hdrId);
+  assert.equal((await probe(f.engine.output(hdrId)) as VideoInfo).hdr, true, 'the restored original is HDR');
   const after = await f.act(hdrId, { action: 'hdrToSdr' });
   assert.equal(after.status, 'ready');
   assert.equal((await probe(f.engine.output(hdrId)) as VideoInfo).hdr, false);
