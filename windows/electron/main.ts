@@ -38,6 +38,7 @@ import { settingsTarget } from '../core/settings/entries';
 import type { SettingsTab } from '../core/settings/tabs';
 import { createPrefs, LINKS } from './prefs';
 import { publishPipe, startPipeServer, type PipeServer } from './pipe-server';
+import { syncLoginItem } from './login-item';
 import { clopURLs, linkInbox, type ClopURL } from './clop-url';
 import { installPortableCLI, isPortable, portableCLIDir, portableCLIInstalled, refreshPortableCLI, removePortableCLI } from './cli-install';
 import { mcpSettings } from './mcp';
@@ -765,7 +766,7 @@ async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
   if (!settings.enableClipboardOptimiser || paused()) pickup.cancel();
   floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop);
   syncFloating();
-  if (process.platform === 'win32') app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin, path: process.execPath, args: ['--hidden'] });
+  if (process.platform === 'win32') syncLoginItem(app, settings.launchAtLogin, process.execPath);
   applyWindowSettings();
   if (bridgeReady) await bridge.request(nativeSettings());
   updateTray(); broadcast();
@@ -1108,6 +1109,8 @@ else {
       if (changed.some(key => (EDITOR_SETTING_KEYS as readonly string[]).includes(key))) { syncFloating(); broadcast(); for (const window of [editorWindow, editorLoading?.window]) if (window && !window.isDestroyed()) window.webContents.send('clop:editor-changed'); }
     });
     for (const watcher of watchers) void watcher.update();
+    // The `clop` command can change this while the app is closed.
+    if (app.isPackaged && process.platform === 'win32') syncLoginItem(app, settings.launchAtLogin, process.execPath, true);
     updateTray();
     shortcuts = new ShortcutRegistry(globalShortcut, action => guarded(() => runShortcut(action), reportFailure));
     applyWindowSettings();
