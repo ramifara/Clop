@@ -38,7 +38,7 @@ import { settingsTarget } from '../core/settings/entries';
 import type { SettingsTab } from '../core/settings/tabs';
 import { createPrefs, LINKS } from './prefs';
 import { publishPipe, startPipeServer, type PipeServer } from './pipe-server';
-import { clopURLs, type ClopURL } from './clop-url';
+import { clopURLs, linkInbox, type ClopURL } from './clop-url';
 import { installPortableCLI, isPortable, portableCLIDir, portableCLIInstalled, refreshPortableCLI, removePortableCLI } from './cli-install';
 import { mcpSettings } from './mcp';
 import { setupDebugDump, setupUpdates, setupWatchdog } from './support';
@@ -1016,6 +1016,8 @@ ipcMain.on('clop:drag', (event, id: string) => {
     if (dismissOnDrop && process.platform === 'win32') setTimeout(() => { if (engine.has(id) && !over()) void dismiss(id); }, 250);
   } catch (error) { inform(message(error)); }
 });
+// `clop://` links wait until the app is up: a second instance can pass one before the windows exist.
+const linkQueue = linkInbox(link => { void openClopURL(link).catch(error => inform(message(error))); });
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', (_event, argv) => {
@@ -1023,7 +1025,7 @@ else {
     const picked = explorerVerb(argv);
     if (picked) { collectVerb(picked.verb, picked.files); return; }
     const links = clopURLs(argv);
-    if (links.length) { if (engine) for (const link of links) void openClopURL(link).catch(error => inform(message(error))); return; }
+    if (links.length) { linkQueue.receive(links); return; }
     // Without the tray icon there is no menu to open, so another launch opens Settings.
     if (engine) { if (tray) showLatest(); else showSettings(); }
     const files = argv.filter(arg => path.isAbsolute(arg) && mediaKind(arg));
@@ -1146,7 +1148,8 @@ else {
       void mcp.repair().then(names => { if (names.length) console.log(`Repointed Clop's MCP server in ${names.join(', ')}`); }, error => console.warn(`Could not check the MCP clients: ${message(error)}`));
     }
     if (isPortable() && (cliInstalled = await portableCLIInstalled())) { updateTray(); void refreshPortableCLI(process.resourcesPath, path.dirname(process.execPath)).catch(error => inform(message(error))); }
-    for (const link of clopURLs(process.argv.slice(1))) void openClopURL(link).catch(error => inform(message(error)));
+    linkQueue.receive(clopURLs(process.argv.slice(1)));
+    linkQueue.ready();
     const picked = explorerVerb(process.argv.slice(1));
     if (picked) collectVerb(picked.verb, picked.files);
     else {

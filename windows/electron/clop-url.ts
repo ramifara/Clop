@@ -23,3 +23,13 @@ export function parseClopURL(text: string): ClopURL | undefined {
 
 /** The `clop://` links among a process's arguments, as Windows passes them to a new or the running instance. */
 export const clopURLs = (argv: readonly string[]) => argv.filter(arg => /^clop:/i.test(arg)).flatMap(arg => parseClopURL(arg) ?? []);
+
+/** Links that arrive while the app is still starting wait here, in order, until `ready()`; later ones open at once. */
+export function linkInbox(open: (link: ClopURL) => void) {
+  let ready = false;
+  const held: ClopURL[] = [];
+  return {
+    receive(links: readonly ClopURL[]) { if (ready) links.forEach(open); else held.push(...links); },
+    ready() { ready = true; held.splice(0).forEach(open); },
+  };
+}
