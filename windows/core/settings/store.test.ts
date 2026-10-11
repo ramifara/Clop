@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { defaultSettings, type ClopSettings, type SettingKey } from './schema';
@@ -174,6 +174,23 @@ test('a store on a file other processes write starts each change from the file a
   await other.set({ stripMetadata: true });
   await owner.set({ lastAutoIncrementingNumber: 8 });
   assert.equal((await readJson(file)).stripMetadata, false, 'the owner writes what it holds');
+});
+
+test('stores in different processes that edit one list at the same time keep every entry, and a dead process\'s lock does not block them', async t => {
+  const dir = await folder(t), file = path.join(dir, 'settings.json');
+  await writeFile(file, JSON.stringify({ imageDirs: [] }));
+  const stores = [new SettingsStore(file, paths, true), new SettingsStore(file, paths, true), new SettingsStore(file, paths, true)];
+  await Promise.all(stores.map(store => store.load()));
+  // Each store adds its own entries to the list with a read-modify-write; the three run side by side, as three commands would.
+  await Promise.all(stores.flatMap((store, n) => [0, 1, 2, 3].map(i => store.update(current => ({ patch: { imageDirs: [...current.imageDirs, `${n}-${i}`] }, result: 0 })))));
+  assert.deepEqual([...(await readJson(file)).imageDirs].sort(), stores.flatMap((_, n) => [0, 1, 2, 3].map(i => `${n}-${i}`)).sort());
+  assert.equal(await readFile(`${file}.lock`, 'utf8').catch(() => 'gone'), 'gone', 'the lock is released');
+  // A lock a killed process left behind is taken over once it is old.
+  await writeFile(`${file}.lock`, '1');
+  const old = new Date(Date.now() - 60_000);
+  await utimes(`${file}.lock`, old, old);
+  await stores[0].set({ lastAutoIncrementingNumber: 9 });
+  assert.equal((await readJson(file)).lastAutoIncrementingNumber, 9);
 });
 
 test('a shared store starts over from the defaults when the file is deleted, and refuses a change while it cannot be read', async t => {

@@ -1,12 +1,14 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { retryBusy } from '../run';
 import type { DefaultPaths } from './paths';
 import { SETTING_KEYS, defaultSettings, isLegacySettings, migrateLegacy, parseSettings, type ClopSettings, type SettingKey } from './schema';
 
+const LOCK_STALE_MS = 30_000, LOCK_WAIT_MS = 15_000;
 const reason = (error: unknown) => (error as NodeJS.ErrnoException).code ?? (error as Error).message;
 
 /** Settings persisted as JSON. Every value is replaced, never mutated, so `get()` snapshots stay stable. */
@@ -115,9 +117,28 @@ export class SettingsStore extends EventEmitter<{ change: [settings: ClopSetting
   }
 
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
-    const job = this.queue.then(task);
+    const job = this.queue.then(() => this.shared ? this.locked(task) : task());
     this.queue = job.catch(() => {});
     return job;
+  }
+
+  /**
+   * Runs `task` while holding `settings.json.lock`, so a change in this process and one in another (two headless commands, an MCP
+   * server) take turns: each rereads the file only after the other has written it. A lock left by a process that died is taken over after 30 seconds.
+   */
+  private async locked<T>(task: () => Promise<T>): Promise<T> {
+    const lock = `${this.file}.lock`, started = Date.now();
+    await mkdir(path.dirname(this.file), { recursive: true });
+    for (;;) {
+      try { await writeFile(lock, String(process.pid), { flag: 'wx' }); break; } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST' && (error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+        const age = await stat(lock).then(info => Date.now() - info.mtimeMs, () => 0);
+        if (age > LOCK_STALE_MS) { await rm(lock, { force: true }); continue; }
+        if (Date.now() - started > LOCK_WAIT_MS) throw new Error(`Clop could not save this change: another Clop command has been saving settings for more than ${LOCK_WAIT_MS / 1000} seconds (${lock}).`);
+        await delay(20);
+      }
+    }
+    try { return await task(); } finally { await rm(lock, { force: true }); }
   }
 
   /** Replaces the file atomically, so a crash never leaves half a file. */
