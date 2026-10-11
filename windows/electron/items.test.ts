@@ -228,6 +228,18 @@ test('a long video does not hold up an image, and aborting stops the video', asy
   assert.equal(engine.get(id).result.status, 'error');
   await assert.rejects(engine.importBuffer(Buffer.from('x'), 'late.png', 'drop', balanced), { name: 'AbortError' });
 });
+test('stopping everything also stops an import that is still being read', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine } = f;
+  const reading = engine.importBuffer(await sampleImage(), 'big.png', 'drop', balanced);
+  engine.stop();
+  await assert.rejects(reading, { name: 'AbortError' });
+  assert.deepEqual(engine.list(), []);
+  // Only everything is stopped: stopping named results leaves a read in progress alone.
+  const other = engine.importBuffer(await sampleImage(), 'next.png', 'drop', balanced);
+  engine.stop(['nothing']);
+  assert.equal(engine.get(await other).result.status, 'ready');
+});
 test('names an imported file as asked and reports files it cannot read', async t => {
   const f = await fixture(t); if (!f) return;
   const { engine, dir } = f;

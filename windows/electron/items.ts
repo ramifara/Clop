@@ -86,6 +86,8 @@ export class ItemEngine extends EventEmitter {
   private queues = new Map<MediaKind, Promise<unknown>>();
   private controller = new AbortController();
   private removed: Entry[] = [];
+  /** Imports still copying and probing their file, before they have a result to stop. */
+  private staging = new Set<AbortController>();
   /** `settings` is read for every job, so a changed compression setting applies to the next one. */
   constructor(private root: string, private settings: () => ItemSettings = defaultSettings) { super(); }
   list() { return [...this.entries.values()].map(e => structuredClone(e.result)).reverse(); }
@@ -120,8 +122,9 @@ export class ItemEngine extends EventEmitter {
   }
   private async add(name: string, source: ItemResult['source'], options: ImageOptions, write: (staged: string) => Promise<unknown>, extra: ImportExtra = {}) {
     options = parseOptions(options);
-    const signal = this.controller.signal;
+    const importing = new AbortController(), signal = AbortSignal.any([this.controller.signal, importing.signal]);
     signal.throwIfAborted();
+    this.staging.add(importing);
     // A long name loses the end of its stem, never its extension, which says what the file is.
     const base = path.basename(name), { name: stemPart, ext: extPart } = path.parse(base);
     const id = randomUUID(), directory = path.join(this.root, id), display = (base.length > 160 ? stemPart.slice(0, 160 - extPart.slice(0, 12).length) + extPart.slice(0, 12) : base) || 'Clipboard';
@@ -131,21 +134,23 @@ export class ItemEngine extends EventEmitter {
       // A short name keeps the session's paths well under Windows' 260 characters, which some bundled tools need.
       const { name: stem, ext } = path.parse(safeFileName(display)), staged = path.join(directory, 'original', `${stem.slice(0, 64) || 'file'}${ext.slice(0, 12)}`);
       await write(staged);
+      signal.throwIfAborted();
       const kind = await detectKind(staged, { signal });
       if (!kind) throw new Error('Use an image, a video, a PDF or an audio file.');
       const result = { id, kind, name: display, source, status: 'processing', options, animated: false, createdAt: Date.now() } as const;
-      entry = kind === 'image' ? await this.stageImage(staged, directory, result) : await this.stageMedia(staged, directory, { ...result, kind });
+      entry = kind === 'image' ? await this.stageImage(staged, directory, result, signal) : await this.stageMedia(staged, directory, { ...result, kind }, signal);
+      signal.throwIfAborted();
       entry.placement = extra.placement; entry.automation = extra.automation;
       this.entries.set(id, entry);
       this.emit('add', id); extra.staged?.(id);
       this.changed();
     } catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
+    finally { this.staging.delete(importing); }
     const job = this.job(entry);
     await this.schedule(entry.result.kind, () => this.process(id, options, job));
     return id;
   }
-  private async stageImage(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'kind' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'>): Promise<Entry> {
-    const signal = this.controller.signal;
+  private async stageImage(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'kind' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'>, signal = this.controller.signal): Promise<Entry> {
     const info = await probeImage(staged, signal).catch(error => { if (signal.aborted) throw error; return undefined; });
     if (!info || !INPUT.has(info.format) || !info.width || !info.height) throw new Error('Use PNG, JPEG, WebP, GIF, AVIF, HEIC, JPEG XL, TIFF, BMP or SVG.');
     const { format, width, height, pages } = info;
@@ -157,8 +162,7 @@ export class ItemEngine extends EventEmitter {
     const result: ItemResult = { ...base, originalBytes: bytes, outputBytes: bytes, originalWidth: width, originalHeight: height, width, height, format, originalPreview: preview, preview, animated: pages > 1 };
     return { result, originalPath, outputPath: originalPath, directory, inputFormat: format, revision: 0, cancel: new AbortController(), jobs: new Set() };
   }
-  private async stageMedia(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'> & { kind: Exclude<MediaKind, 'image'> }): Promise<Entry> {
-    const signal = this.controller.signal;
+  private async stageMedia(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'> & { kind: Exclude<MediaKind, 'image'> }, signal = this.controller.signal): Promise<Entry> {
     const info = base.kind === 'pdf' ? undefined : await probe(staged, { signal }) as VideoInfo | AudioInfo;
     // A download may have no extension, or the wrong one; the tools and the pasted file need one that matches the content.
     if (mediaKind(staged) !== base.kind) {
@@ -404,8 +408,11 @@ export class ItemEngine extends EventEmitter {
   }
   /** Whether any result is still being optimised; cheaper than listing them (which copies each). */
   processing() { for (const e of this.entries.values()) if (e.result.status === 'processing') return true; return false; }
-  /** Stops the running and queued jobs of `ids` (every result by default). Each ends with a "Stopped." error; sources stay as they are. */
-  stop(ids?: readonly string[]) { for (const [id, e] of this.entries) if (!ids || ids.includes(id)) for (const job of e.jobs) job.abort(); }
+  /** Stops the running and queued jobs of `ids` (every result by default, and the imports still being read). Each ends with a "Stopped." error; sources stay as they are. */
+  stop(ids?: readonly string[]) {
+    if (!ids) for (const importing of this.staging) importing.abort();
+    for (const [id, e] of this.entries) if (!ids || ids.includes(id)) for (const job of e.jobs) job.abort();
+  }
   async idle() { await Promise.all(this.queues.values()); }
   /** Stops every running and queued job, for quitting. Later imports are refused. */
   abort() { this.controller.abort(); }
