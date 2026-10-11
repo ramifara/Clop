@@ -20,7 +20,7 @@ test('modifiers follow the accelerator order whatever order they are saved in, a
 });
 
 test('every plan survives the settings parser with its modifiers', () => {
-  for (const modifiers of [['Control', 'Shift'], ['Alt'], ['Control', 'Alt', 'Super']]) {
+  for (const modifiers of [['Control', 'Shift'], ['Alt', 'Shift'], ['Super'], ['Control', 'Alt', 'Super']]) {
     const settings = parseSettings({ keyComboModifiers: modifiers, quickResizeKeys: ['1', '9'] });
     assert.deepEqual(settings.keyComboModifiers, modifiers);
     for (const { accelerator } of shortcutsFor(settings)) assert.ok(accelerator.startsWith(`${modifiers.join('+')}+`), accelerator);
@@ -35,12 +35,16 @@ test('lowercase keys, repeated keys and keys with no Windows action collapse or 
 test('trigger keys that would take ordinary typing register nothing', () => {
   assert.deepEqual(keys({ keyComboModifiers: [] }), []);
   assert.deepEqual(keys({ keyComboModifiers: ['Shift'] }), []);
+  assert.deepEqual(keys({ keyComboModifiers: ['Control'] }), [], 'Ctrl+C, Ctrl+Z and the rest belong to every app');
+  assert.deepEqual(keys({ keyComboModifiers: ['Alt'] }), []);
   assert.equal(keys({ keyComboModifiers: ['Super'] }).length, 11);
 });
 
 test('validation says why a change cannot be saved', () => {
   assert.match(shortcutProblem({ keyComboModifiers: [] })!, /at least one/i);
   assert.match(shortcutProblem({ keyComboModifiers: ['Shift'] })!, /Shift alone/);
+  assert.match(shortcutProblem({ keyComboModifiers: ['Control'] })!, /Ctrl alone/);
+  assert.match(shortcutProblem({ keyComboModifiers: ['Alt'] })!, /Alt alone/);
   assert.match(shortcutProblem({ quickResizeKeys: ['1', 'F5'] })!, /F5 cannot downscale/);
   assert.equal(shortcutProblem({ keyComboModifiers: ['Control', 'Alt'], quickResizeKeys: ['1'], enabledKeys: ['C'] }), undefined);
   assert.equal(shortcutProblem({}), undefined);

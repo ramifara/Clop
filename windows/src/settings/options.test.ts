@@ -73,6 +73,9 @@ test('the renderer\'s modifiers are the schema\'s', () => assert.deepEqual([...K
 test('trigger keys need more than Shift', () => {
   assert.equal(triggerProblem([]), 'Choose at least one trigger key.');
   assert.match(triggerProblem(['Shift'])!, /Shift alone/);
-  assert.equal(triggerProblem(['Control']), undefined);
+  assert.match(triggerProblem(['Control'])!, /Ctrl alone/);
+  assert.match(triggerProblem(['Alt'])!, /Alt alone/);
+  assert.equal(triggerProblem(['Super']), undefined);
+  assert.equal(triggerProblem(['Control', 'Shift']), undefined);
   assert.equal(triggerProblem(['Shift', 'Alt']), undefined);
 });
