@@ -62,7 +62,7 @@ try {
   const pages = () => fetch('http://127.0.0.1:9227/json/list').then(response => response.json());
   const target = await until(async () => (await pages()).find(page => page.type === 'page' && page.url.includes('index.html') && !page.url.includes('floating')), 'Main window did not open');
   main = await connect(target);
-  await until(() => main.evaluate('Boolean(window.clop && document.querySelector(".preferences"))'), 'Sandboxed preload did not load');
+  await until(() => main.evaluate('Boolean(window.clop && document.querySelector(".settings-window"))'), 'Sandboxed preload did not load');
   const initial = await main.evaluate('window.clop.state()'); assert.equal(initial.native, true); assert.equal(initial.platform, 'win32');
   assert.equal(initial.items.length, 0, 'The app should start quietly, with no sample or workbench');
   const ready = once(externalClipboard, 'ready');
