@@ -74,6 +74,7 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
       return result.path;
     },
     restore,
+    follow(file: string) { if (placed) placed = file; },
   };
 }
 
