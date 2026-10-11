@@ -50,8 +50,19 @@ const FILE_TIMEOUT = 900;
 
 // MARK: Running a command
 
-/** One `clop` command in this process, its stdout and stderr captured. Its stderr still reaches the client's log. */
-async function runCommand(call: Call, args: string[], timeoutSeconds: number) {
+/**
+ * One `clop` command in this process, its stdout and stderr captured. Its stderr still reaches the client's log. Commands that
+ * write the settings file run one at a time: each loads the file itself, so two at once could keep only the later change.
+ */
+let settingsWrites: Promise<unknown> = Promise.resolve();
+function runCommand(call: Call, args: string[], timeoutSeconds: number) {
+  if (!['settings', 'pipeline', 'logs'].includes(args[0])) return execute(call, args, timeoutSeconds);
+  const turn = settingsWrites.then(() => execute(call, args, timeoutSeconds));
+  settingsWrites = turn.catch(() => {});
+  return turn;
+}
+
+async function execute(call: Call, args: string[], timeoutSeconds: number) {
   const out: string[] = [], err: string[] = [];
   let message = '';
   const controller = new AbortController(), abort = () => controller.abort();

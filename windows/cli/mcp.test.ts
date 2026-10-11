@@ -123,6 +123,16 @@ test('questions: an agent that may not make changes is refused before the file i
   assert.match((await declining.call('clop_optimise', { paths: ['nope.mp4'], playbackSpeedFactor: 2 })).text, /^Clop is not accepting changes from agents/);
 });
 
+test('settings changes made at the same time are all kept when the app is not running', { timeout: TIMEOUT }, async t => {
+  const f = await folder(t, { mcpEnabled: true });
+  const { call } = await connect(t, f);
+  const keys = ['stripMetadata', 'preserveDates', 'copyConsecutiveClipboardImages', 'enableDragAndDrop', 'autoCopyToClipboard'];
+  const results = await Promise.all(keys.map(key => call('clop_settings_set', { key, value: 'off' })));
+  for (const result of results) assert.equal(result.error, false, result.text);
+  const stored = await f.settings();
+  assert.deepEqual(keys.filter(key => stored[key] !== false), []);
+});
+
 test('arguments: required ones are named, unknown tools are refused, start and stop open clop:// links', { timeout: TIMEOUT }, async t => {
   const f = await folder(t);
   const opened: string[] = [];
