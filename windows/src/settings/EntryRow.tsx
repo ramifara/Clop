@@ -15,13 +15,13 @@ const BESIDE: ReadonlySet<Control> = new Set(['toggle', 'mcpToggle', 'select', '
 /** The value a `select` offers for each option, as the setting stores it. */
 function Select({ entry, env }: { entry: SettingEntry; env: SettingsEnv }) {
   const key = entry.keys[0], meta = env.metas.get(key)!, current = env.settings[key];
-  const labels = entry.ui?.labels ?? {};
-  const options = meta.type === 'enum' ? meta.values!.map(String) : Object.keys(labels);
+  const labels = new Map(entry.ui?.labels ?? []);
+  const options = entry.ui?.labels ? entry.ui.labels.map(([value]) => value) : meta.values!.map(String);
   const shown = String(current);
   const all = options.includes(shown) ? options : [...options, shown];
   const parse = (text: string) => meta.values?.find(value => String(value) === text) ?? (meta.type === 'integer' || meta.type === 'number' ? Number(text) : text);
   return <select aria-label={entry.title} value={shown} onChange={event => env.change({ [key]: parse(event.target.value) })}>
-    {all.map(option => <option key={option} value={option}>{labels[option] ?? (meta.type === 'enum' ? option.replace(/([A-Z])/g, ' $1').toLowerCase().replace(/^./, c => c.toUpperCase()) : option)}</option>)}
+    {all.map(option => <option key={option} value={option}>{labels.get(option) ?? (meta.type === 'enum' ? option.replace(/([A-Z])/g, ' $1').toLowerCase().replace(/^./, c => c.toUpperCase()) : option)}</option>)}
   </select>;
 }
 

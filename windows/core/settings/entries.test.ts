@@ -52,7 +52,7 @@ test('row controls fit their settings', () => {
     if (control === 'formats') assert.deepEqual([...new Set(types)], ['list'], entry.id);
     if (control === 'select') {
       assert.equal(types.length, 1, entry.id);
-      const meta = metas.get(entry.keys[0])!, labels = Object.keys(entry.ui?.labels ?? {});
+      const meta = metas.get(entry.keys[0])!, labels = (entry.ui?.labels ?? []).map(([value]) => value);
       // An enum offers its values; a number offers the presets the row labels.
       if (meta.type === 'enum') for (const label of labels) assert.ok(meta.values!.map(String).includes(label), `${entry.id}: label for ${label}, which is not a value`);
       else { assert.ok(['integer', 'number'].includes(meta.type) && labels.length, entry.id); assert.ok(labels.every(label => meta.type === 'integer' ? Number.isInteger(Number(label)) : Number.isFinite(Number(label))), entry.id); }
@@ -65,6 +65,19 @@ test('format lists are drawn as format pickers', () => {
   const lists = SETTING_KEYS.filter(key => /^(formatsTo|.*FormatsToSkip)/.test(key));
   assert.equal(lists.length, 9);
   for (const key of lists) assert.equal(controlFor(SETTING_ENTRIES.find(entry => entry.keys.includes(key))!, metas), 'formats', key);
+});
+
+test('a choice offers every value its setting has, the numbers it labels are ones it accepts, and Never comes last', () => {
+  for (const entry of SETTING_ENTRIES.filter(row => controlFor(row, metas) === 'select' && row.ui?.labels)) {
+    const meta = metas.get(entry.keys[0])!, offered = entry.ui!.labels!.map(([value]) => value);
+    if (meta.type === 'enum') assert.deepEqual([...offered].sort(), meta.values!.map(String).sort(), entry.id);
+    else for (const value of offered) assert.equal((settingsSchema[meta.key] as { parse(value: unknown): unknown }).parse(Number(value)), Number(value), `${entry.id}: ${value}`);
+  }
+  for (const key of ['defaultLinkExpiration', 'workdirCleanupInterval']) {
+    const labels = SETTING_ENTRIES.find(row => row.keys[0] === key)!.ui!.labels!;
+    assert.deepEqual(labels.at(-1), ['0', labels.at(-1)![1]], key);
+    assert.match(labels.at(-1)![1], /^Never/);
+  }
 });
 
 test('rows are found by link, by id or by the setting they write', () => {

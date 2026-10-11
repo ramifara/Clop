@@ -41,8 +41,6 @@ export const ACTION_KEYS = [
 export const RESIZE_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9'] as const;
 
 export const PDF_DPI_PRESETS = [0, 72, 96, 150, 200, 300] as const;
-/** Seconds a shared link stays alive; 0 is never, as in the `copyLinkForSending` pipeline step. */
-export const LINK_EXPIRATIONS: Record<string, string> = { '3600': '1 hour', '21600': '6 hours', '86400': '1 day', '259200': '3 days', '604800': '1 week', '2592000': '1 month', '0': 'Never' };
 /** `targetVideoFPS`: positive is a cap, -2 and -4 are fractions of the source's rate. */
 export const FPS_CAPS = [{ value: 30, label: '30 fps' }, { value: 60, label: '60 fps' }, { value: -2, label: '1/2 of source' }, { value: -4, label: '1/4 of source' }] as const;
 export const MIN_FPS = [10, 24, 30, 60] as const;

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } from '../../core/media/detect';
 import { KEY_MODIFIERS as SCHEMA_MODIFIERS, settingsSchema, type SettingKey, type SettingSpec } from '../../core/settings/schema';
 import { KEY_MODIFIERS, triggerProblem, formatAccelerator, describeAccelerator, heldModifiers, isModifierKey, keyName, recorded, type KeyEventLike } from './accelerator';
-import { ACTION_KEYS, ACTION_LABELS, FORMAT_OPTIONS, LINK_EXPIRATIONS, OFFERED_ACTIONS, RESIZE_KEYS, TEMPLATE_VARIABLES } from './options';
+import { ACTION_KEYS, ACTION_LABELS, FORMAT_OPTIONS, OFFERED_ACTIONS, RESIZE_KEYS, TEMPLATE_VARIABLES } from './options';
 
 const schema = settingsSchema as Record<SettingKey, SettingSpec>;
 const event = (code: string, over: Partial<KeyEventLike> = {}): KeyEventLike => ({ code, key: '', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...over });
@@ -25,12 +25,11 @@ test('the default of a format setting is among its options', () => {
   }
 });
 
-test('action names, action keys, resize keys and link expirations are values the settings accept', () => {
+test('action names, action keys and resize keys are values the settings accept', () => {
   for (const name of Object.keys(ACTION_LABELS)) assert.deepEqual(schema.floatingResultActions.parse([name]), [name], name);
   assert.ok(OFFERED_ACTIONS.every(name => name in ACTION_LABELS) && !OFFERED_ACTIONS.includes('addToShelf'));
   assert.deepEqual(schema.enabledKeys.parse(ACTION_KEYS.map(action => action.key)), ACTION_KEYS.map(action => action.key));
   assert.deepEqual(schema.quickResizeKeys.parse([...RESIZE_KEYS]), [...RESIZE_KEYS]);
-  for (const seconds of Object.keys(LINK_EXPIRATIONS)) assert.equal(schema.defaultLinkExpiration.parse(Number(seconds)), Number(seconds));
   assert.equal(new Set(TEMPLATE_VARIABLES.map(([token]) => token)).size, TEMPLATE_VARIABLES.length);
 });
 
