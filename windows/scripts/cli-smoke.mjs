@@ -54,7 +54,7 @@ try {
   console.log('clop.exe --hidden handled an Explorer verb');
 
   // The app publishes its pipe in this profile; the debug log records the request it served.
-  await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ persistDebugLogs: true }));
+  await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ persistDebugLogs: true, checkForUpdates: false, finishedOnboarding: true }));
   app = spawn(path.join(unpacked, 'Clop for Windows.exe'), [`--user-data-dir=${profile}`], { stdio: 'ignore' });
   const deadline = Date.now() + 30_000;
   while (!(await stat(path.join(profile, 'ipc.json')).catch(() => undefined)) && Date.now() < deadline) await pause(250);

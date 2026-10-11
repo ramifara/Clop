@@ -23,7 +23,7 @@ await mkdir(watched);
 // A clipboard pipeline that converts images named "to-webp" to WebP, the built-in "to WebP" behind a filter, so every other
 // copied image still takes the plain optimisation the checks below expect.
 const clipboardPipeline = { id: 'SMOKE-TO-WEBP', name: 'to WebP', steps: [], rawText: 'if(nameContains: "to-webp") -> convert(to: webp)', skipOptimisation: true, hideResult: false };
-await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ videoEncoder: 'libx264', imageDirs: [watched], videoDirs: [watched], pipelinesToRunOnImage: { clipboard: [clipboardPipeline] } }));
+await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ checkForUpdates: false, videoEncoder: 'libx264', imageDirs: [watched], videoDirs: [watched], pipelinesToRunOnImage: { clipboard: [clipboardPipeline] } }));
 const app = spawn(executable, ['--remote-debugging-port=9227', `--user-data-dir=${profile}`], { stdio: 'pipe' });
 let output = '';
 app.stdout.on('data', chunk => { output += chunk; }); app.stderr.on('data', chunk => { output += chunk; });
@@ -67,6 +67,12 @@ try {
   await until(() => main.evaluate('Boolean(window.clop && document.querySelector(".settings-window"))'), 'Sandboxed preload did not load');
   const initial = await main.evaluate('window.clop.state()'); assert.equal(initial.native, true); assert.equal(initial.platform, 'win32');
   assert.equal(initial.items.length, 0, 'The app should start quietly, with no sample or workbench');
+  // A first run shows the welcome card until it is dismissed, and dismissing it is remembered.
+  assert.equal(initial.welcome, true, 'A first run shows the welcome card');
+  await main.evaluate("window.clop.window('finish-welcome')");
+  const welcomed = await main.evaluate('window.clop.state()');
+  assert.equal(welcomed.welcome, undefined, 'The welcome card is gone once dismissed');
+  assert.equal(welcomed.settings.finishedOnboarding, true);
   const ready = once(externalClipboard, 'ready');
   externalClipboard.start(path.resolve('native/bridge.ps1')); await ready;
   await externalClipboard.request({ type: 'settings', explorerDrag: false });
