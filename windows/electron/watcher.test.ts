@@ -298,6 +298,7 @@ test('with the Windows helper stopped, watched files are left alone with one not
   await pause(500);
   assert.deepEqual([state.handled, state.notices.length], [[], 1]);
   assert.match(state.notices[0], /helper is not running/);
+  assert.match(state.notices[0], /Restart Clop to have watched folders optimise new files again\./, 'a restart does not optimise files that are already there');
   helper = 'ready'; watcher.resume();
   await image(path.join(dir, 'c.png'));
   await until(() => state.handled.length === 1, 'a file after the helper came back was not optimised');

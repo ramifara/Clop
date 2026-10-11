@@ -230,7 +230,7 @@ export class FolderWatcher {
     const helper = this.host.helper?.() ?? 'ready';
     if (helper === 'starting') { if (this.deferred.size < MAX_DEFERRED) this.deferred.set(id, file); return; }
     if (helper === 'stopped') {
-      if (!this.toldStopped) { this.toldStopped = true; this.host.notice('The Windows helper is not running, so Clop cannot tell cloud-only files from local ones and leaves new files in watched folders alone. Restart Clop to optimise them.'); }
+      if (!this.toldStopped) { this.toldStopped = true; this.host.notice('The Windows helper is not running, so Clop cannot tell cloud-only files from local ones and leaves new files in watched folders alone. Restart Clop to have watched folders optimise new files again.'); }
       return;
     }
     const dir = matchingWatchedDir(file, w.dirs, this.host.home);
