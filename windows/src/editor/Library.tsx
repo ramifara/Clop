@@ -156,7 +156,7 @@ function UnreadableEditor({ entry, fix, setFix, send, onDone }: { entry: Unreada
   const conflict = stale && typed;
   return <>
     <header className="pane-head"><span className="glyph big" aria-hidden="true">⚠</span><strong>{entry.id ?? 'Unreadable pipeline'}</strong><span className="badge warn">Unreadable</span></header>
-    <p className="explain">Clop cannot read this pipeline: {entry.reason} It is kept exactly as it is, so it still works on the Mac it came from. Fix its JSON below to use it here, or delete it.</p>
+    <p className="explain">Clop cannot read this pipeline: {entry.reason} It is kept exactly as it is, so it still works on the Mac it came from. Fix its JSON below to use it here (comments and trailing commas are fine), or delete it.</p>
     {conflict && <p className="conflict" role="alert">This pipeline was changed elsewhere while you edited it. <button type="button" onClick={() => setFix(fixOf(entry))}>Load the current JSON</button> <button type="button" onClick={() => setFix({ ...fix, raw: entry.raw, revision: entry.revision })}>Keep mine</button></p>}
     <StepTextEditor value={fix.json} onChange={value => { setFix({ ...fix, json: value }); setProblems([]); }} mode="json" problems={problems} label="Pipeline JSON"/>
     <footer className="pane-foot">

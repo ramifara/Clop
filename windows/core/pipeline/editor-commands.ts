@@ -1,6 +1,6 @@
 import { Unreadable, decodePipeline, isReadable, storedId, type Stored } from './codec';
 import { DIR_KEYS, FIXED_SOURCES, entryKeys, revisionOf, sourceEntry, type EditorContext, type EditorSettings } from './editor-state';
-import { parseJsoncSteps } from './jsonc';
+import { parseJsoncSteps, stripJsonc } from './jsonc';
 import { FILE_TYPES, newPipelineId, referenceTo, type ClopFileType, type Pipeline, type PresetZone } from './model';
 import { canFormat, cleanupPipelineText, formatSteps, parsePipelineText, type PipelineIssue } from './parser';
 import { PIPELINE_SOURCE_KEYS } from './triggers';
@@ -9,7 +9,7 @@ import { PIPELINE_SOURCE_KEYS } from './triggers';
 // command is checked here, malformed ones are refused with an Error, and a pipeline the user wrote that does not parse comes
 // back as `issues` at their positions. A command returns the settings keys it changes, ready for `SettingsStore.set`.
 
-export const LIMITS = { library: 500, perSource: 20, zones: 40, text: 20_000, name: 80, zoneName: 40, details: 300, id: 100, path: 1000 };
+export const LIMITS = { library: 500, perSource: 20, zones: 40, text: 20_000, /** A stored entry this version cannot read can be large (a long pipeline from a Mac); its JSON is sent back whole. */ fix: 500_000, name: 80, zoneName: 40, details: 300, id: 100, path: 1000 };
 const ICON = /^[\w.-]{1,64}$/;
 
 export type EditorCommand =
@@ -62,7 +62,7 @@ export function parseCommand(value: unknown): EditorCommand {
       details: optional(c.details, v => text(v, 'description', LIMITS.text, { empty: true }).trim() || undefined), skipOptimisation: flag(c.skipOptimisation, 'setting'), hideResult: flag(c.hideResult, 'setting'),
       view: c.view === 'text' || c.view === 'json' ? c.view : refuse('view'), text: text(c.text, 'pipeline text', LIMITS.text, { empty: true }),
     };
-    case 'pipeline-fix': return { type: 'pipeline-fix', key: idOf(c.key, 'entry'), base: revision(c.base), json: text(c.json, 'pipeline JSON', LIMITS.text) };
+    case 'pipeline-fix': return { type: 'pipeline-fix', key: idOf(c.key, 'entry'), base: revision(c.base), json: text(c.json, 'pipeline JSON', LIMITS.fix) };
     case 'pipeline-delete': return { type: 'pipeline-delete', key: idOf(c.key, 'entry'), base: revision(c.base) };
     case 'attach': return { type: 'attach', fileType: fileType(c.fileType), source: text(c.source, 'source', LIMITS.path), pipelineId: idOf(c.pipelineId) };
     case 'detach': return { type: 'detach', fileType: fileType(c.fileType), source: text(c.source, 'source', LIMITS.path), key: idOf(c.key, 'entry'), base: revision(c.base) };
@@ -145,7 +145,8 @@ function fixPipeline(settings: EditorSettings, c: Extract<EditorCommand, { type:
   if (!(entry instanceof Unreadable)) return problem('Only a pipeline that could not be read can be replaced this way.');
   if (!unchanged(entry, c.base)) return changed();
   let pipeline: Pipeline;
-  try { pipeline = decodePipeline(c.json); } catch (error) { return problem((error as Error).message); }
+  // Comments and trailing commas are allowed, as in the JSON view; blanking them keeps every position.
+  try { pipeline = decodePipeline(stripJsonc(c.json)); } catch (error) { return problem((error as Error).message); }
   const original = storedId(entry);
   if (original !== undefined) pipeline = { ...pipeline, id: original };
   if (readable(settings.savedPipelines).some(other => other.id === pipeline.id)) return problem('Another pipeline in the library already has this id.');

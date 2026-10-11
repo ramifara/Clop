@@ -32,7 +32,7 @@ test('malformed commands are refused whole, whatever the caller sends', () => {
   const bad: unknown[] = [undefined, null, 'attach', [], {}, { type: 'rm -rf' }, { type: 'attach', fileType: 'image', source: 'clipboard' },
     { type: 'attach', fileType: 'gif', source: 'clipboard', pipelineId: 'x' }, { type: 'attach', fileType: 'image', source: 7, pipelineId: 'x' }, { type: 'attach', fileType: 'image', source: '', pipelineId: 'x' },
     { type: 'attach', fileType: 'image', source: 'clipboard', pipelineId: 'x'.repeat(LIMITS.id + 1) },
-    { type: 'pipeline-save', name: 'a', skipOptimisation: false, hideResult: false, view: 'text', text: 1 }, { ...save(), view: 'xml' }, { ...save(), name: '  ' },     { ...save(), text: 'x'.repeat(LIMITS.text + 1) }, { ...save(), skipOptimisation: 'yes' }, { ...save(), icon: 7 }, { ...save(), icon: 'x'.repeat(LIMITS.path + 1) }, { ...save(), fileType: 'gif' }, { ...save(), id: 5 },
+    { type: 'pipeline-save', name: 'a', skipOptimisation: false, hideResult: false, view: 'text', text: 1 }, { ...save(), view: 'xml' }, { ...save(), name: '  ' }, { ...save(), text: 'x'.repeat(LIMITS.text + 1) }, { ...save(), skipOptimisation: 'yes' }, { ...save(), icon: 7 }, { ...save(), icon: 'x'.repeat(LIMITS.path + 1) }, { ...save(), fileType: 'gif' }, { ...save(), id: 5 },
     { type: 'zone-save', name: 'a', icon: 'photo', pipelineId: {} }, { type: 'zone-move', key: 'a', to: -1 }, { type: 'zone-move', key: 'a', to: 1.5 }, { type: 'zone-move', key: 'a', to: LIMITS.zones }, { type: 'zone-delete', key: 'z' }, { type: 'pipeline-delete', key: 'p' }];
   for (const command of bad) assert.throws(() => applyCommand(fixture(), command), /invalid|Error/, JSON.stringify(command));
   assert.deepEqual(parseCommand({ type: 'zone-delete', key: 'z', base: 'r', extra: 'ignored' }), { type: 'zone-delete', key: 'z', base: 'r' }, 'unknown fields are dropped');
@@ -340,4 +340,21 @@ test('values already stored that Windows would not accept do not block a rename 
   assert.equal(run(start, { type: 'zone-save', id: 'ZOLD', base: zoneBase, name: zoneName, icon: oddIcon, fileType: 'image', pipelineId: 'OLD' }).result.issues, undefined);
   assert.match(run(start, { type: 'zone-save', id: 'ZOLD', base: zoneBase, name: zoneName + 'x', icon: oddIcon, fileType: 'image' }).result.issues![0].message, /name can be at most 40/);
   assert.match(run(start, { type: 'zone-save', name: 'New', icon: 'a b' }).result.issues![0].message, /icon name uses only letters/);
+});
+
+test('an unreadable entry can be fixed with JSON that has comments and trailing commas, and with JSON longer than a pipeline text', () => {
+  const start = fixture({ savedPipelines: [...fixture().savedPipelines, ...decodePipelines([{ id: 'NEW', name: 'From the future', steps: [{ teleport: {} }] }])!] });
+  const entry = editorState(start, windows).library.at(-1)!;
+  const jsonc = `{
+    // fixed by hand
+    "name": "Fixed", /* name */
+    "steps": [{ "optimise": {} },],
+  }`;
+  const fixed = run(start, { type: 'pipeline-fix', key: entry.key, base: entry.revision, json: jsonc });
+  assert.equal(fixed.result.issues, undefined, JSON.stringify(fixed.result.issues));
+  assert.equal(named(fixed.settings, 'Fixed').id, 'NEW');
+  const big = JSON.stringify({ name: 'Big', details: 'x'.repeat(LIMITS.text), steps: [{ optimise: {} }] }, null, 2);
+  assert.ok(big.length > LIMITS.text);
+  assert.equal(run(start, { type: 'pipeline-fix', key: entry.key, base: entry.revision, json: big }).result.issues, undefined);
+  assert.throws(() => applyCommand(start, { type: 'pipeline-fix', key: entry.key, base: entry.revision, json: ' '.repeat(LIMITS.fix + 1) }, windows), /invalid pipeline JSON/);
 });
