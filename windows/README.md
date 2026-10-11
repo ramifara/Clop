@@ -25,7 +25,7 @@ Apps that do not expose their image objects through Windows accessibility cannot
 
 Images and videos saved to the Desktop are optimised where they are, with the original kept in the working directory (see [Watched folders](#watched-folders)).
 
-Clipboard cards disappear after ten seconds and file cards after thirty, as in the original defaults. Hovering pauses dismissal. The tray's `Show latest results` or `Ctrl+Shift+Space` brings recent cards back, and `Bring back last result` shows the card that hid or was dismissed last. Up to three cards stack vertically. The tray also provides clipboard controls, optional pinning, settings and access to originals, `Pause automatic optimisations` (clipboard and watched folders), `Revert last optimisations` (the latest results get their originals back, over the watched files too) and `Stop all` (stops every running and queued optimisation; the files stay as they were).
+Clipboard cards disappear after ten seconds and file cards after thirty, as in the original defaults. Hovering pauses dismissal. The tray's `Show latest results` brings recent cards back, and `Bring back last result` (`Ctrl+Shift+=`) shows the card that hid or was dismissed last. Up to three cards stack vertically. The tray also provides clipboard controls, optional pinning, settings and access to originals, `Pause automatic optimisations` (clipboard and watched folders), `Revert last optimisations` (the latest results get their originals back, over the watched files too) and `Stop all` (stops every running and queued optimisation; the files stay as they were); see [Tray menu](#tray-menu).
 
 Settings stay closed unless requested from the tray (`Settings…`) or a `clop://settings` link; see [Settings](#settings). The current cursor's screen receives automatic popups.
 
@@ -183,14 +183,13 @@ The settings window has the sixteen tabs of the macOS app: General, Clipboard, F
 
 The window can write only the settings it has rows for (`RENDERER_SETTINGS` in `electron/settings.ts`, checked value by value). These change only through checked actions of the main process, so a compromised page could not point Clop at a program, folder or script: the editor programs (a program picker; on Windows only an `.exe`), the working directory and watched folders (a folder picker; the working directory applies after a restart), the ignored-apps list (the Windows helper's app list or a program picker), the MCP switches (the MCP actions, which ask before scripts are allowed), and the saved pipelines, preset zones and what runs on each source (the pipeline editor; the Pipelines, Automation and Preset Zones tabs show them, and their button opens the editor window). Name and path templates have a live preview that the main process makes with `core/template.ts`, so it is the name Clop will really give a file.
 
-The keyboard shortcuts tab stores trigger keys, action keys and resize keys as Electron accelerators.
+The keyboard shortcuts tab stores trigger keys, action keys and resize keys as Electron accelerators, which Clop registers as global shortcuts (see [Shortcuts](#shortcuts)). A change registers and releases only the shortcuts that differ, and the window refuses trigger keys that would take over typing (none, or Shift alone) and resize keys that are not the number keys 1 to 9.
 
 Some settings have rows but nothing in Clop for Windows reads them yet. They stay editable, so a value you set is kept (and imported from macOS settings), search finds them, and the row says "Not used by Clop for Windows yet" (a section where nothing works yet shows that once, as a banner). A test pins the list, so it shrinks on purpose as features arrive:
 
-- Keyboard shortcuts: `keyComboModifiers`, `enabledKeys`, `quickResizeKeys` (the fixed keys in [Shortcuts](#shortcuts) apply until the configurable-shortcuts change).
 - Floating results: `enableFloatingResults`, `followCursorScreen`, `dismissFloatingResultOnUpload`, `dismissCompactResultOnUpload` (no upload on Windows), `autoHideFloatingResults`, `autoHideFloatingResultsAfter`, `autoHideClipboardResultAfter` (the other floating-result settings are read by the cards and the compact list, see [Result cards](#result-cards-right-click-menus-and-the-compact-list)).
 - Clipboard and conversion: `optimiseTIFF`, `optimiseHEICAVIFClipboard`, `convertHDRToSDR`, `formatsToConvertToJPEG`, `formatsToConvertToPNG`, `formatsToConvertToMP4`, `formatsToConvertToOutputAudio`.
-- Elsewhere: `showMenubarIcon`, `defaultLinkExpiration`, `allowClopToAppearInScreenshots`, `onlyShowDropZoneOnOption`, `onlyShowPresetZonesOnControlTapped`.
+- Elsewhere: `defaultLinkExpiration`, `onlyShowDropZoneOnOption`, `onlyShowPresetZonesOnControlTapped`.
 
 ## Command line
 
@@ -231,21 +230,49 @@ Results go in place, next to the original under a name template, or into a folde
 
 Before Clop writes over a file or removes one (an in-place conversion such as PNG to JPEG), it moves it into `batch-backups\batch-<id>` with a `manifest.json` that lists every original and result. macOS clones every file up front at no cost on APFS; NTFS has no clones, so here only the files a result replaces are moved, when it replaces them. A file that changed while the batch ran is left alone and reported. A result that is not smaller leaves its file untouched. `Revert originals` gives back every original byte for byte and with its modification time, removes results saved beside them, and returns any file of yours a result took the place of. Like reverting watched folders, it leaves alone a result that was moved, deleted or edited since, and a new file where a converted original was, and reports each. The backups stay until `Delete backups`, so reverting can be repeated (a revert that stopped half way finishes on the next try; asking twice at once reverts once; after the backups are deleted it says so). Dropping files onto a finished batch that can still be reverted asks first; the older batch stays on disk, and `Open previous batch` reads its `manifest.json` back so it can still be reverted, even after a restart. The failures sheet lists each failed file with its reason and the tool's output, and copies them as text.
 
+## Tray menu
+
+Clop lives in the notification area. The menu is built when you right-click the icon (`electron/tray-menu.ts` makes it from the app's state), in the order of the macOS menu:
+
+| Item | What it does |
+| --- | --- |
+| `Show latest results` | Brings the newest cards back (double-clicking the icon does the same). |
+| `Recent clipboard items` | A submenu of the last eight finished clipboard results. Choosing one shows its card and puts the result back on the clipboard. |
+| `Batch optimiser…`, `Pipelines…`, `Settings…` | Open those windows. |
+| `Optimise clipboard`, `Optimise clipboard (aggressive)` | The same as the shortcuts. |
+| `Downscale and preview the clipboard` | Optimises the clipboard, takes the result one downscale step down (images and videos) and opens its preview. |
+| `Ignore clipboard events from <app>` | Appears once an app has copied something. A checkbox that adds the app, by its exe path or AUMID, to `clipboardIgnoredAppBundleIds`, or takes it off again. |
+| `Open backups folder`, `Open working directory`, `Force clean working directory` | Open the folders of the work directory; the clean removes backups and temporary files except this session's results and the batch backups. |
+| `Revert last optimisations`, `Bring back last result`, `Stop all` | As described under [Result cards](#result-cards-right-click-menus-and-the-compact-list). The first two are disabled when there is nothing to do. |
+| `Watch clipboard`, `Keep drop zone visible`, `Pause automatic optimisations` | Checkboxes that write `enableClipboardOptimiser`, `keepDropZoneVisible` and `pauseAutomaticOptimisations`, so the Settings window and the tray always agree. |
+| `Install command-line tool` | Portable app only (the installer adds `clop` to the PATH). |
+| `Show Clop UI in screenshots` | Off by default: Clop's windows (cards, drop zone, Settings, crop, compare, preview, batch) are hidden from screenshots and screen recordings, with `setContentProtection`, including windows opened later. Turn it on to capture them; a screen-sharing tool may show those windows as black while it is off. |
+| `About`, `Quit Clop` | The version, and quitting. |
+
+Items that shortcuts also do show the shortcut beside them while its key is enabled. "Sending files" is left out until sharing exists. The tray icon has three looks: normal, dimmed with a pause badge while automatic optimisations are paused, and with an orange dot while something is being optimised. `showMenubarIcon` off removes the icon; starting Clop again then opens Settings. A tray command that fails (an unreadable settings file, a folder that is gone) shows its reason on the card shelf, never as a crash, and the menu shows what is really set.
+
 ## Shortcuts
 
-| Shortcut | Action |
-| --- | --- |
-| `Ctrl+Shift+C` | Optimise current clipboard |
-| `Ctrl+Shift+A` | Optimise clipboard more aggressively |
-| `Ctrl+Shift+Space` | Bring back recent corner cards |
-| `1` through `9` | Resize selected image to 10% through 90% |
-| `-` | Reduce selected image by another 10% of original width |
-| `C` | Copy selected result |
-| `R` | Restore selected result |
-| `Delete`, `Space`, `D`, `K`, `S`, `A` | Dismiss, preview, compare, crop, save as, aggressive optimisation (see [Result cards](#result-cards-right-click-menus-and-the-compact-list)) |
-| `Escape` | Hide corner cards |
+The global shortcuts hold the `keyComboModifiers` (default `Ctrl+Shift`) with each key of `enabledKeys` and `quickResizeKeys`, all stored as Electron accelerators (`Control+Shift+C`). They are registered with Electron's `globalShortcut` and re-registered when you change the keys in Settings or with `clop settings set`. If another program already has a combination, Clop shows a notification naming it, and the tray menu still does the action. They act on the newest result in view, or on the clipboard when there is none, as `handleHotkey` does on macOS. The macOS keys map to Windows like this:
 
-Single-letter shortcuts operate while a card has keyboard focus and no text field is active. Global shortcut conflicts appear as a small notification; tray commands remain available.
+| Key (with the trigger keys) | Action | macOS |
+| --- | --- | --- |
+| `C` | Optimise current clipboard | C |
+| `A` | Optimise the newest result, or the clipboard, more aggressively | A |
+| `-` | Downscale the newest result a step (a quarter off above 50%, a tenth below, to the nearest of the card menu's steps; a PDF's resolution steps down instead). With no result it downscales the clipboard and previews it | - |
+| `1` to `9` | Downscale to 10% through 90% (`quickResizeKeys`, none on by default) | 1 to 9 |
+| `X` | Speed a video or audio file up one step | X |
+| `Backspace` | Stop and dismiss the newest result | Delete |
+| `Escape` | Stop everything and clear all cards | Escape |
+| `=` | Bring back the last result that hid or was dismissed | = |
+| `Space` | Open the preview window | Space |
+| `K` | Open the crop window | K |
+| `Z` | Restore the original | Z |
+| `P` | Pause or resume automatic optimisations | P (macOS also has a "pause for the next clipboard event" step) |
+
+`R` (rename) has no Windows action, since cards have no inline file name field; the key is kept in the setting but the Settings window does not list it. Windows reserves some combinations: `Ctrl+Shift+Escape` opens Task Manager, so that shortcut reports a conflict until you change the trigger keys. `Win` combinations are mostly Windows' own.
+
+Without the trigger keys, a card answers a few single keys while it has keyboard focus and no text field is active: `1` through `9` resize an image to 10% through 90%, `-` steps it down, `C` copies, `R` restores, and `Delete`, `Space`, `D`, `K`, `S`, `A` dismiss, preview, compare, crop, save as and optimise aggressively (see [Result cards](#result-cards-right-click-menus-and-the-compact-list)). `Escape` hides corner cards.
 
 ## Development and verification
 
