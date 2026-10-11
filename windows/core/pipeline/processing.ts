@@ -180,6 +180,7 @@ async function encodeVideo(run: RunState, batch: PipelineStep[], progress: Progr
     const output = await optimiseVideo(file, dir, {
       ...videoBase(run), compression: optimises && !params(steps, 'optimise').some(p => p.compression) && videoEncoder ? videoEncoderToCompression(videoEncoder) : compression, aggressive,
       ...(converts.length ? videoConversion(converts.at(-1)!.to) : {}), crop: cropSize, ...size,
+      ...(optimises && !converts.length && run.opts.convertContainers ? { formatsToConvertToMP4: run.settings.formatsToConvertToMP4 } : {}),
       ...(speed ? { speed: speed.factor, playbackSpeedFrameBehaviour: speed.frames ?? run.settings.playbackSpeedFrameBehaviour } : {}),
       removeAudio: steps.some(step => 'removeAudio' in step) || run.settings.removeAudioFromVideos, onProgress,
     });

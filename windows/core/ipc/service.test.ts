@@ -10,6 +10,7 @@ import sharp from 'sharp';
 import { OptimisedMarker } from '../marker';
 import { graphic, photo } from '../media/image.fixtures';
 import { photoPDF } from '../media/pdf.fixtures';
+import { clip } from '../media/video.fixtures';
 import { FakeEffects } from '../pipeline/executor.fixtures';
 import { parseSteps } from '../pipeline/parser';
 import { defaultSettings, type ClopSettings } from '../settings/schema';
@@ -183,6 +184,17 @@ test('an agent\'s download connects only to an address that passed the check, wh
   assert.deepEqual(first, [{ address: '93.184.216.34', family: 4 }]);
   const single = await new Promise<unknown[]>(resolve => publicLookup(async () => [{ address: '2606:4700:4700::1111' }])('v6.test', {}, (error, address, family) => resolve([error, address, family])));
   assert.deepEqual(single, [null, '2606:4700:4700::1111', 6]);
+});
+
+test('a plain request turns a video of a type formatsToConvertToMP4 lists into an MP4, and leaves an unlisted one in its container', async t => {
+  if (!needTools(t, 'ffmpeg', 'ffprobe')) return;
+  const listed = await setup(t), unlisted = await setup(t, {}, { formatsToConvertToMP4: [] });
+  for (const [s, extension] of [[listed, '.mp4'], [unlisted, '.mov']] as const) {
+    const input = await clip(s.file('take.mov'), { audio: 'aac' });
+    const [done] = answers(await s.send({ urls: [fileURL(input)] }));
+    assert.ok(done.kind === 'response', JSON.stringify(done));
+    assert.equal(path.extname(done.response.path), extension, JSON.stringify(done));
+  }
 });
 
 test('a request that shows its result lets the app optimise it with a card, then places that result', async t => {

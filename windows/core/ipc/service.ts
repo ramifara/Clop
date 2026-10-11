@@ -358,7 +358,7 @@ export class ClopService {
           else {
             let produced = carded;
             if (!produced && kind === 'pdf') ({ produced, dpi } = await this.pdf(run, input, req, settings, progress));
-            produced ??= (await runPipeline({ id: 'request', steps: requestSteps(req, kind as Exclude<MediaKind, 'pdf'>), skipOptimisation: true, hideResult: req.hideFloatingResult }, input, opts)).file;
+            produced ??= (await runPipeline({ id: 'request', steps: requestSteps(req, kind as Exclude<MediaKind, 'pdf'>), skipOptimisation: true, hideResult: req.hideFloatingResult }, input, { ...opts, convertContainers: true })).file;
             final = await this.place(run, produced, input, kind, req, env);
             await discard(produced, final);
           }
