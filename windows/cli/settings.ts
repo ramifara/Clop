@@ -74,7 +74,8 @@ export const mcpCommand: ClopCommand = {
   name: 'mcp', abstract: 'The MCP server that lets agents drive Clop.', defaultSubcommand: 'status',
   subcommands: [status, {
     name: 'serve', abstract: 'Speak MCP over stdin and stdout.', hidden: true,
-    async run() { throw new Error('This version of Clop for Windows has no MCP server yet.'); },
+    // Loaded here, so no other command pays for the MCP SDK.
+    async run(_, ctx) { const { serve } = await import('./mcp'); await serve({ options: ctx.options, cwd: ctx.cwd, home: ctx.home }); },
   }],
 };
 
