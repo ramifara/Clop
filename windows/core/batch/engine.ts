@@ -137,6 +137,12 @@ export class Batch extends EventEmitter {
   }
   private limit(kind: MediaKind) { let limit = this.limits.get(kind); if (!limit) this.limits.set(kind, limit = limiter(CONCURRENCY[kind])); return limit; }
 
+  /** Resolves once the run and any revert under way have settled, or undefined when there is neither (a batch that is over). */
+  settling(): Promise<void> | undefined {
+    if (this.phase !== 'running' && !this.reverting) return undefined;
+    return (async () => { await this.running?.catch(() => {}); await this.reverting?.catch(() => {}); })();
+  }
+
   /** Stops the run: running files stop and queued ones are skipped. Finished files keep their results. */
   cancel() {
     if (this.controller.signal.aborted) return;

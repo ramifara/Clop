@@ -212,13 +212,14 @@ export class BatchHost {
 
   /**
    * Stops a running batch, for quitting. Resolves once its files have settled, since a file being placed finishes
-   * (an original moved to the backups must not be left without its result); there is nothing to wait for otherwise.
+   * (an original moved to the backups must not be left without its result), and once a revert under way has finished;
+   * there is nothing to wait for otherwise.
    */
   stop(): Promise<void> | undefined {
     if (this.timer) clearTimeout(this.timer);
     const batch = this.batch;
     if (!batch) return undefined;
     batch.cancel();
-    return batch.phase === 'running' ? batch.run().catch(() => {}) : undefined;
+    return batch.settling();
   }
 }
