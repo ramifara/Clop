@@ -57,3 +57,24 @@ test('does not follow links inside a dropped folder', { skip: process.platform =
   await symlink(path.join(dir, 'outside'), path.join(dir, 'drop', 'link'));
   assert.deepEqual(names(dir, (await scanBatch([path.join(dir, 'drop')])).files), ['drop/a.png']);
 });
+
+test('stops looking after a number of folders and files, whatever they are, and says so', async t => {
+  const junk = Object.fromEntries(Array.from({ length: 30 }, (_, n) => [`drop/z${String(n).padStart(2, '0')}/note.txt`, 'n']));
+  const dir = await tree(t, { ...junk, 'drop/zzz/late.png': 'p', 'drop/early.png': 'e' });
+  const all = await scanBatch([path.join(dir, 'drop')]);
+  assert.deepEqual([names(dir, all.files), all.entriesCapped], [['drop/early.png', 'drop/zzz/late.png'], false]);
+  const capped = await scanBatch([path.join(dir, 'drop')], { maxEntries: 20 });
+  assert.equal(capped.entriesCapped, true);
+  assert.deepEqual(names(dir, capped.files), ['drop/early.png'], 'what was found before the cap is kept');
+});
+
+test('leaves out cloud-only placeholders without reading them, and counts them', async t => {
+  const dir = await tree(t, { 'drop/a.png': 'a', 'drop/b.png': 'b', 'drop/c.mp4': 'c', 'lone.pdf': 'l' });
+  const asked: string[] = [];
+  const cloud = new Set(['b.png', 'lone.pdf']);
+  const isLocal = async (file: string) => { asked.push(path.basename(file)); return !cloud.has(path.basename(file)); };
+  const result = await scanBatch([path.join(dir, 'drop'), path.join(dir, 'lone.pdf')], { isLocal });
+  assert.deepEqual(names(dir, result.files), ['drop/a.png', 'drop/c.mp4']);
+  assert.equal(result.cloud, 2);
+  assert.deepEqual(asked.sort(), ['a.png', 'b.png', 'c.mp4', 'lone.pdf']);
+});

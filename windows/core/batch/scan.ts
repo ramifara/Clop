@@ -14,6 +14,10 @@ export interface ScanOptions {
   owns?: (file: string) => boolean;
   /** At most this many files; the rest are left out and `truncated` is set. */
   limit?: number;
+  /** At most this many folders and files of any kind are looked at, so a huge tree of other files ends too; `entriesCapped` is set when it did. */
+  maxEntries?: number;
+  /** Whether a file's content is on this computer. A cloud-only placeholder (OneDrive files-on-demand) would download when read, so it is left out and counted in `cloud`. */
+  isLocal?: (file: string) => Promise<boolean>;
   platform?: NodeJS.Platform;
 }
 
@@ -24,15 +28,17 @@ const KINDS = new Map<string, MediaKind>([
 /** The media type of a file by its extension, or undefined when a batch cannot take it. */
 export const batchKind = (file: string) => KINDS.get(path.extname(file).slice(1).toLowerCase());
 export const MAX_BATCH_FILES = 10_000;
+export const MAX_BATCH_ENTRIES = 200_000;
 
 /**
  * The supported files among `paths`: files as they are, folders walked with every subfolder. Hidden files, links and Clop's
  * own files are skipped, and so is whatever the `.clopignore-<type>` file at the top of a dropped folder names. A file that
- * arrives twice (a file and the folder holding it) is listed once.
+ * arrives twice (a file and the folder holding it) is listed once. Looking stops after `limit` files or `maxEntries` entries.
  */
-export async function scanBatch(paths: readonly string[], { owns = () => false, limit = MAX_BATCH_FILES, platform = process.platform }: ScanOptions = {}) {
-  const files: BatchFile[] = [], seen = new Set<string>();
-  let truncated = false;
+export async function scanBatch(paths: readonly string[], { owns = () => false, limit = MAX_BATCH_FILES, maxEntries = MAX_BATCH_ENTRIES, isLocal, platform = process.platform }: ScanOptions = {}) {
+  let files: BatchFile[] = [];
+  const seen = new Set<string>();
+  let truncated = false, entriesCapped = false, looked = 0, cloud = 0;
   const add = async (file: string, kind: MediaKind) => {
     const key = platform === 'win32' ? file.toLowerCase() : file;
     if (seen.has(key) || owns(file)) return;
@@ -49,7 +55,8 @@ export async function scanBatch(paths: readonly string[], { owns = () => false, 
       const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
       entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
       for (const entry of entries) {
-        if (truncated) return;
+        if (truncated || entriesCapped) return;
+        if (++looked > maxEntries) { entriesCapped = true; return; }
         if (entry.name.startsWith('.')) continue;
         const file = path.join(dir, entry.name);
         // Links and junctions are not followed: one could lead back up the tree or out of the dropped folder.
@@ -61,10 +68,17 @@ export async function scanBatch(paths: readonly string[], { owns = () => false, 
     await visit(root);
   };
   for (const raw of paths) {
-    if (truncated) break;
+    if (truncated || entriesCapped) break;
     const file = path.resolve(raw), info = await lstat(file).catch(() => undefined);
     if (info?.isDirectory()) await walk(file);
     else if (info?.isFile()) { const kind = batchKind(file); if (kind) await add(file, kind); }
   }
-  return { files, truncated };
+  if (isLocal) {
+    // A few at a time: each check asks the Windows helper about one file.
+    const local: boolean[] = [];
+    for (let i = 0; i < files.length; i += 16) local.push(...await Promise.all(files.slice(i, i + 16).map(file => isLocal(file.path).catch(() => true))));
+    cloud = local.filter(value => !value).length;
+    files = files.filter((_, i) => local[i]);
+  }
+  return { files, truncated, entriesCapped, cloud };
 }
