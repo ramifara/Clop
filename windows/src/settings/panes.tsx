@@ -22,7 +22,7 @@ export function SavedPipelines() {
   return <div className="pipelines">{sections.map(([title, type]) => {
     const own = pipelines.filter(pipeline => ('reason' in pipeline ? undefined : pipeline.fileType) === type && (type !== undefined || !('reason' in pipeline)));
     return <section key={title} aria-label={`${title} pipelines`}>
-      <header><strong>{title}</strong><EditButton label={type ? `New ${title.toLowerCase()} pipeline` : 'New pipeline'} fileType={type}/></header>
+      <header><strong>{title}</strong><EditButton label={type ? `New ${type === 'pdf' ? 'PDF' : type} pipeline` : 'New pipeline'} fileType={type}/></header>
       {own.length ? <ul>{own.map((pipeline, index) => <li key={'id' in pipeline ? pipeline.id : index}><span className="name">{pipelineLabel(pipeline)}</span><code title={'rawText' in pipeline ? pipeline.rawText : undefined}>{'rawText' in pipeline ? pipeline.rawText : ''}</code>{'id' in pipeline && <EditButton label="Edit" pipeline={pipeline.id}/>}</li>)}</ul> : <small>No pipelines yet</small>}
     </section>;
   })}

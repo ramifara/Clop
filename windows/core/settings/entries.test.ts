@@ -61,6 +61,12 @@ test('row controls fit their settings', () => {
   }
 });
 
+test('format lists are drawn as format pickers', () => {
+  const lists = SETTING_KEYS.filter(key => /^(formatsTo|.*FormatsToSkip)/.test(key));
+  assert.equal(lists.length, 9);
+  for (const key of lists) assert.equal(controlFor(SETTING_ENTRIES.find(entry => entry.keys.includes(key))!, metas), 'formats', key);
+});
+
 test('rows are found by link, by id or by the setting they write', () => {
   assert.equal(entryForRow('general.optimisation.stripMetadata')?.keys[0], 'stripMetadata');
   assert.equal(entryForRow('STRIPMETADATA')?.id, 'general.optimisation.stripMetadata');

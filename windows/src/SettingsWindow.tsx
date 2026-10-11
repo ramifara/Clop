@@ -53,7 +53,7 @@ export function SettingsWindow({ state, refresh }: { state: AppState; refresh():
   const open = useCallback((next: SettingsTab, row?: string) => { setQuery(''); setTab(next); setHighlight(row); }, []);
   // The tray and `clop://settings/…` links ask through the state, so a window that was still loading gets the request too.
   const nonce = state.settingsRequest?.nonce;
-  useEffect(() => { if (state.settingsRequest) open(state.settingsRequest.tab, state.settingsRequest.row); }, [nonce]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (state.settingsRequest) open(state.settingsRequest.tab, state.settingsRequest.row); }, [nonce]);
   // Scroll to a row once its tab has drawn, and flash it.
   useEffect(() => {
     if (!highlight || !env) return;

@@ -69,8 +69,10 @@ export function EntryRow({ entry, flash }: { entry: SettingEntry; flash: boolean
   if (!control || control === 'embedded') return null;
   const enabled = !entry.ui?.when || entry.ui.when.some(([key, expected]) => env.settings[key] === expected);
   const beside = BESIDE.has(control);
+  // A row that is all of its section says its name once, in the section heading.
+  const showTitle = entry.title.toLowerCase() !== entry.section.toLowerCase() && control !== 'about' && control !== 'updates';
   return <div className={`s-row ${beside ? '' : 'stacked'} ${enabled ? '' : 'inactive'} ${flash ? 'flash' : ''}`} id={rowDomId(entry.id)} data-row={entry.id}>
-    <div className="s-label"><strong>{entry.title}</strong>{entry.subtitle && <small>{entry.subtitle}</small>}</div>
+    {showTitle ? <div className="s-label"><strong>{entry.title}</strong>{entry.subtitle && <small>{entry.subtitle}</small>}</div> : control !== 'about' && control !== 'updates' && entry.subtitle ? <div className="s-label"><small>{entry.subtitle}</small></div> : null}
     <fieldset className="s-control" disabled={!enabled}>{body(entry, control, env)}</fieldset>
   </div>;
 }

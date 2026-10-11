@@ -97,7 +97,7 @@ export function FpsCap() {
   const target = settings.targetVideoFPS;
   return <div className="compression">
     <div className="chips">
-      <Switch label="Cap frames per second" checked={settings.capVideoFPS} onChange={value => change({ capVideoFPS: value })}/>
+      <Switch label="Cap frames per second" checked={settings.capVideoFPS} onChange={value => change({ capVideoFPS: value })}/><small>Cap at</small>
       {FPS_CAPS.map(cap => <Chip key={cap.value} on={target === cap.value} onClick={() => change({ targetVideoFPS: cap.value })}>{cap.label}</Chip>)}
     </div>
   </div>;
