@@ -175,3 +175,26 @@ test('a store on a file other processes write starts each change from the file a
   await owner.set({ lastAutoIncrementingNumber: 8 });
   assert.equal((await readJson(file)).stripMetadata, false, 'the owner writes what it holds');
 });
+
+test('a shared store starts over from the defaults when the file is deleted, and refuses a change while it cannot be read', async t => {
+  const dir = await folder(t), file = path.join(dir, 'settings.json');
+  await writeFile(file, JSON.stringify({ stripMetadata: false, preserveDates: false }));
+  const store = new SettingsStore(file, paths, true);
+  await store.load();
+  // Deleted while a command runs: its next change builds on the defaults, not on the settings it read at startup.
+  await rm(file);
+  await store.set({ lastAutoIncrementingNumber: 3 });
+  const stored = await readJson(file);
+  assert.deepEqual([stored.stripMetadata, stored.preserveDates, stored.lastAutoIncrementingNumber], [true, true, 3]);
+  // Damaged while a command runs (or being repaired): nothing is written over it.
+  for (const content of ['{"stripMetadata": fal', '[1, 2]']) {
+    await writeFile(file, content);
+    await assert.rejects(store.set({ lastAutoIncrementingNumber: 4 }), /could not read its settings file/);
+    await assert.rejects(store.update(() => ({ patch: { preserveDates: true }, result: 0 })), /could not read its settings file/);
+    assert.equal(await readFile(file, 'utf8'), content);
+  }
+  // Once it can be read again, changes go through.
+  await writeFile(file, JSON.stringify({ preserveDates: false }));
+  await store.set({ lastAutoIncrementingNumber: 5 });
+  assert.equal((await readJson(file)).lastAutoIncrementingNumber, 5);
+});

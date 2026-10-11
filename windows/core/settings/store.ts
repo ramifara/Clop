@@ -79,13 +79,21 @@ export class SettingsStore extends EventEmitter<{ change: [settings: ClopSetting
     });
   }
 
-  /** A shared file is read again before a change is built on it; one that cannot be read now leaves the settings as they are. */
+  /**
+   * A shared file is read again before a change is built on it. A file that is gone starts over from the defaults; one that cannot be
+   * read, or is not a JSON object, refuses the change, so what was read at startup is never written over a file someone is repairing.
+   */
   private async reread() {
     if (!this.shared) return;
-    try {
-      const value: unknown = JSON.parse(await readFile(this.file, 'utf8'));
-      if (typeof value === 'object' && value !== null && !Array.isArray(value) && !isLegacySettings(value)) this.current = parseSettings(value, defaultSettings(this.paths));
-    } catch {}
+    let text: string;
+    try { text = await readFile(this.file, 'utf8'); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') { this.current = defaultSettings(this.paths); return; }
+      throw new Error(`Clop could not read its settings file ${this.file} (${reason(error)}), so it did not save this change.`);
+    }
+    let value: unknown;
+    try { value = JSON.parse(text); } catch {}
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`Clop could not read its settings file ${this.file} (it is not a JSON object), so it did not save this change.`);
+    if (!isLegacySettings(value)) this.current = parseSettings(value, defaultSettings(this.paths));
   }
 
   private async apply(partial: unknown): Promise<ClopSettings> {
