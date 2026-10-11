@@ -49,19 +49,23 @@ test('serves a token\'s file whole, by byte range and by HEAD, and nothing else'
   assert.equal(head.headers.get('content-length'), '10');
   assert.equal((await get(files, url, {}, 'POST')).status, 405);
   // Paths and unknown tokens are never served, even for a file the session could name.
-  for (const other of [`clop-media://file/${encodeURIComponent(outside)}`, 'clop-media://file/../secret.txt', 'clop-media://file/00000000-0000-0000-0000-000000000000', `clop-media://file/${encodeURIComponent(path.join(root, 'item', 'clip.mp4'))}`]) {
+  for (const other of [`clop-media://file/${encodeURIComponent(outside)}`, 'clop-media://file/../secret.txt', 'clop-media://file/00000000-0000-0000-0000-000000000000', 'clop-media://file/%', 'clop-media://file/%E0%A4%A', 'clop-media://file/%zz', `clop-media://file/${encodeURIComponent(path.join(root, 'item', 'clip.mp4'))}`]) {
     assert.equal((await get(files, other)).status, 404, other);
   }
 });
 
-test('a revoked folder\'s files stop being served, and a link out of the session is not followed', async t => {
-  const { files, video, item, outside, root } = await session(t);
+test('a revoked folder\'s files stop being served', async t => {
+  const { files, video, item } = await session(t);
   const url = files.url(video);
   files.revoke(item);
   assert.equal((await get(files, url)).status, 404);
   assert.notEqual(files.url(video), url);
+});
+
+test('a link out of the session is not followed', async t => {
+  const { files, outside, root } = await session(t);
   const link = path.join(root, 'link.txt');
-  try { await symlink(outside, link); } catch { return; }
+  try { await symlink(outside, link); } catch { t.skip('this system cannot create symbolic links'); return; }
   assert.equal((await get(files, files.url(link))).status, 404);
 });
 

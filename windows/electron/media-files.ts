@@ -40,7 +40,7 @@ export class MediaFiles {
   /** Answers a GET or HEAD for a token's URL, honouring a `Range` header. */
   async handle(request: Request): Promise<Response> {
     if (request.method !== 'GET' && request.method !== 'HEAD') return new Response(null, { status: 405 });
-    const token = decodeURIComponent(new URL(request.url).pathname.split('/').pop() ?? ''), file = this.tokens.get(token);
+    const token = tokenOf(request.url), file = token && this.tokens.get(token);
     // A link inside the session is never followed out of it.
     const real = file && await realpath(file).catch(() => undefined), roots = await Promise.all(this.roots.map(root => realpath(root).catch(() => root)));
     const info = real && roots.some(root => inside(root, real)) ? await stat(real).catch(() => undefined) : undefined;
@@ -54,6 +54,11 @@ export class MediaFiles {
     const body = request.method === 'HEAD' || end < start ? null : Readable.toWeb(createReadStream(real, { start, end })) as ReadableStream<Uint8Array>;
     return new Response(body, { status: range ? 206 : 200, headers });
   }
+}
+
+/** The token a URL ends in; undefined when it is not valid percent-encoding. */
+function tokenOf(url: string) {
+  try { return decodeURIComponent(new URL(url).pathname.split('/').pop() ?? ''); } catch { return undefined; }
 }
 
 /** A single `bytes=` range of a `size`-byte file; undefined without one, `invalid` when it cannot be served. Several ranges get the whole file. */
