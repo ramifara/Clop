@@ -17,7 +17,7 @@ import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { run } from '../core/run';
 import { needTools } from '../core/testing';
 import { Workdir } from '../core/workdir';
-import { coverArtCard, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, type CardCreation, type CardHost } from './cards';
+import { coverArtCard, eachResult, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, type CardCreation, type CardHost } from './cards';
 import { ItemEngine } from './items';
 import type { PipelineHost } from './pipelines';
 import type { ItemResult } from '../src/types';
@@ -332,4 +332,18 @@ test('cover art and PDF pages become cards of their own, and facts come from the
   assert.deepEqual(await mediaFacts(f.engine.output(song), 'audio').then(x => [x.hasCoverArt, x.bitrates!.includes(128)]), [true, true]);
   assert.deepEqual(await mediaFacts(f.engine.output(await f.add(mp4)), 'video').then(x => [x.hasAudio, x.hdr]), [true, false]);
   assert.deepEqual(await mediaFacts(pdf, 'pdf'), {});
+});
+
+test('a batch action skips the results it does not fit without a word, reports the ones that failed, and says which finished', async () => {
+  const ran: string[] = [];
+  const outcome = await eachResult(['sdr', 'hdr', 'broken', 'hdr2'], {
+    name: id => id.toUpperCase(),
+    skip: async id => id === 'sdr',
+    run: async id => { if (id === 'broken') throw new Error('The encoder failed.'); ran.push(id); },
+  });
+  assert.deepEqual(ran, ['hdr', 'hdr2']);
+  assert.deepEqual(outcome.done, ['hdr', 'hdr2'], 'a skipped or failed result is not copied back');
+  assert.deepEqual(outcome.failures, ['BROKEN: The encoder failed.'], 'a skip is not a failure');
+  const refused = await eachResult(['a'], { name: id => id, skip: async () => { throw new Error('facts unreadable'); }, run: async () => {} });
+  assert.deepEqual(refused, { done: [], failures: ['a: facts unreadable'] });
 });

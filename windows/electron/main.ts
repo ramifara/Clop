@@ -62,7 +62,7 @@ import { setupBatch } from './batch-window';
 import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
 import { expandHome } from '../core/settings/paths';
 import { menuTemplate } from './card-menu';
-import { coverArtCard, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, startProgram, type CardCreation, type CardHost } from './cards';
+import { coverArtCard, eachResult, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, startProgram, type CardCreation, type CardHost } from './cards';
 import { CompactMode, cardsThatFit } from './compact';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -890,11 +890,17 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
     // Each result on its own: those the action does not work on are skipped, a failure does not stop the rest, and the clipboard is written once at the end.
     const failures: string[] = [], applies = ids.filter(id => ACTION_KINDS[action as ActionId].includes(engine.get(id).result.kind));
     if (!applies.length) throw new Error('This action does not work on the selected results.');
-    for (const id of applies) {
-      try { if (action === 'dismiss') await dismiss(id); else await runCard(sender, [id], raw, { copyBack: false }); }
-      catch (error) { failures.push(`${engine.has(id) ? engine.get(id).result.name : 'A result'}: ${message(error)}`); }
-    }
-    const back = applies.filter(id => engine.has(id) && isReady(id) && copiesBack(id));
+    // A result whose facts the action cannot use (an SDR video for HDR to SDR, a bitrate its format lacks) is skipped, not reported; only the ones the action ran on go back on the clipboard.
+    const batch = await eachResult(applies, {
+      name: id => engine.has(id) ? engine.get(id).result.name : 'A result',
+      skip: async id => {
+        const item = engine.get(id).result, invocation = parseInvocation(item.kind, raw);
+        return FACT_ACTIONS.includes(invocation.action) && refuseUnavailable(item, invocation, { native: true, ...await mediaFacts(engine.output(id), item.kind) }) !== undefined;
+      },
+      run: id => action === 'dismiss' ? dismiss(id) : runCard(sender, [id], raw, { copyBack: false }),
+    });
+    failures.push(...batch.failures);
+    const back = batch.done.filter(id => engine.has(id) && isReady(id) && copiesBack(id));
     if (action !== 'dismiss' && back.length) await copy(back).catch(error => failures.push(message(error)));
     if (failures.length) inform(failures.join('\n'));
     return;

@@ -16,7 +16,7 @@ import { formatSteps } from '../core/pipeline/parser';
 import { markedAsDownloaded } from '../core/pipeline/scripts';
 import type { ClopSettings } from '../core/settings/schema';
 import type { ImageOptions } from '../src/types';
-import type { ItemEngine } from './items';
+import { message, type ItemEngine } from './items';
 import { runForApp, type PipelineHost } from './pipelines';
 
 // Carrying out a card action (core/cards/actions.ts `planFor`) on a result: re-optimising an image from its original, running
@@ -106,6 +106,21 @@ export async function editorProgram(editor: string, { platform = process.platfor
   if (platform === 'win32' && await marked(program)) throw new Error(`Windows marked ${name} as downloaded from the internet. Unblock it in its file properties first.`);
   return program;
 }
+/**
+ * Runs an action on each of several results, one after another. A result `skip` says the action does not fit is left out without a word;
+ * a failure is reported with the result's name and does not stop the rest. `done` holds the results the action ran on and finished.
+ */
+export async function eachResult(ids: readonly string[], { skip, run, name }: { skip(id: string): Promise<boolean>; run(id: string): Promise<void>; name(id: string): string }) {
+  const done: string[] = [], failures: string[] = [];
+  for (const id of ids) {
+    try {
+      if (await skip(id)) continue;
+      await run(id); done.push(id);
+    } catch (error) { failures.push(`${name(id)}: ${message(error)}`); }
+  }
+  return { done, failures };
+}
+
 /** Starts `program` with `file` as its only argument, from its own folder, with no shell. */
 export const startProgram = (program: string, file: string) => new Promise<void>((resolve, reject) => {
   const child = spawn(program, [file], { cwd: path.dirname(program), detached: true, stdio: 'ignore', shell: false });
