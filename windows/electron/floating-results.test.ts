@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultSettings } from '../core/settings/schema';
-import { CursorFollower, dropZoneShown, hideDelay } from './floating-results';
+import { CursorFollower, dropZoneShown, hideChanges, hideDelay } from './floating-results';
 
 const timing = (more: Partial<ReturnType<typeof defaultSettings>> = {}) => ({ ...defaultSettings(), ...more });
 
@@ -43,4 +43,17 @@ test('results hide on no timer while the floating results are switched off', () 
   assert.equal(hideDelay(timing({ enableFloatingResults: false }), 'clipboard'), undefined);
   assert.equal(hideDelay(timing({ enableFloatingResults: false }), 'drop'), undefined);
   assert.equal(hideDelay(timing({ enableFloatingResults: true }), 'drop'), 30_000);
+});
+
+test('a change of the timing settings starts again only the hide timers whose delay changed, and stops those that are no longer wanted', () => {
+  const shown = [{ id: 'a', source: 'drop' }, { id: 'b', source: 'clipboard' }, { id: 'c', source: 'drop' }];
+  const running = new Map([['a', 30_000], ['b', 10_000], ['gone', 30_000]]);
+  // Nothing changed: the timers keep counting, the result without one gets its own, and a timer of a result that is not shown stops.
+  assert.deepEqual(hideChanges(shown, running, timing()), { start: ['c'], stop: ['gone'] });
+  // A new delay for files restarts those timers only.
+  assert.deepEqual(hideChanges(shown, running, timing({ autoHideFloatingResultsAfter: 5 })), { start: ['a', 'c'], stop: ['gone', 'a'] });
+  // Auto-hide off, or the results off: every timer stops and none starts, so switching back on does not pick up an old countdown.
+  for (const off of [{ autoHideFloatingResults: false }, { enableFloatingResults: false }]) assert.deepEqual(hideChanges(shown, running, timing(off)), { start: [], stop: ['gone', 'a', 'b'] });
+  // Never (0 seconds) is a delay too.
+  assert.deepEqual(hideChanges(shown, new Map([['a', 30_000]]), timing({ autoHideFloatingResultsAfter: 0, autoHideClipboardResultAfter: 0 })), { start: [], stop: ['a'] });
 });

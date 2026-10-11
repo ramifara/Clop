@@ -15,7 +15,7 @@ import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ignoredApp, withIgnored } from './apps';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
-import { CursorFollower, FOLLOW_INTERVAL_MS, hideDelay, dropZoneShown } from './floating-results';
+import { CursorFollower, FOLLOW_INTERVAL_MS, hideChanges, hideDelay, dropZoneShown } from './floating-results';
 import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, copiesFiles, DEFAULT_NAME_TEMPLATE, pausedForPoll, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp, imageDataReply } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
@@ -83,10 +83,13 @@ let dragFiles: string[] = [], presetsLatched = false;
 const presetReveal = new PresetReveal();
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
+/** The delay each hide timer was started with, so a change of the timing settings can tell which timers to start again (`hideChanges`). */
+const hideDelays = new Map<string, number>();
+function stopHide(id: string) { const timer = hideTimers.get(id); if (timer) clearTimeout(timer); hideTimers.delete(id); hideDelays.delete(id); }
 const compactMode = new CompactMode({
   always: () => settings.alwaysShowCompactResults, seconds: () => settings.autoClearAllCompactResultsAfter, fit: () => cardFit, clear: ids => hideResults(ids),
   paused: () => hovered || dragging || selecting,
-  switched: compact => { if (compact) { for (const timer of hideTimers.values()) clearTimeout(timer); hideTimers.clear(); } },
+  switched: compact => { if (compact) { for (const timer of hideTimers.values()) clearTimeout(timer); hideTimers.clear(); hideDelays.clear(); } },
 });
 let clipboardTimer: NodeJS.Timeout | undefined;
 const memory: ClipboardMemory = { fingerprint: '', own: '' };
@@ -222,33 +225,37 @@ function showLatest() {
 function hideResults(ids: string[]) {
   for (const id of ids) {
     if (!engine.has(id)) continue;
-    const timer = hideTimers.get(id); if (timer) clearTimeout(timer);
-    hideTimers.delete(id); hidden.add(id); removed(id);
+    stopHide(id); hidden.add(id); removed(id);
   }
   syncFloating(); broadcast();
 }
-/** Starts the hide timer of every shown result that has none, as results switched back on (`enableFloatingResults`) need. */
+/**
+ * Brings the hide timers in line with the settings: results switched back on (`enableFloatingResults`) get timers, timers stop when the
+ * results or auto-hide are switched off, and a timer whose delay changed starts again from now. The others keep counting.
+ */
 function rescheduleHides() {
-  for (const item of visible()) if (item.status === 'ready' && !hideTimers.has(item.id)) scheduleHide(item.id);
+  const { start, stop } = hideChanges(visible().filter(item => item.status === 'ready'), hideDelays, settings);
+  for (const id of stop) stopHide(id);
+  for (const id of start) scheduleHide(id);
 }
 function scheduleHide(id: string) {
-  const existing = hideTimers.get(id); if (existing) clearTimeout(existing);
+  stopHide(id);
   // The compact list clears every result together instead (CompactMode).
   if (compactMode.compact) return;
   const check = () => {
     // Switched off meanwhile: the result waits on the shelf, and `rescheduleHides` times it again once the results are back.
-    if (!settings.enableFloatingResults) { hideTimers.delete(id); return; }
+    if (!settings.enableFloatingResults) { hideTimers.delete(id); hideDelays.delete(id); return; }
     if (hovered || dragging) { hideTimers.set(id, setTimeout(check, 1000)); return; }
     hideResults([id]);
   };
   const delay = hideDelay(settings, engine.get(id).result.source);
-  if (delay !== undefined) hideTimers.set(id, setTimeout(check, delay));
+  if (delay !== undefined) { hideTimers.set(id, setTimeout(check, delay)); hideDelays.set(id, delay); }
 }
 async function dismiss(id: string) {
-  const timer = hideTimers.get(id); if (timer) clearTimeout(timer);
+  stopHide(id);
   for (const view of ['crop', 'compare', 'preview']) views.get(`${view}:${id}`)?.close();
   if (engine.has(id)) media?.revoke(engine.get(id).directory);
-  hideTimers.delete(id); hidden.delete(id); shortcutRunner.forget(id);
+  hidden.delete(id); shortcutRunner.forget(id);
   await engine.dismiss(id);
   if (!quiet.delete(id)) removed(id);
 }
@@ -1186,7 +1193,7 @@ else {
       if (changed.includes('pauseAutomaticOptimisations')) shortcutRunner.pauseChanged();
       if (changed.some(key => ['keyComboModifiers', 'enabledKeys', 'quickResizeKeys', 'allowClopToAppearInScreenshots'].includes(key))) applyWindowSettings();
       // A change made outside the app (the settings file, the CLI) shows or hides the tray icon and updates its menu and icon too.
-      if (changed.some(key => ['enableFloatingResults', 'followCursorScreen'].includes(key))) { syncCursorFollower(); rescheduleHides(); syncFloating(); broadcast(); }
+      if (changed.some(key => ['enableFloatingResults', 'followCursorScreen', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter', 'autoHideClipboardResultAfter'].includes(key))) { syncCursorFollower(); rescheduleHides(); syncFloating(); broadcast(); }
       if (changed.some(key => ['showMenubarIcon', 'pauseAutomaticOptimisations', 'enableClipboardOptimiser', 'keepDropZoneVisible'].includes(key))) updateTray();
       // Pipelines, attachments and preset zones show in the editor and, as tiles, on the drop target.
       if (changed.some(key => (EDITOR_SETTING_KEYS as readonly string[]).includes(key))) { syncFloating(); broadcast(); for (const window of [editorWindow, editorLoading?.window]) if (window && !window.isDestroyed()) window.webContents.send('clop:editor-changed'); }
