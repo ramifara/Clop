@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { ErrorCode, McpError, type ElicitRequestFormParams } from '@modelcontextprotocol/sdk/types.js';
+import { ElicitResultSchema, ErrorCode, McpError, type ElicitRequestFormParams } from '@modelcontextprotocol/sdk/types.js';
 import { samePath } from '../core/fileops';
 import { VIDEO_EXTENSIONS } from '../core/media/detect';
 import { resolveHome } from '../core/template';
@@ -279,12 +279,18 @@ type Outcome = { answered: Record<string, unknown> } | 'declined' | 'unanswered'
 
 /** Asks the user one question through the client, when it can show a form. */
 async function ask(call: Call, message: string, schema: object): Promise<Outcome> {
-  if (!call.server.getClientCapabilities()?.elicitation?.form) return 'unsupported';
+  // A client that says `elicitation: {}` predates the form/url split and means form, as the macOS server reads it.
+  const capability = call.server.getClientCapabilities()?.elicitation as { form?: unknown; url?: unknown } | undefined;
+  const legacy = !!capability && !capability.form && !capability.url;
+  if (!capability?.form && !legacy) return 'unsupported';
   const env = call.options.env ?? process.env, seconds = Number(env.CLOP_MCP_ELICIT_TIMEOUT);
   const timeout = call.options.elicitTimeoutMs ?? (seconds > 0 ? seconds * 1000 : 120_000);
   try {
     // A person answers this, so the wait is a person's wait. On timeout the SDK tells the client the question is withdrawn.
-    const result = await call.server.elicitInput({ mode: 'form', message, requestedSchema: schema as ElicitRequestFormParams['requestedSchema'] }, { timeout, signal: call.signal });
+    const params = { mode: 'form' as const, message, requestedSchema: schema as ElicitRequestFormParams['requestedSchema'] };
+    // `elicitInput` itself insists on `form`, so the old shape is sent as the request it stands for.
+    const result = legacy ? await call.server.request({ method: 'elicitation/create', params }, ElicitResultSchema, { timeout, signal: call.signal })
+      : await call.server.elicitInput(params, { timeout, signal: call.signal });
     if (result.action === 'accept') return { answered: result.content ?? {} };
     return result.action === 'decline' ? 'declined' : 'unanswered';
   } catch (error) {

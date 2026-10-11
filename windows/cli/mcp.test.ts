@@ -133,6 +133,15 @@ test('settings changes made at the same time are all kept when the app is not ru
   assert.deepEqual(keys.filter(key => stored[key] !== false), []);
 });
 
+test('questions: a client that says elicitation: {} is asked, as the macOS server does', { timeout: TIMEOUT }, async t => {
+  const f = await folder(t, { mcpEnabled: true });
+  await graphic(40, 30).png().toFile(f.file('a.png'));
+  const asked: string[] = [];
+  const legacy = await connect(t, f, { legacyElicitation: true, answer: () => { asked.push('smaller'); return { action: 'decline' }; } });
+  assert.equal((await legacy.call('clop_optimise', { paths: ['a.png'] })).text, DECLINED_PREFIX + SMALLER_OPTIONS_TEXT);
+  assert.deepEqual(asked, ['smaller']);
+});
+
 test('arguments: required ones are named, unknown tools are refused, start and stop open clop:// links', { timeout: TIMEOUT }, async t => {
   const f = await folder(t);
   const opened: string[] = [];

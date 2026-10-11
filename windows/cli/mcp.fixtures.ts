@@ -23,9 +23,9 @@ export async function folder(t: TestContext, settings: Record<string, unknown> =
 }
 
 /** A client connected in memory to a server for `dir`. `answer` answers questions when given; without it the client cannot show one. */
-export async function connect(t: TestContext, f: Awaited<ReturnType<typeof folder>>, { answer, opened, extra }: { answer?: () => ElicitResult; opened?: string[]; extra?: Partial<MCPOptions> } = {}) {
+export async function connect(t: TestContext, f: Awaited<ReturnType<typeof folder>>, { answer, opened, extra, legacyElicitation }: { answer?: () => ElicitResult; opened?: string[]; extra?: Partial<MCPOptions>; legacyElicitation?: boolean } = {}) {
   const server = createServer({ options: { userData: f.userData, home: f.dir }, cwd: f.dir, home: f.dir, env: {}, log: () => {}, startWaitMs: 3000, openURL: async url => { opened?.push(url); if (url.endsWith('start')) await f.settle({ ...await f.settings(), mcpEnabled: true }); }, ...extra });
-  const client = new Client({ name: 'test', version: '1' }, answer ? { capabilities: { elicitation: { form: {} } } } : {});
+  const client = new Client({ name: 'test', version: '1' }, answer ? { capabilities: { elicitation: legacyElicitation ? {} : { form: {} } } } : {});
   if (answer) client.setRequestHandler(ElicitRequestSchema, async () => answer());
   const [a, b] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(a), client.connect(b)]);
