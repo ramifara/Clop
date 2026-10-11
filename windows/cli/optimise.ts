@@ -146,6 +146,14 @@ interface SendOptions { showProgress: boolean; async: boolean; gui: boolean; jso
 /** `sendRequest`: sends the request, prints progress and results, and fails only when every input failed. */
 export async function sendRequest(ctx: Context, urls: string[], opts: SendOptions, request: OptimisationRequest): Promise<number> {
   const backend = await ctx.backend();
+  // `--review` only opens the batch window; nothing runs until the user presses Optimise there, so the command does not wait.
+  if (request.prepareInBatch) {
+    const errors = new Set<string>();
+    await backend.optimise(request, message => { if (message.kind === 'error') errors.add(message.error.error); });
+    if (errors.size) { ctx.io.err(`${[...errors].join('\n')}\n`); return 1; }
+    ctx.io.err(`Opened the batch window for ${urls.length} items. Press Optimise there to start.\n`);
+    return 0;
+  }
   if (opts.async) {
     if (backend.app) await backend.queue(request);
     else ctx.detach(ctx.argv.filter(arg => arg !== '--async'));

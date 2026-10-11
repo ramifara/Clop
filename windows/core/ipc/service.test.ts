@@ -104,7 +104,27 @@ test('agents are refused before any file is touched unless the user allowed them
   assert.match((scripted[0] as { error: { error: string } }).error.error, /script steps/);
   assert.equal((await stat(input)).mtimeMs, before);
   const review = await s.send({ urls: [fileURL(input)], prepareInBatch: true });
-  assert.match((review[0] as { error: { error: string } }).error.error, /batch optimiser window/);
+  assert.match((review[0] as { error: { error: string } }).error.error, /needs Clop running/);
+  assert.equal((await stat(input)).mtimeMs, before);
+});
+
+test('--review sends the files to the batch window and optimises nothing; a window that refuses is reported per input', async t => {
+  const added: [string[], boolean][] = [];
+  let refuse: string | undefined;
+  const s = await setup(t, { prepareInBatch: async (files, aggressive) => { if (refuse) throw new Error(refuse); added.push([files, aggressive]); } });
+  const input = s.file('a.png');
+  await graphic(50, 50).png().toFile(input);
+  const before = (await stat(input)).mtimeMs;
+  assert.deepEqual(await s.send({ urls: [fileURL(input), fileURL(s.file('b.png'))], prepareInBatch: true, aggressiveOptimisation: true }), [{ kind: 'done' }]);
+  assert.deepEqual(added, [[[input, s.file('b.png')], true]]);
+  assert.equal((await stat(input)).mtimeMs, before);
+  assert.deepEqual(await readdir(s.workdir.backups), []);
+  refuse = 'A batch is running. Wait for it to finish or cancel it before adding files.';
+  assert.deepEqual(await s.send({ urls: [fileURL(input)], prepareInBatch: true }), [{ kind: 'error', error: { error: refuse, forURL: fileURL(input) } }, { kind: 'done' }]);
+  const link = await s.send({ urls: ['https://example.com/a.png'], prepareInBatch: true });
+  assert.match((link[0] as { error: { error: string } }).error.error, /on this computer/);
+  // The MCP gate still comes first.
+  assert.match(((await s.send({ urls: [fileURL(input)], prepareInBatch: true, origin: 'mcp' }))[0] as { error: { error: string } }).error.error, /not accepting changes from agents/);
 });
 
 test('an agent\'s request that names a network share or a device anywhere is refused before any file is touched', async t => {

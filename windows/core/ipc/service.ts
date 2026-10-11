@@ -55,6 +55,11 @@ export interface ServiceDeps {
   withCard?(file: string, kind: MediaKind, request: OptimisationRequest, signal: AbortSignal): Promise<string | { placed: string } | undefined>;
   /** The addresses of a host name, for an agent's download. Only tests replace it. */
   resolve?(host: string): Promise<{ address: string; family?: number }[]>;
+  /**
+   * `--review`: opens the batch window with these files for the user to adjust and start (`BAT.prepare`). Only the app has one;
+   * a service without it refuses the request. Rejects when the window cannot take the files, such as while a batch runs.
+   */
+  prepareInBatch?(files: string[], aggressive: boolean): Promise<void>;
 }
 
 type Emit = (message: ServerMessage) => void;
@@ -264,13 +269,23 @@ export class ClopService {
     for (const id of ids) for (const controller of this.running.get(id) ?? []) controller.abort(new Error('Stopped.'));
   }
 
+  /** `prepareInBatch`: the files go to the batch window and nothing runs here, so the answer is just `done`; the user starts the batch there. */
+  private async review(req: OptimisationRequest, emit: Emit, fail: (error: string) => void) {
+    const { prepareInBatch } = this.deps;
+    if (!prepareInBatch) return fail('--review opens the batch window, which needs Clop running. Start Clop and run the command again, or run it without --review.');
+    const files = req.urls.map(url => urlPath(url));
+    if (files.some(file => file === undefined)) return fail('--review takes files and folders on this computer, not links.');
+    try { await prepareInBatch(files as string[], req.aggressiveOptimisation); } catch (error) { return fail(message(error)); }
+    emit({ kind: 'done' });
+  }
+
   async optimise(req: OptimisationRequest, emit: Emit): Promise<void> {
     const { store } = this.deps, settings = store.get();
     const fail = (error: string) => { for (const forURL of req.urls) emit({ kind: 'error', error: { error, forURL } }); emit({ kind: 'done' }); };
     // The MCP gate, before any file is touched. A refusal travels like a per-file error, so a client counting answers gets one per input.
     const refusal = mcpRefusal(req.origin, req.pipeline, settings);
     if (refusal) return fail(refusal);
-    if (req.prepareInBatch) return fail('The batch optimiser window is not in this version of Clop for Windows yet. Run the command without --review.');
+    if (req.prepareInBatch) return this.review(req, emit, fail);
     let pipeline: Pipeline | undefined;
     try { pipeline = req.pipeline === undefined ? undefined : requestPipeline(req.pipeline, settings, this.deps.home); } catch (error) { return fail(message(error)); }
     // An agent's files, output, templates and pipeline steps stay on this PC's own drives, checked before any of them is looked up.

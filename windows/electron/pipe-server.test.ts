@@ -8,7 +8,7 @@ import { main } from '../cli/main';
 import type { IO } from '../cli/results';
 import { appPipe, AppNotResponding, AppNotRunning, ForgedServer, sendMessage } from '../core/ipc/client';
 import { helloProof, newPipeKey, newPipePath, pipeInfoFile, type ClientMessage, type ServerMessage } from '../core/ipc/protocol';
-import { ClopService } from '../core/ipc/service';
+import { ClopService, type ServiceDeps } from '../core/ipc/service';
 import { OptimisedMarker } from '../core/marker';
 import { graphic } from '../core/media/image.fixtures';
 import { FakeEffects } from '../core/pipeline/executor.fixtures';
@@ -18,13 +18,13 @@ import { Workdir } from '../core/workdir';
 import { publishPipe, startPipeServer } from './pipe-server';
 
 /** An app stand-in: the real service behind the real pipe server, published where the CLI looks for it. */
-async function app(t: TestContext) {
+async function app(t: TestContext, deps: Partial<ServiceDeps> = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-pipe-'));
   const userData = path.join(dir, 'data');
   const store = new SettingsStore(path.join(userData, 'settings.json'), { home: dir, desktop: dir, userData });
   await store.load();
   const workdir = await new Workdir(path.join(userData, 'work')).ensure();
-  const service = new ClopService({ store, workdir, effects: new FakeEffects(), marker: new OptimisedMarker(path.join(userData, 'optimised.json')) });
+  const service = new ClopService({ store, workdir, effects: new FakeEffects(), marker: new OptimisedMarker(path.join(userData, 'optimised.json')), ...deps });
   const received: ClientMessage['kind'][] = [];
   const server = await startPipeServer(newPipePath(), (message, emit) => { received.push(message.kind); return service.handle(message, emit); });
   const withdraw = await publishPipe(userData, server);
@@ -148,4 +148,21 @@ test('a CLI with no app published runs headless', async t => {
   const code = await main(['settings', 'get', 'pdfDPI', '--json'], { io: { out: text => { out.push(text); }, err: () => {}, errTTY: false }, cwd: dir, options: { userData: dir, home: dir }, env: {}, colours: false });
   assert.equal(code, 0);
   assert.equal(JSON.parse(out.join('')).settings[0].value, '0');
+});
+
+test('--review hands the files to the app\'s batch window and returns without optimising; a refusal is the exit status', async t => {
+  const added: [string[], boolean][] = [];
+  let refuse: string | undefined;
+  const a = await app(t, { prepareInBatch: async (files, aggressive) => { if (refuse) throw new Error(refuse); added.push([files, aggressive]); } });
+  const input = path.join(a.dir, 'shot.png'), second = path.join(a.dir, 'two.png');
+  await graphic(300, 200).png({ compressionLevel: 0 }).toFile(input);
+  await graphic(300, 200, { seed: 4 }).png({ compressionLevel: 0 }).toFile(second);
+  const before = (await stat(input)).size;
+  assert.equal(await a.cli('optimise', '--review', '--aggressive', 'shot.png', 'two.png'), 0, a.err.join(''));
+  assert.deepEqual(added, [[[input, second], true]]);
+  assert.match(a.err.join(''), /^Opened the batch window for 2 items\. Press Optimise there to start\.\n$/);
+  assert.equal((await stat(input)).size, before, 'nothing was optimised');
+  a.err.length = 0; refuse = 'A batch is running. Wait for it to finish or cancel it before adding files.';
+  assert.equal(await a.cli('optimise', '--review', 'shot.png', 'two.png'), 1);
+  assert.equal(a.err.join(''), `${refuse}\n`, 'one message, not one per file');
 });

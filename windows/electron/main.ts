@@ -637,6 +637,7 @@ async function serveCLI(userData: string) {
     store: { get: () => store.get(), update: async change => { const wasEnabled = settings.mcpEnabled, reply = await store.update(change); await settingsChanged(reply.settings, wasEnabled); return reply; } },
     workdir, marker, effects: options => pipelineEffects(options), copyFiles: list => files.copyFiles(list), home: app.getPath('home'), withCard: optimiseWithCard,
     counter: () => nameCounter ??= { value: settings.lastAutoIncrementingNumber },
+    prepareInBatch: async (files, aggressive) => { if (!batch) throw new Error('Clop is still starting. Try again in a moment.'); await batch.host.add(files, aggressive); },
   });
   pipe = await startPipeServer(newPipePath(), (request, emit) => {
     console.log(`CLI request: ${request.kind}`);
