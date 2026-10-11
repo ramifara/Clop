@@ -10,6 +10,10 @@ export interface BatchWindowOptions extends Omit<BatchHostOptions, 'show' | 'pub
   here: string;
   devUrl?: string;
   quitting: () => boolean;
+  /** The shared sandboxed web preferences of Clop's windows; the batch window swaps in its own narrow preload. */
+  webPreferences: () => Electron.WebPreferences;
+  /** Called when the window is created, so the Windows helper learns its handle. */
+  created?: () => void;
 }
 
 export function setupBatch(options: BatchWindowOptions) {
@@ -20,8 +24,9 @@ export function setupBatch(options: BatchWindowOptions) {
     if (window && !window.isDestroyed()) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); return; }
     window = new BrowserWindow({
       width: 1140, height: 720, minWidth: 900, minHeight: 520, show: false, title: 'Batch optimisation', backgroundColor: '#f3f1ef', autoHideMenuBar: true,
-      webPreferences: { preload: path.join(options.here, 'preload-batch.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
+      webPreferences: { ...options.webPreferences(), preload: path.join(options.here, 'preload-batch.cjs') },
     });
+    options.created?.();
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.webContents.on('will-navigate', event => event.preventDefault());
     // Closing hides the window; a running batch carries on and shows again with the next large drop.
@@ -52,5 +57,5 @@ export function setupBatch(options: BatchWindowOptions) {
       default: throw new Error('Unknown batch action.');
     }
   });
-  return { host, show };
+  return { host, show, window: () => window && !window.isDestroyed() ? window : undefined };
 }
