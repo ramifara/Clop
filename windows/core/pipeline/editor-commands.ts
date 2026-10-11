@@ -1,4 +1,4 @@
-import { Unreadable, decodePipeline, isReadable, type Stored } from './codec';
+import { Unreadable, decodePipeline, isReadable, storedId, type Stored } from './codec';
 import { DIR_KEYS, FIXED_SOURCES, entryKey, sourceEntry, type EditorContext, type EditorSettings } from './editor-state';
 import { parseJsoncSteps } from './jsonc';
 import { FILE_TYPES, newPipelineId, referenceTo, type ClopFileType, type Pipeline, type PresetZone } from './model';
@@ -109,8 +109,8 @@ function fixPipeline(settings: EditorSettings, c: Extract<EditorCommand, { type:
   if (!(entry instanceof Unreadable)) return problem('Only a pipeline that could not be read can be replaced this way.');
   let pipeline: Pipeline;
   try { pipeline = decodePipeline(c.json); } catch (error) { return problem((error as Error).message); }
-  const original = typeof entry.raw === 'object' && entry.raw !== null ? (entry.raw as { id?: unknown }).id : undefined;
-  if (typeof original === 'string') pipeline = { ...pipeline, id: original };
+  const original = storedId(entry);
+  if (original !== undefined) pipeline = { ...pipeline, id: original };
   if (readable(settings.savedPipelines).some(other => other.id === pipeline.id)) return problem('Another pipeline in the library already has this id.');
   if (!pipeline.name?.trim()) return problem('Give the pipeline a name.');
   const savedPipelines = [...settings.savedPipelines];
