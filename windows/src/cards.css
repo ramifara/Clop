@@ -41,7 +41,7 @@
 .compact-close:hover{background:#ffffff24}
 
 .menu-popup{position:fixed;z-index:20;pointer-events:auto}
-.html-menu{list-style:none;margin:0;padding:4px;min-width:210px;max-height:calc(100vh - 12px);overflow:visible;background:#f6f2ecf2;color:#2f2830;border:1px solid #cfc6bb;border-radius:8px;box-shadow:0 8px 20px #0005;font-size:11px}
+.html-menu{list-style:none;margin:0;padding:4px;min-width:210px;background:#f6f2ecf2;color:#2f2830;border:1px solid #cfc6bb;border-radius:8px;box-shadow:0 8px 20px #0005;font-size:11px}
 .html-menu li{position:relative}
 .html-menu button{display:flex;align-items:center;width:100%;border:0;background:transparent;color:inherit;text-align:left;padding:4px 8px 4px 4px;border-radius:5px;gap:4px;white-space:nowrap}
 .html-menu button:hover:not(:disabled),.html-menu button:focus-visible{background:#ffc46e66}
@@ -52,8 +52,7 @@
 .html-menu .menu-arrow{color:#7a6f7c}
 .menu-header{padding:6px 8px 2px 18px;font-size:9px;font-weight:600;color:#7a6f7c;text-transform:uppercase;letter-spacing:.04em}
 .menu-separator{height:1px;margin:4px 6px;background:#d8cfc4}
-.html-menu .submenu{position:absolute;left:calc(100% - 4px);top:-5px;z-index:2;max-height:min(70vh,520px);overflow:auto}
-.html-menu .submenu>.html-menu{max-height:inherit;overflow:auto}
+.html-menu .submenu{position:absolute;left:calc(100% - 4px);z-index:2}
 
 .preview-window{flex-direction:column}
 .preview-stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#17141a;padding:12px}

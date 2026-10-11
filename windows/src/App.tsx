@@ -9,7 +9,7 @@ import { Icon } from './icons';
 import { SettingsWindow } from './SettingsWindow';
 import { TILE, cellCount, gridHeight, tileAt, tileOrigin } from '../core/pipeline/zones';
 import { glyph } from './editor/glyphs';
-import { MenuView } from './Menu';
+import { MenuPopup, MenuView } from './Menu';
 import type { AppState, PresetTiles } from './types';
 
 const preferences = new URLSearchParams(location.search).has('preferences');
@@ -119,7 +119,7 @@ export function App() {
       {!compact && state.items.length > 1 && state.settings.showCopyClearButtons && <div className="stack-actions"><button onClick={() => void run(() => api.copy(state.items[0].id), 'Copied')}>Copy latest</button><button onClick={() => void run(async () => { for (const item of state.items) await api.dismiss(item.id); })}>Clear all</button></div>}
       {message && <div className="copy-toast" role="status">{message}</div>}
     </div>
-    {popup && <div className="menu-popup" style={{ left: Math.min(popup.x, window.innerWidth - 230), top: Math.max(4, Math.min(popup.y, window.innerHeight - 24)) }}><MenuView nodes={popup.nodes} onInvoke={invoke}/></div>}
+    {popup && <MenuPopup at={{ x: popup.x, y: popup.y }}><MenuView nodes={popup.nodes} onInvoke={invoke}/></MenuPopup>}
   </div>;
 }
 
