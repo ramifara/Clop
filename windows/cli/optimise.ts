@@ -425,6 +425,7 @@ Add an explicit \`optimise\` step if you want one. Saved pipelines keep their
     option('autoConvertBehaviour', `Where auto-compatibility-converted files go: ${BEHAVIOUR_HELP}`),
     option('sameFolderTemplate', "Same-folder name template override (e.g. '%f_optimised.%e')"),
     option('specificFolderTemplate', "Specific-folder path template override (e.g. '~/Desktop/optimised/%f.%e')"),
+    flag('deleteFolders', 'Let a delete step move a folder to the Recycle Bin when the Clop app is not running, without asking (the app asks first)'),
   ],
   arguments: [{ name: 'pipeline', help: 'Saved pipeline name or inline pipeline steps' }, ITEMS('Files to run the pipeline on (can be a file, folder, or list of files)')],
   async run(v, ctx) {
@@ -434,7 +435,7 @@ Add an explicit \`optimise\` step if you want one. Saved pipelines keep their
     const urls = await items(ctx, v, chosenTypes(list(v, 'types'), undefined));
     if (!urls.length) throw new ValidationError('At least one file or folder must be specified');
     const request: OptimisationRequest = compact({
-      id: requestId(), urls, hideFloatingResult: !show, copyToClipboard: false, aggressiveOptimisation: false, source: 'cli', pipeline: str(v, 'pipeline'), origin: ctx.origin,
+      id: requestId(), urls, hideFloatingResult: !show, copyToClipboard: false, aggressiveOptimisation: false, source: 'cli', pipeline: str(v, 'pipeline'), origin: ctx.origin, deleteFolders: on(v, 'deleteFolders') || undefined,
       placement: placementOf({ optimised: behaviour(str(v, 'optimiseBehaviour'), 'optimiseBehaviour'), autoConvert: behaviour(str(v, 'autoConvertBehaviour'), 'autoConvertBehaviour'), manualConvert: behaviour(str(v, 'convertBehaviour'), 'convertBehaviour'), sameFolderTemplate: str(v, 'sameFolderTemplate'), specificFolderTemplate: str(v, 'specificFolderTemplate') }),
     });
     return sendRequest(ctx, urls, { showProgress: !on(v, 'noProgress'), async: on(v, 'async'), gui: show, json: on(v, 'json'), operation: 'pipeline' }, request);

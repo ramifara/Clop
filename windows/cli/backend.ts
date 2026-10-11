@@ -75,7 +75,8 @@ class HeadlessBackend implements Backend {
       const store = await this.loadStore(), { home, userData } = this.options;
       const workdir = await openWorkdir(store.get('workdir'), this.options);
       // Programs by path are only for the user's own pipelines, and never from a watched folder, as in the app.
-      const effects = (options: { allowExe: boolean }) => shellEffects({ ...options, watched: watchedFolders(store.get(), home) });
+      // Without the app nobody is asked before a folder goes to the Recycle Bin: only a person's --delete-folders allows it.
+      const effects = (options: { allowExe: boolean; origin?: string; deleteFolders: boolean }) => shellEffects({ ...options, watched: watchedFolders(store.get(), home) });
       return new ClopService({ store, workdir, effects, copyFiles: files => shellEffects().copyFiles(files), marker: new OptimisedMarker(path.join(userData, 'optimised.json')), home });
     })();
   }

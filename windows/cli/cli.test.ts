@@ -245,6 +245,23 @@ test('an agent may not name a network share or a device path, as a file, an outp
   assert.doesNotMatch(person.err(), /network share or a device/);
 });
 
+test('headless, a pipeline deletes a folder only with --delete-folders, and an agent never does', async t => {
+  const person = await cli(t);
+  await graphic(40, 30).png().toFile(person.file('a.png'));
+  await mkdir(person.file('keep'));
+  assert.equal(await person.clop('pipeline', 'run', 'delete(path: "keep")', 'a.png', '-n'), 1);
+  assert.match(person.out() + person.err(), /Clop is not running, so nobody can be asked before this folder goes to the Recycle Bin\. .*--delete-folders/);
+  assert.ok((await stat(person.file('keep'))).isDirectory());
+  const agent = await cli(t, false, { CLOP_ORIGIN: 'mcp' });
+  await mkdir(agent.userData, { recursive: true });
+  await writeFile(path.join(agent.userData, 'settings.json'), JSON.stringify({ mcpEnabled: true }));
+  await graphic(40, 30).png().toFile(agent.file('a.png'));
+  await mkdir(agent.file('keep'));
+  assert.equal(await agent.clop('pipeline', 'run', 'delete(path: "keep")', 'a.png', '-n', '--delete-folders'), 1);
+  assert.match(agent.out() + agent.err(), /Agents cannot delete folders while Clop is not running/);
+  assert.ok((await stat(agent.file('keep'))).isDirectory());
+});
+
 test('mcp status and logs persist read and write the switches', async t => {
   const c = await cli(t);
   assert.equal(await c.clop('mcp'), 0);

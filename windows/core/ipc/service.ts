@@ -32,9 +32,10 @@ export interface ServiceDeps {
   workdir: Workdir;
   /**
    * What pipeline steps do outside the files. A function gets whether this run may open programs by path (`allowExe`), which
-   * is the user's own pipelines only: an agent's, unless the user allows script steps, may only open apps Windows knows.
+   * is the user's own pipelines only: an agent's, unless the user allows script steps, may only open apps Windows knows. It also
+   * gets the request's origin and whether a person allowed deleting folders without being asked (`deleteFolders`).
    */
-  effects: PipelineEffects | ((options: { allowExe: boolean }) => PipelineEffects | Promise<PipelineEffects>);
+  effects: PipelineEffects | ((options: { allowExe: boolean; origin?: string; deleteFolders: boolean }) => PipelineEffects | Promise<PipelineEffects>);
   marker?: OptimisedMarker;
   home?: string;
   /** Puts files on the clipboard, for `copyToClipboard`. */
@@ -243,7 +244,7 @@ export class ClopService {
       const allowScripts = req.origin !== 'mcp' || settings.mcpAllowScriptSteps;
       const settingsStep = pipeline && !pipeline.skipOptimisation ? makeStep('optimise', { encoder: req.aggressiveOptimisation ? 'aggressive' : 'medium', adaptive: false, location: optimisedLocation(env, kind, req.placement) }) : undefined;
       const opts: PipelineRunOptions = {
-        fileType: kind, env, effects: typeof deps.effects === 'function' ? await deps.effects({ allowExe: allowScripts }) : deps.effects, placementOverride: req.placement, signal, allowScripts,
+        fileType: kind, env, effects: typeof deps.effects === 'function' ? await deps.effects({ allowExe: allowScripts, origin: req.origin, deleteFolders: req.deleteFolders === true && req.origin !== 'mcp' }) : deps.effects, placementOverride: req.placement, signal, allowScripts,
         // An explicit output from an agent may not replace a file, as the user's placement settings may.
         refuseExisting: req.origin === 'mcp' ? { settingsStep } : undefined,
         onProgress: p => progress(Math.min(1, (p.step + p.fraction) / Math.max(1, p.steps))),
