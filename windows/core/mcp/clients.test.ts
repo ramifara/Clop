@@ -149,6 +149,27 @@ test('files that cannot be edited safely are refused and left alone', async t =>
   assert.equal(await configState(p.client('claude-code')), 'unusable');
 });
 
+test('a JSON file that is not valid JSON is refused whole: nothing is written, not even a backup', async t => {
+  const p = await profile(t);
+  const cases: [string, string][] = [
+    ['cursor', '{\n  mcpServers: { other: { command: "x" } },\n}\n'],
+    ['cursor', "{\n  'mcpServers': { 'other': { 'command': 'x' } }\n}\n"],
+    ['zed', '{\n  "theme": "One",\n  "context_servers": { "other": { "command": "x" } },\n}} oops\n'],
+    ['vscode', '{ "servers": { "other": { "command": "x" } } '],
+    ['claude-code', '{ "mcpServers": { "clop": { "command": "old" }, } } {}'],
+  ];
+  for (const [id, content] of cases) {
+    const file = configOf(p.client(id)).path;
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, content);
+    assert.equal(await configState(p.client(id)), 'unusable', content);
+    await assert.rejects(installClient(p.client(id), SERVER, { backups: p.backups }), /is not a JSON object/, content);
+    await assert.rejects(removeClient(p.client(id), { backups: p.backups }), /is not a JSON object/, content);
+    assert.equal(await readFile(file, 'utf8'), content);
+  }
+  await assert.rejects(readdir(p.backups), { code: 'ENOENT' });
+});
+
 test('removing from a file that never held the entry writes nothing', async t => {
   const p = await profile(t), original = await p.place('zed', 'zed-settings.json');
   await removeClient(p.client('zed'), { backups: p.backups });

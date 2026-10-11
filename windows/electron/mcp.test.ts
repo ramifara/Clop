@@ -46,6 +46,16 @@ test('install and remove from the pane, with the detail line saying where the en
   assert.deepEqual(p.revealed, [file]);
 });
 
+test('install checks the file again: one the pane called unusable is never written', async t => {
+  const p = await pane(t);
+  const file = path.join(p.home, '.cursor', 'mcp.json'), json5 = '{\n  mcpServers: { other: { command: "x" } },\n}\n';
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, json5);
+  const state = await p.settings.handle({ action: 'install', id: 'cursor' });
+  assert.deepEqual(state.clients.find(c => c.id === 'cursor'), { id: 'cursor', name: 'Cursor', featured: false, state: 'unusable', detail: `${file} is not a JSON object.`, failed: true });
+  assert.equal(await readFile(file, 'utf8'), json5);
+});
+
 test('without clop.exe nothing is installed and the pane says why', async t => {
   const p = await pane(t, { cli: false });
   const state = await p.settings.handle({ action: 'install', id: 'zed' });

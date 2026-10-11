@@ -4,7 +4,7 @@ import { chmod, copyFile, lstat, mkdir, readdir, readFile, readlink, rename, rm,
 import os from 'node:os';
 import path from 'node:path';
 import { retryBusy } from '../run';
-import { NotAnObjectError, readObject, removeMember, setMember } from './jsonc';
+import { NotAnObjectError, onlyMemberChanged, readObject, removeMember, setMember } from './jsonc';
 import { ConfigLayoutError } from './lines';
 import { commandWords, removeCommand, setCommand, shellQuote } from './shellrc';
 import { removeTable, setTable, tableValues, tomlStrings } from './toml';
@@ -192,7 +192,7 @@ export async function installClient(client: Client, server: ServerCommand, optio
       case 'crushrc': return setCommand(text, ['mcp', 'add', SERVER_NAME], crushLine(server));
       default: return setMember(text, container(config.style)!, SERVER_NAME, jsonEntry(config.style, server));
     }
-  }, options);
+  }, options, true);
 }
 
 /** Takes the server out. A file that holds no entry of ours is never written. */
@@ -205,7 +205,7 @@ export async function removeClient(client: Client, options: EditOptions = {}) {
       case 'crushrc': return removeCommand(text, ['mcp', 'add', SERVER_NAME]);
       default: return removeMember(text, container(config.style)!, SERVER_NAME);
     }
-  }, options);
+  }, options, false);
 }
 
 /**
@@ -231,16 +231,23 @@ export async function resolvedConfigPath(file: string): Promise<string> {
  * nothing to do, and then nothing is written. The read happens as late as possible: some clients rewrite their config
  * while they run. A UTF-8 byte order mark and the file's permissions are kept.
  */
-async function edit(client: Client, config: Config, change: (text: string) => string | undefined, options: EditOptions) {
+async function edit(client: Client, config: Config, change: (text: string) => string | undefined, options: EditOptions, installing: boolean) {
   const target = await resolvedConfigPath(config.path), raw = await readFile(target, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
   const bom = raw?.startsWith('﻿') ? '﻿' : '', existing = raw === undefined ? '' : raw.slice(bom.length);
+  const key = container(config.style);
   let updated: string | undefined;
-  try { updated = change(existing); } catch (error) {
+  try {
+    // A file that does not parse as JSON (JSON5, a syntax error) is one the splicing cannot be trusted with: it would find no
+    // `mcpServers` of its own and write a second one. Refuse it before anything is written.
+    if (key) readObject(existing);
+    updated = change(existing);
+  } catch (error) {
     if (error instanceof ConfigLayoutError) throw new Error(`${config.path} has a layout that can't be edited safely.`);
     if (error instanceof NotAnObjectError) throw new Error(`${config.path} is not a JSON object.`);
     throw error;
   }
   if (updated === undefined || updated === existing) return;
+  if (key && !onlyMemberChanged(existing, updated, key, SERVER_NAME, installing)) throw new Error(`${config.path} could not be edited safely, so it was left as it was.`);
   const mode = raw === undefined ? undefined : (await stat(target)).mode & 0o777;
   if (raw !== undefined && options.backups) await backup(target, path.join(options.backups, client.id));
   await mkdir(path.dirname(target), { recursive: true });

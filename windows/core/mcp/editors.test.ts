@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readObject, removeMember, sanitized, setMember } from './jsonc';
+import { onlyMemberChanged, readObject, removeMember, sanitized, setMember } from './jsonc';
 import { commandWords, removeCommand, setCommand, shellQuote } from './shellrc';
 import { removeTable, setTable, tableValues, tomlStrings } from './toml';
 import { childFields, removeChild, setChild } from './yaml';
@@ -20,6 +20,19 @@ test('JSONC: the last member is cut with the comma before it, a sole member take
   const two = '{\n  "servers": {\n    "a": 1,\n    "clop": {\n      "x": 2\n    }\n  },\n  "b": 3\n}\n';
   assert.equal(removeMember(two, 'servers', 'clop'), '{\n  "servers": {\n    "a": 1\n  },\n  "b": 3\n}\n');
   assert.equal(removeMember('{\n  "b": 3,\n  "servers": { "clop": 1 }\n}\n', 'servers', 'clop'), '{\n  "b": 3\n}\n');
+});
+
+test('JSONC: a splice is checked to have changed only the one member', () => {
+  const before = '{\n  // c\n  "a": [1, 2],\n  "servers": { "x": { "command": "y" } }\n}\n';
+  const after = setMember(before, 'servers', 'clop', '{"command": "z"}');
+  assert.equal(onlyMemberChanged(before, after, 'servers', 'clop', true), true);
+  assert.equal(onlyMemberChanged(before, after, 'servers', 'clop', false), false, 'the entry is there');
+  assert.equal(onlyMemberChanged(after, removeMember(after, 'servers', 'clop')!, 'servers', 'clop', false), true);
+  assert.equal(onlyMemberChanged(before, after.replace('"a": [1, 2]', '"a": [1]'), 'servers', 'clop', true), false, 'another key changed');
+  assert.equal(onlyMemberChanged(before, after.replace('"x"', '"w"'), 'servers', 'clop', true), false, 'another server changed');
+  assert.equal(onlyMemberChanged(before, after.replace('"a"', '"a2"'), 'servers', 'clop', true), false, 'a key went');
+  assert.equal(onlyMemberChanged(before, after.slice(0, -3), 'servers', 'clop', true), false, 'the result does not parse');
+  assert.equal(onlyMemberChanged('{}', '{"servers": {"clop": 1}, "servers": {}}', 'servers', 'clop', true), false, 'a second container hides the first');
 });
 
 test('TOML: a table is replaced where it was, its sub-tables and dotted keys go with it, the next comment stays', () => {

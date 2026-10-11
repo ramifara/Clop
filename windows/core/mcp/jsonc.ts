@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 // `JSONCEditor` (Clop/JSONCEditor.swift): adds and removes one member of one top-level object in a JSON file AS TEXT,
 // so comments, trailing commas, key order and formatting elsewhere survive byte for byte. Zed's settings and VS Code's
 // mcp.json are JSON with comments, and parse-then-stringify would drop them.
@@ -57,6 +59,24 @@ export function readObject(text: string): Record<string, unknown> {
   try { value = JSON.parse(clean); } catch { throw new NotAnObjectError('not a JSON object'); }
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new NotAnObjectError('not a JSON object');
   return value as Record<string, unknown>;
+}
+
+/**
+ * Whether a splice did only what was asked: `after` parses, `root[container][name]` is there (or gone), and everything else,
+ * every other top-level key and every other member of the container, is what it was. Checked before anything is written.
+ */
+export function onlyMemberChanged(before: string, after: string, container: string, name: string, present: boolean): boolean {
+  try {
+    const split = (root: Record<string, unknown>) => {
+      const { [container]: servers, ...rest } = root;
+      const members = servers && typeof servers === 'object' && !Array.isArray(servers) ? { ...servers as Record<string, unknown> } : servers === undefined ? {} : undefined;
+      if (!members) return undefined;
+      const { [name]: entry, ...others } = members;
+      return { rest, others, entry };
+    };
+    const was = split(readObject(before)), now = split(readObject(after));
+    return !!was && !!now && isDeepStrictEqual(was.rest, now.rest) && isDeepStrictEqual(was.others, now.others) && (now.entry !== undefined) === present;
+  } catch { return false; }
 }
 
 /**

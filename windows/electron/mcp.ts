@@ -73,7 +73,13 @@ export function mcpSettings(deps: MCPSettingsDeps) {
     async handle(value: unknown): Promise<McpState> {
       const request = parseMCPRequest(value, clients);
       switch (request.action) {
-        case 'install': await edit(request.id, async client => { const s = server(); if (!s) throw new Error(deps.missing); await installClient(client, s, { backups }); }); break;
+        case 'install': await edit(request.id, async client => {
+          const s = server();
+          if (!s) throw new Error(deps.missing);
+          // The state the pane showed may be old: the file is checked again here, and the editor refuses it too.
+          if (await configState(client) === 'unusable') throw new Error(`${configOf(client).path} is not a JSON object.`);
+          await installClient(client, s, { backups });
+        }); break;
         case 'remove': await edit(request.id, client => removeClient(client, { backups })); break;
         case 'reveal': deps.reveal(configOf(clients.find(c => c.id === request.id)!).path); break;
         case 'enable': await deps.setSwitches({ mcpEnabled: request.on }); break;
