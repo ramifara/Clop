@@ -14,7 +14,7 @@ import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ignoredApp, withIgnored } from './apps';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
-import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, copiesFiles, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp } from './clipboard';
+import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, copiesFiles, DEFAULT_NAME_TEMPLATE, pausedForPoll, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
 import { enabledKey, localFile } from './watch-rules';
@@ -554,7 +554,7 @@ async function readClipboardImage() {
  * Optimises what is on the clipboard (see `clipboardIntake`). Reads run one at a time; the import each starts runs on its
  * own, so a long encode never holds up the next copy, and no copy or manual request is dropped.
  */
-function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive = false): Promise<void> {
+function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive = false, polled = false): Promise<void> {
   if (!manual && (!settings.enableClipboardOptimiser || paused())) return Promise.resolve();
   return intake.submit(async () => {
     const plan = await clipboardIntake(change, manual, memory, {
@@ -566,6 +566,8 @@ function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive 
         return snapshot;
       },
     });
+    // The helper's changes use up the pause as they arrive (`pickup`); a poll finds its change here.
+    if (polled && pausedForPoll(plan, () => shortcutRunner.consumePauseNext())) return;
     switch (plan.type) {
       case 'retry': void optimiseClipboard(plan.change, false, aggressive); return;
       case 'none': if (plan.notice) inform(plan.notice); return;
@@ -578,7 +580,7 @@ function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive 
 function startClipboardFallback() {
   if (clipboardTimer) return;
   let polling = false;
-  clipboardTimer = setInterval(() => { if (settings.enableClipboardOptimiser && !polling) { polling = true; void optimiseClipboard().finally(() => { polling = false; }); } }, 900);
+  clipboardTimer = setInterval(() => { if (settings.enableClipboardOptimiser && !polling) { polling = true; void optimiseClipboard(undefined, false, false, true).finally(() => { polling = false; }); } }, 900);
   clipboardTimer.unref();
 }
 const optimiseWithCard = cardOptimiser({ engine: () => engine, makeRoom, defaults });

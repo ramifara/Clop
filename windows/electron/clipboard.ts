@@ -13,6 +13,12 @@ import { ignoredApp } from './apps';
  */
 export const copiesFiles = ({ allImages, count, copyImageFilePath, extra = 0, files = false }: { allImages: boolean; count: number; copyImageFilePath: boolean; extra?: number; files?: boolean }) => files || !allImages || count > 1 || copyImageFilePath || extra > 0;
 
+/**
+ * Whether a poll of the clipboard (the fallback when the Windows helper is not running) lets a change go by because "pause for the next
+ * clipboard event" is armed. Only a change Clop would have optimised counts, so a poll that finds nothing new leaves the pause armed.
+ */
+export const pausedForPoll = (plan: { type: string }, consume: () => boolean) => ['files', 'image', 'url'].includes(plan.type) && consume();
+
 /** `DEFAULT_NAME_TEMPLATE` in SettingsView.swift, for clipboard images when the custom template is empty. */
 export const DEFAULT_NAME_TEMPLATE = 'clop_%y-%m-%d_%i';
 const MAX_FILES = 64, MAX_PATH = 32_767;

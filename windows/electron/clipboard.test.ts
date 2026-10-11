@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { defaultSettings } from '../core/settings/schema';
-import { ClipboardIntake, importClipboardList, replacedClipboardImages, serial, clipboardChange, clipboardFiles, clipboardIntake, copiesFiles, copyReply, splitClipboardList, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources } from './clipboard';
+import { ClipboardIntake, importClipboardList, replacedClipboardImages, serial, clipboardChange, clipboardFiles, clipboardIntake, copiesFiles, copyReply, pausedForPoll, splitClipboardList, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources } from './clipboard';
 
 // The macOS defaults; Windows differs only in optimiseImagePathClipboard, checked below.
 const settings = { ...defaultSettings(), optimiseImagePathClipboard: false };
@@ -272,4 +272,14 @@ test('a single image goes on the clipboard without its file only when copying th
   assert.equal(copiesFiles({ ...image, count: 2 }), true);
   assert.equal(copiesFiles({ ...image, allImages: false }), true);
   assert.equal(copiesFiles({ ...image, extra: 1 }), true);
+});
+
+test('a poll lets the next change go by when the pause is armed, and a poll that finds nothing keeps it armed', () => {
+  let armed = true;
+  const consume = () => { const was = armed; armed = false; return was; };
+  assert.equal(pausedForPoll({ type: 'none' }, consume), false);
+  assert.equal(armed, true, 'nothing new: the pause is still armed');
+  assert.equal(pausedForPoll({ type: 'image' }, consume), true);
+  assert.equal(armed, false);
+  assert.equal(pausedForPoll({ type: 'files' }, consume), false, 'it lets one change go by');
 });
