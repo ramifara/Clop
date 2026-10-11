@@ -1,7 +1,16 @@
 import type { OptimisationRequest } from '../core/ipc/protocol';
 import type { MediaKind } from '../core/media/types';
+import type { FileBehaviour } from '../core/placement';
 import type { ImageOptions } from '../src/types';
 import type { ItemEngine, ItemPlacement } from './items';
+
+/**
+ * Whether a request's card places its result itself. Not with an explicit output, and not when the result of an optimisation or of
+ * an automatic conversion would stay in the shelf (`temporary`): the pipe service copies that beside the file, where the card would
+ * answer with a path in the session folder, which goes away at the next start.
+ */
+export const cardPlaces = (req: Pick<OptimisationRequest, 'output'>, behaviour: (kind: 'optimised' | 'autoConvert') => FileBehaviour) =>
+  !req.output && behaviour('optimised') !== 'temporary' && behaviour('autoConvert') !== 'temporary';
 
 /**
  * The CLI's "optimise this file and show a card" through the app's item engine (one adapter, so the engine can change behind

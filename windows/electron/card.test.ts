@@ -9,9 +9,10 @@ import { needTools } from '../core/testing';
 import { clip } from '../core/media/video.fixtures';
 import { OptimisedMarker } from '../core/marker';
 import { defaultSettings } from '../core/settings/schema';
+import { effectiveBehaviour, type FileBehaviour, type PlacementEnv } from '../core/placement';
 import { Workdir } from '../core/workdir';
 import { folderPlacement, restoreAll } from './automation';
-import { cardOptimiser } from './card';
+import { cardOptimiser, cardPlaces } from './card';
 import { ItemEngine, sampleImage } from './items';
 
 async function fixture(t: TestContext) {
@@ -72,4 +73,17 @@ test('with a placement the card writes over the file itself, so its Restore and 
   assert.ok((await readFile(f.png)).length < original.length, 'the file itself was optimised');
   await restoreAll(f.engine, f.engine.list().map(item => item.id));
   assert.ok(original.equals(await readFile(f.png)), 'Restore put the original back over the file');
+});
+
+test('a request card leaves the placing to the service when an optimised or converted result would stay in the shelf', () => {
+  const behaviours = (optimised: FileBehaviour, autoConvert: FileBehaviour) => (kind: 'optimised' | 'autoConvert') => kind === 'optimised' ? optimised : autoConvert;
+  assert.equal(cardPlaces({}, behaviours('inPlace', 'sameFolder')), true);
+  assert.equal(cardPlaces({}, behaviours('sameFolder', 'specificFolder')), true);
+  assert.equal(cardPlaces({ output: 'out.png' }, behaviours('inPlace', 'sameFolder')), false, 'an explicit output is the service\'s');
+  assert.equal(cardPlaces({}, behaviours('temporary', 'sameFolder')), false);
+  assert.equal(cardPlaces({}, behaviours('inPlace', 'temporary')), false, 'a conversion kept in the shelf would answer with a session path');
+  // The same through the placement settings and the request's own override.
+  const env = { settings: { ...defaultSettings({ home: os.homedir(), userData: os.tmpdir() }), convertedImageBehaviour: 'temporary' as const } } as PlacementEnv;
+  assert.equal(cardPlaces({}, kind => effectiveBehaviour(env, 'image', kind)), false);
+  assert.equal(cardPlaces({}, kind => effectiveBehaviour(env, 'image', kind, { autoConvert: 'sameFolder' })), true);
 });

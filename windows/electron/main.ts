@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cardOptimiser } from './card';
+import { cardOptimiser, cardPlaces } from './card';
 import { ItemEngine, message, type ImportExtra, type ItemAutomation } from './items';
 import { clipboardPNG } from '../core/media/image-codecs';
 import { imageDefaults, rendererSettings } from './settings';
@@ -597,7 +597,7 @@ function startClipboardFallback() {
 // Restore undoes the write. An explicit output, or results kept in the shelf (`temporary`, which the service copies beside the file), stay with the service.
 const optimiseWithCard = cardOptimiser({
   engine: () => engine, makeRoom, defaults,
-  placement: (file, kind, req) => req.output || effectiveBehaviour(folderEnv(), kind, 'optimised', req.placement) === 'temporary' ? undefined
+  placement: (file, kind, req) => !cardPlaces(req, output => effectiveBehaviour(folderEnv(), kind, output, req.placement)) ? undefined
     : folderPlacement(file, kind, req.origin === 'mcp' ? () => ({ ...folderEnv(), agent: true }) : folderEnv, value => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); }, req.placement),
 });
 /** The placement environment of watched files, Explorer verbs and command-line cards. */
