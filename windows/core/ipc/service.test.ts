@@ -174,6 +174,19 @@ test('a card that placed its result itself is the answer, and the service places
   assert.deepEqual(await readdir(s.workdir.backups), [], 'no second placement and no second backup');
 });
 
+test('requests number %i files from the app\'s own counter, so they never reuse a number its watched folders gave out', async t => {
+  if (!needTools(t, 'pngquant')) return;
+  const shared = { value: 50 };
+  const s = await setup(t, { counter: () => shared }, { lastAutoIncrementingNumber: 10 });
+  const input = s.file('a.png');
+  await graphic(120, 80).png({ compressionLevel: 0 }).toFile(input);
+  const [first] = answers(await s.send({ urls: [fileURL(input)], output: s.file('out-%i') }));
+  assert.ok(first.kind === 'response', JSON.stringify(first));
+  assert.equal(path.basename(first.response.path), 'out-51.png');
+  assert.equal(shared.value, 51);
+  assert.equal(s.store.current.lastAutoIncrementingNumber, 51, 'the settings hear the shared value');
+});
+
 test('stopping a request also cancels the files no worker has taken yet', async t => {
   const started: string[] = [];
   const s = await setup(t, {

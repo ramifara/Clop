@@ -20,6 +20,7 @@ import { parseSteps } from '../pipeline/parser';
 import { RunState } from '../pipeline/run-state';
 import { effectiveBehaviour, placeOutput, type PlacementEnv } from '../placement';
 import type { ClopSettings, CropSize } from '../settings/schema';
+import type { Counter } from '../template';
 import type { Workdir } from '../workdir';
 import { urlPath, type ClientMessage, type OptimisationRequest, type OptimisationResponse, type ServerMessage, type Size, type StopOptimisationRequest } from './protocol';
 import { handleSettingsRequest, mcpRefusal, type SettingsAccess } from './settings';
@@ -42,6 +43,8 @@ export interface ServiceDeps {
   home?: string;
   /** Puts files on the clipboard, for `copyToClipboard`. */
   copyFiles?(files: string[]): Promise<void>;
+  /** The app's own `%i` counter, shared with its watched folders and clipboard naming so the two never hand out one number twice. Without it each request starts from the settings. */
+  counter?(): Counter;
   /**
    * The app's own optimisation with a result card, for a request that shows its result. Returns the optimised file for the
    * service to place, `{ placed }` when the card placed it itself (so its Restore can undo the write), or undefined when the
@@ -242,7 +245,7 @@ export class ClopService {
     const remote = req.origin === 'mcp' ? agentPathRefusal([...req.urls, req.output, req.placement?.sameFolderTemplate, req.placement?.specificFolderTemplate, req.placement?.specificFolderRoot, ...pipeline?.steps.flatMap(stepPaths) ?? []]) : undefined;
     if (remote) return fail(remote);
 
-    const counter = { value: settings.lastAutoIncrementingNumber }, copied: string[] = [];
+    const counter = this.deps.counter?.() ?? { value: settings.lastAutoIncrementingNumber }, start = counter.value, copied: string[] = [];
     const queue = [...req.urls.entries()];
     const waiting = { queue, stopped: (index: number, url: string) => { copied[index] = urlPath(url) ?? ''; emit({ kind: 'error', error: { error: 'Stopped.', forURL: url } }); } };
     this.waiting.add(waiting);
@@ -260,7 +263,7 @@ export class ClopService {
       }
     };
     try { await Promise.all(Array.from({ length: Math.min(CONCURRENT_FILES, queue.length) }, worker)); } finally { this.waiting.delete(waiting); }
-    if (counter.value !== settings.lastAutoIncrementingNumber) await store.update(() => ({ patch: { lastAutoIncrementingNumber: counter.value }, result: undefined })).catch(() => {});
+    if (counter.value !== start) await store.update(() => ({ patch: { lastAutoIncrementingNumber: counter.value }, result: undefined })).catch(() => {});
     // One file per input: the result, or the original when it failed, as macOS does for --copy.
     if (req.copyToClipboard && this.deps.copyFiles) await this.deps.copyFiles(copied.filter(Boolean)).catch(error => console.warn(`Could not copy the results: ${message(error)}`));
     emit({ kind: 'done' });
