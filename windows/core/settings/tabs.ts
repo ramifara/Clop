@@ -16,3 +16,13 @@ export const TAB_GROUPS: readonly { title: string; tabs: readonly SettingsTab[] 
   { title: 'Shortcuts & Automation', tabs: ['keys', 'pipelines', 'automation', 'mcp'] },
   { title: 'Support', tabs: ['updates', 'about'] },
 ];
+
+const normalized = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+/** Old macOS name of the Updates tab, kept so a copied link still opens it. */
+const ALIASES: Record<string, SettingsTab> = { licenseupdates: 'updates', licenseandupdates: 'updates' };
+
+/** A tab by its case name (`presetZones`) or title (`Preset zones`), in any case, ignoring spaces and dashes. */
+export function settingsTab(name: string): SettingsTab | undefined {
+  const wanted = normalized(name);
+  return ALIASES[wanted] ?? TAB_ORDER.find(tab => normalized(tab) === wanted || normalized(SETTINGS_TABS[tab]) === wanted);
+}

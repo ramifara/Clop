@@ -570,10 +570,11 @@ function toggleCLI() {
 }
 /** Opens the Settings window, on a tab and row when asked. The request travels with the state, so a window that has not finished loading still gets it. */
 function showSettings(tab?: SettingsTab, row?: string) {
-  settingsRequest = { ...settingsTarget(tab, row), nonce: (settingsRequest?.nonce ?? 0) + 1 };
+  // Without a tab or row the window just comes back as it was, with its tab and search.
+  if (tab || row) settingsRequest = { ...settingsTarget(tab, row), nonce: (settingsRequest?.nonce ?? 0) + 1 };
   if (main.isMinimized()) main.restore();
   main.show(); main.focus();
-  broadcast();
+  if (tab || row) broadcast();
 }
 function updateTray() {
   tray.setContextMenu(Menu.buildFromTemplate([

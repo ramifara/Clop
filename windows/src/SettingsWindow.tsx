@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SettingMeta } from '../core/settings/controls';
 import { PENDING_NOTE, SETTING_ENTRIES, hostRow, settingsTarget, type SettingEntry } from '../core/settings/entries';
 import { searchSettings } from '../core/settings/search';
-import { SETTINGS_TABS, TAB_GROUPS, TAB_ORDER, type SettingsTab } from '../core/settings/tabs';
-import { settingsTab } from '../electron/clop-url';
+import { SETTINGS_TABS, TAB_GROUPS, TAB_ORDER, settingsTab, type SettingsTab } from '../core/settings/tabs';
 import { api } from './api';
 import { Icon } from './icons';
 import { SettingsContext, clean, rowDomId, type SettingsEnv } from './settings/context';
@@ -43,12 +42,17 @@ export function SettingsWindow({ state, refresh }: { state: AppState; refresh():
   const run = useCallback(async (task: () => Promise<unknown>, success?: string) => {
     try { await task(); await refresh(); if (success) say(success); return true; } catch (error) { say(clean(error), true); return false; }
   }, [refresh, say]);
-  const env = useMemo<SettingsEnv | undefined>(() => metas && ({
-    settings: state.settings, metas, native: state.native, platform: state.platform, run,
-    change: partial => { void run(() => api.settings(partial)); },
-    prefs: async request => { let reply: PrefsReply | undefined; const ok = await run(async () => { reply = await api.prefs(request); }); if (ok && reply?.message) say(reply.message); return ok ? reply : undefined; },
-    ask: async (request: PrefsRequest) => api.prefs(request).catch(() => undefined),
-  }), [metas, state.settings, state.native, state.platform, run, say]);
+  // `change`, `prefs` and `ask` keep their identity across state broadcasts, so controls that call them in effects do not run again after every setting change.
+  const change = useCallback((partial: Parameters<SettingsEnv['change']>[0]) => { void run(() => api.settings(partial)); }, [run]);
+  const prefs = useCallback(async (request: PrefsRequest) => {
+    let reply: PrefsReply | undefined;
+    const ok = await run(async () => { reply = await api.prefs(request); });
+    if (ok && reply?.message) say(reply.message);
+    return ok ? reply : undefined;
+  }, [run, say]);
+  const ask = useCallback(async (request: PrefsRequest) => api.prefs(request).catch(() => undefined), []);
+  const env = useMemo<SettingsEnv | undefined>(() => metas && ({ settings: state.settings, metas, native: state.native, platform: state.platform, run, change, prefs, ask }), [metas, state.settings, state.native, state.platform, run, change, prefs, ask]);
+  const ready = !!env;
 
   const open = useCallback((next: SettingsTab, row?: string) => { setQuery(''); setTab(next); setHighlight(row); }, []);
   // The tray and `clop://settings/…` links ask through the state, so a window that was still loading gets the request too.
@@ -56,7 +60,7 @@ export function SettingsWindow({ state, refresh }: { state: AppState; refresh():
   useEffect(() => { if (state.settingsRequest) open(state.settingsRequest.tab, state.settingsRequest.row); }, [nonce]);
   // Scroll to a row once its tab has drawn, and flash it.
   useEffect(() => {
-    if (!highlight || !env) return;
+    if (!highlight || !ready) return;
     const entry = SETTING_ENTRIES.find(row => row.id === highlight);
     const id = entry ? hostRow(entry).id : highlight;
     const frame = requestAnimationFrame(() => {
@@ -65,7 +69,7 @@ export function SettingsWindow({ state, refresh }: { state: AppState; refresh():
     });
     const timer = setTimeout(() => { setFlash(undefined); setHighlight(undefined); }, 2600);
     return () => { cancelAnimationFrame(frame); clearTimeout(timer); };
-  }, [highlight, tab, env]);
+  }, [highlight, tab, ready]);
 
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
