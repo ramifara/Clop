@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { syncLoginItem } from './login-item';
+import { loginExecutable, syncLoginItem } from './login-item';
 
 function fake(openAtLogin: boolean) {
   const set: unknown[] = [];
@@ -18,4 +18,10 @@ test('the login item follows the stored setting when the app starts, and is left
   const changed = fake(true);
   syncLoginItem(changed, true, 'C:\\Clop.exe');
   assert.equal(changed.set.length, 1, 'a settings change in the app always writes');
+});
+
+test('the portable app registers its launcher, not the temporary copy it runs from', () => {
+  assert.equal(loginExecutable({ PORTABLE_EXECUTABLE_FILE: 'C:\\Tools\\Clop-portable.exe' }, 'C:\\Temp\\abc\\Clop.exe'), 'C:\\Tools\\Clop-portable.exe');
+  assert.equal(loginExecutable({}, 'C:\\Program Files\\Clop\\Clop.exe'), 'C:\\Program Files\\Clop\\Clop.exe');
+  assert.equal(loginExecutable({ PORTABLE_EXECUTABLE_FILE: '' }, 'C:\\Clop.exe'), 'C:\\Clop.exe');
 });
