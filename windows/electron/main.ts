@@ -41,7 +41,7 @@ import type { SettingsTab } from '../core/settings/tabs';
 import { createPrefs, LINKS } from './prefs';
 import { publishPipe, startPipeServer, type PipeServer } from './pipe-server';
 import { loginExecutable, syncLoginItem } from './login-item';
-import { clopURLs, linkInbox, type ClopURL } from './clop-url';
+import { clopURLs, linkInbox, MCP_START_QUESTION, type ClopURL } from './clop-url';
 import { installPortableCLI, isPortable, portableCLIDir, portableCLIInstalled, refreshPortableCLI, removePortableCLI } from './cli-install';
 import { mcpSettings } from './mcp';
 import { setupDebugDump, setupUpdates, setupWatchdog } from './support';
@@ -606,7 +606,8 @@ async function openClopURL(link: ClopURL) {
   if (settings.mcpEnabled || askingMCP) return;
   askingMCP = true;
   let response: number;
-  try { ({ response } = await dialog.showMessageBox({ type: 'question', buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1, title: 'Clop', message: 'Let AI agents change files and settings through Clop?', detail: 'An agent asked to use Clop through its MCP server. You can turn this off again in Clop settings.' })); }
+  // Attached to the settings window, so the question is plainly Clop's own.
+  try { ({ response } = await dialog.showMessageBox(main, { type: 'question', buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1, title: 'Clop', ...MCP_START_QUESTION })); }
   finally { askingMCP = false; }
   if (response === 0) await updateSettings({ mcpEnabled: true });
 }

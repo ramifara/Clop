@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { clopURLs, linkInbox, parseClopURL, settingsTab } from './clop-url';
+import { clopURLs, linkInbox, MCP_START_QUESTION, parseClopURL, settingsTab } from './clop-url';
 
 test('settings links name a tab, a row, or both, as SettingsURL.swift reads them', () => {
   assert.deepEqual(parseClopURL('clop://settings/video'), { kind: 'settings', tab: 'video' });
@@ -36,4 +36,10 @@ test('links that arrive while the app starts are opened in order once it is read
   assert.deepEqual(opened, ['stop', 'settings']);
   inbox.receive(clopURLs(['clop://mcp/start']));
   assert.deepEqual(opened, ['stop', 'settings', 'start']);
+});
+
+test('the start question does not say an agent asked, since any website or app can open the link', () => {
+  assert.equal(MCP_START_QUESTION.message, 'Let AI agents change files and settings through Clop?');
+  assert.doesNotMatch(MCP_START_QUESTION.detail, /^An agent asked/);
+  assert.match(MCP_START_QUESTION.detail, /possibly a website or another app\. Allow it only if you asked an agent to use Clop just now\./);
 });

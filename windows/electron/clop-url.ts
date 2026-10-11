@@ -21,6 +21,15 @@ export function parseClopURL(text: string): ClopURL | undefined {
   return { kind: 'settings', ...(tab ? { tab } : {}), ...(row ? { row } : {}) };
 }
 
+/**
+ * The question `clop://mcp/start` asks. Any web page or app can open the link, so it does not claim an agent asked: the
+ * user is told where it came from as far as Clop knows, and that only a request they made themselves should be allowed.
+ */
+export const MCP_START_QUESTION = {
+  message: 'Let AI agents change files and settings through Clop?',
+  detail: 'Something opened a clop://mcp/start link to ask for this: an AI agent, or possibly a website or another app. Allow it only if you asked an agent to use Clop just now. You can turn this off again in Clop settings.',
+};
+
 /** The `clop://` links among a process's arguments, as Windows passes them to a new or the running instance. */
 export const clopURLs = (argv: readonly string[]) => argv.filter(arg => /^clop:/i.test(arg)).flatMap(arg => parseClopURL(arg) ?? []);
 
