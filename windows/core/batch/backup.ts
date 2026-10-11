@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { copyTo, moveTo } from '../fileops';
 import { retryBusy } from '../run';
@@ -24,6 +24,11 @@ const hash = (file: string) => new Promise<string>((resolve, reject) => {
   createReadStream(file).on('error', reject).on('data', chunk => sha.update(chunk)).on('end', () => resolve(sha.digest('hex')));
 });
 
+const isString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
+const isNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+const BATCH_DIR = /^batch-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
 export class BatchBackup {
   readonly dir: string;
   private readonly manifest: string;
@@ -34,6 +39,41 @@ export class BatchBackup {
     this.dir = path.join(workdir.batchBackups, `batch-${id}`);
     this.manifest = path.join(this.dir, 'manifest.json');
   }
+  /** Reads a batch's manifest back (`loadManifest`), or undefined when there is none or it is not one of Clop's. Backups outside the batch's folder are ignored. */
+  static async load(workdir: Workdir, id: string, platform?: NodeJS.Platform): Promise<BatchBackup | undefined> {
+    const backup = new BatchBackup(workdir, id, platform);
+    const data: unknown = await readFile(backup.manifest, 'utf8').then(JSON.parse, () => undefined);
+    if (!isRecord(data) || data.id !== id || !Array.isArray(data.entries) || !Array.isArray(data.results)) return undefined;
+    const inside = (file: string) => path.dirname(path.resolve(file)) === path.resolve(backup.dir);
+    for (const entry of data.entries) {
+      if (isRecord(entry) && isString(entry.path) && isString(entry.backup) && isNumber(entry.size) && isNumber(entry.mtimeMs) && path.isAbsolute(entry.path) && inside(entry.backup))
+        backup.entries.set(backup.key(entry.path), { path: entry.path, backup: path.resolve(entry.backup), size: entry.size, mtimeMs: entry.mtimeMs });
+    }
+    for (const result of data.results) {
+      if (isRecord(result) && isString(result.original) && isString(result.path) && isNumber(result.size) && isNumber(result.mtimeMs) && path.isAbsolute(result.original) && path.isAbsolute(result.path))
+        backup.results.set(backup.key(result.original), { original: result.original, path: result.path, size: result.size, mtimeMs: result.mtimeMs, originalRemoved: result.originalRemoved === true, ...(result.originalRestored === true ? { originalRestored: true } : {}) });
+    }
+    return backup;
+  }
+
+  /** The newest batch (other than `exclude`) whose manifest still holds results to revert, if any. */
+  static async latest(workdir: Workdir, exclude?: string, platform?: NodeJS.Platform): Promise<string | undefined> {
+    const names = await readdir(workdir.batchBackups).catch(() => [] as string[]);
+    const found = await Promise.all(names.map(async name => {
+      const id = BATCH_DIR.exec(name)?.[1];
+      if (!id || id === exclude) return undefined;
+      const info = await stat(path.join(workdir.batchBackups, name, 'manifest.json')).catch(() => undefined);
+      return info?.isFile() ? { id, time: info.mtimeMs } : undefined;
+    }));
+    for (const { id } of found.filter(item => !!item).sort((a, b) => b.time - a.time)) {
+      if ((await BatchBackup.load(workdir, id, platform))?.results.size) return id;
+    }
+    return undefined;
+  }
+
+  /** Where each result of the batch went. */
+  allResults(): ResultEntry[] { return [...this.results.values()]; }
+
   private key(file: string) { const resolved = path.resolve(file); return this.platform === 'win32' ? resolved.toLowerCase() : resolved; }
 
   /**

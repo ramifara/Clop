@@ -18,8 +18,8 @@ import type { Counter } from '../template';
 import type { Workdir } from '../workdir';
 import { BatchBackup } from './backup';
 import { pdfAspectRatio } from './crop';
-import type { BatchFile } from './scan';
-import { checkOutputTemplate, type BatchOutput, type BatchParams } from './spec';
+import { batchKind, type BatchFile } from './scan';
+import { checkOutputTemplate, defaultBatchParams, type BatchOutput, type BatchParams } from './spec';
 
 // The batch run of BatchOptimiser.swift (BatchManager.startRun, runItem, placeResult, restoreFromBackup) on the core engines.
 
@@ -70,7 +70,7 @@ interface Produced { output: MediaOutput; converted: boolean; allowLarger: boole
  * `revert` can give back every original exactly. Emits `change` whenever a row changes.
  */
 export class Batch extends EventEmitter {
-  readonly id = randomUUID();
+  readonly id: string;
   readonly items: BatchItem[];
   phase: BatchPhase = 'running';
   readonly backup: BatchBackup;
@@ -83,12 +83,33 @@ export class Batch extends EventEmitter {
   private backupsDeleted = false;
   private deleting = false;
   private reverting?: Promise<string[]>;
-  constructor(files: readonly BatchFile[], readonly params: BatchParams, private readonly env: BatchEnv) {
+  constructor(files: readonly BatchFile[], readonly params: BatchParams, private readonly env: BatchEnv, backup?: BatchBackup) {
     super();
     checkOutputTemplate(params.output);
     this.items = files.map(file => ({ path: file.path, name: path.basename(file.path), kind: file.kind, status: 'queued', oldBytes: file.bytes, oldFormat: file.format }));
-    this.backup = new BatchBackup(env.workdir, this.id, env.platform);
+    this.id = backup?.id ?? randomUUID();
+    this.backup = backup ?? new BatchBackup(env.workdir, this.id, env.platform);
     for (const item of this.items) this.claimed.add(this.key(item.path));
+  }
+  /**
+   * Opens a batch that ran before, from its manifest (`loadManifest`), as a finished batch whose rows are its results, so it can
+   * be reverted. Undefined when the batch has no manifest. Rows hold only what the manifest knows: names, results and sizes.
+   */
+  static async restore(id: string, env: BatchEnv): Promise<Batch | undefined> {
+    const backup = await BatchBackup.load(env.workdir, id, env.platform);
+    if (!backup) return undefined;
+    const results = backup.allResults().sort((a, b) => a.original.localeCompare(b.original, undefined, { numeric: true })), files: BatchFile[] = [];
+    for (const result of results) {
+      const kept = await backup.entry(result.original), kind = batchKind(result.original) ?? batchKind(result.path);
+      if (kind) files.push({ path: result.original, kind, bytes: kept?.size ?? result.size, format: extension(result.original).toUpperCase() });
+    }
+    const batch = new Batch(files, defaultBatchParams(env.settings()), env, backup);
+    batch.phase = 'finished';
+    for (const item of batch.items) {
+      const result = backup.result(item.path)!;
+      Object.assign(item, { status: 'done', result: result.path, newBytes: result.size, newFormat: extension(result.path).toUpperCase() });
+    }
+    return batch;
   }
   private key(file: string) { const resolved = path.resolve(file); return (this.env.platform ?? process.platform) === 'win32' ? resolved.toLowerCase() : resolved; }
   private changed() { this.emit('change'); }

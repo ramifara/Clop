@@ -1,6 +1,6 @@
 import { mock, test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,6 +17,7 @@ import { defaultSettings } from '../settings/schema';
 import { needTools } from '../testing';
 import { Workdir } from '../workdir';
 import { batchCrop } from './crop';
+import { BatchBackup } from './backup';
 import { Batch, type BatchEnv } from './engine';
 import { scanBatch } from './scan';
 import { defaultBatchParams, type BatchParams } from './spec';
@@ -361,4 +362,38 @@ test('a revert that restored the original but not the file it displaced finishes
   assert.deepEqual(statuses(batch), ['reverted']);
   assert.equal(await readFile(mine, 'utf8'), 'my own jpeg');
   assert.equal(await digest(shot), original);
+});
+
+test('an earlier batch can be opened again from its manifest and reverted', async t => {
+  if (!needTools(t, 'jpegoptim', 'pngquant', 'exiftool')) return;
+  const { files, env, params, workdir } = await setup(t);
+  const a = await write(path.join(files, 'a.jpg'), await jpeg(320, 240, 1)), b = await write(path.join(files, 'b.jpg'), await jpeg(320, 240, 2));
+  const shot = await write(path.join(files, 'shot.png'), await png(400, 300, 3)), mine = await write(path.join(files, 'shot.jpeg'), Buffer.from('my own jpeg'));
+  const originals = await Promise.all([a, b, shot].map(digest));
+  const first = await batchOf(env, [a], params());
+  await first.run();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const convert = params(); convert.image = { ...convert.image, convert: 'jpeg' };
+  const second = new Batch((await scanBatch([b, shot])).files, convert, env);
+  await second.run();
+  assert.deepEqual(statuses(second), ['done', 'done']);
+  assert.equal(await BatchBackup.latest(workdir), second.id, 'the newest batch with something to revert');
+  assert.equal(await BatchBackup.latest(workdir, second.id), first.id);
+  assert.equal(await Batch.restore(randomUUID(), env), undefined, 'a batch with no manifest is not there');
+
+  // As after a restart: nothing of the batch is in memory but its manifest.
+  const reopened = (await Batch.restore(second.id, env))!;
+  assert.deepEqual([reopened.id, reopened.phase, statuses(reopened)], [second.id, 'finished', ['done', 'done']]);
+  assert.deepEqual(reopened.items.map(item => [item.name, item.kind, item.result && path.basename(item.result)]), [['b.jpg', 'image', 'b.jpg'], ['shot.png', 'image', 'shot.jpeg']]);
+  assert.deepEqual(await reopened.revert(), []);
+  assert.deepEqual(statuses(reopened), ['reverted', 'reverted']);
+  assert.deepEqual(await Promise.all([b, shot].map(digest)), [originals[1], originals[2]]);
+  assert.equal(await readFile(mine, 'utf8'), 'my own jpeg');
+  assert.equal(await BatchBackup.latest(workdir), first.id, 'a reverted batch has nothing left to offer');
+
+  const again = (await Batch.restore(first.id, env))!;
+  assert.deepEqual(await again.revert(), []);
+  assert.equal(await digest(a), originals[0]);
+  assert.equal(await BatchBackup.latest(workdir), undefined);
+  assert.equal(await Batch.restore(first.id, env).then(batch => batch?.items.length), 0, 'and nothing to open');
 });
