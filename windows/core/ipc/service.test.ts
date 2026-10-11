@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { PDFDocument } from '@cantoo/pdf-lib';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -15,7 +17,7 @@ import { needTools } from '../testing';
 import { shellEffects } from '../shell-effects';
 import { Workdir } from '../workdir';
 import { fileURL, type OptimisationRequest, type ServerMessage } from './protocol';
-import { ClopService, cropSizeText, factorText, requestSteps, type ServiceDeps } from './service';
+import { ClopService, cropSizeText, factorText, isPublicAddress, requestSteps, type ServiceDeps } from './service';
 
 async function setup(t: TestContext, deps: Partial<ServiceDeps> = {}, values: Partial<ClopSettings> = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-service-'));
@@ -122,6 +124,22 @@ test('an agent\'s request that names a network share or a device anywhere is ref
   }
   assert.equal((await stat(input)).mtimeMs, before);
   assert.deepEqual(await readdir(s.workdir.backups), []);
+});
+
+test('an agent\'s download reaches only the internet: a host on this PC or its network is refused, a person\'s is fetched', async t => {
+  if (!needTools(t, 'pngquant')) return;
+  const s = await setup(t, {}, { mcpEnabled: true });
+  const png = await graphic(60, 40).png({ compressionLevel: 0 }).toBuffer();
+  const server = createServer((_request, response) => { response.writeHead(200, { 'content-type': 'image/png' }); response.end(png); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/shot.png`;
+  const [refused] = await s.send({ urls: [url], origin: 'mcp' });
+  assert.match((refused as { error: { error: string } }).error.error, /^Download failed: 127\.0\.0\.1 is on this PC or its local network, and agents may only download from the internet\.$/);
+  const [fetched] = answers(await s.send({ urls: [url] }));
+  assert.equal(fetched.kind, 'response', JSON.stringify(fetched));
+  for (const address of ['127.0.0.1', '10.1.2.3', '172.20.0.1', '192.168.1.10', '169.254.1.1', '100.64.0.1', '0.0.0.0', '::1', 'fe80::1', 'fd00::1', '::ffff:127.0.0.1', '::ffff:7f00:1']) assert.equal(isPublicAddress(address), false, address);
+  for (const address of ['8.8.8.8', '1.1.1.1', '2606:4700:4700::1111']) assert.equal(isPublicAddress(address), true, address);
 });
 
 test('a request that shows its result lets the app optimise it with a card, then places that result', async t => {

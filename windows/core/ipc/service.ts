@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
+import { lookup } from 'node:dns/promises';
 import { mkdir, rm, rmdir, stat } from 'node:fs/promises';
+import { BlockList, isIP } from 'node:net';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline as pump } from 'node:stream/promises';
@@ -113,8 +115,44 @@ async function facts(file: string, kind: MediaKind): Promise<Facts> {
   return 'width' in info && info.width && info.height ? { bytes, size: [info.width, info.height] } : { bytes };
 }
 
-async function download(url: string, workdir: Workdir, signal: AbortSignal): Promise<string> {
-  const response = await fetch(url, { signal });
+/** Addresses on this PC or its local network: loopback, private, link-local, shared, multicast and reserved ranges. */
+const NOT_PUBLIC = new BlockList();
+for (const [address, prefix] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 4], ['240.0.0.0', 4]] as const) NOT_PUBLIC.addSubnet(address, prefix, 'ipv4');
+for (const [address, prefix] of [['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8]] as const) NOT_PUBLIC.addSubnet(address, prefix, 'ipv6');
+/** IPv4 addresses written as IPv6. Kept apart: a list that held them would match every IPv4 address too. */
+const MAPPED = new BlockList();
+MAPPED.addSubnet('::ffff:0:0', 96, 'ipv6');
+/** Whether `address` is on the internet. An IPv4 address written as IPv6 is judged as the IPv4 one, or refused when it is not written out (`::ffff:7f00:1`). */
+export const isPublicAddress = (address: string) => {
+  const v4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address)?.[1] ?? (isIP(address) === 4 ? address : undefined);
+  if (v4) return !NOT_PUBLIC.check(v4, 'ipv4');
+  return !NOT_PUBLIC.check(address, 'ipv6') && !MAPPED.check(address, 'ipv6');
+};
+
+/** An agent's download reaches only the internet: a host on this PC or its local network is refused before it is asked anything. */
+async function refuseLocalHost(url: string) {
+  const { protocol, hostname } = new URL(url), host = hostname.replace(/^\[|\]$/g, '');
+  if (protocol !== 'http:' && protocol !== 'https:') throw new Error(`Download failed: agents may only download http and https links, not ${url}`);
+  const addresses = isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: true }).catch(() => []);
+  if (!addresses.length || addresses.some(({ address }) => !isPublicAddress(address))) throw new Error(`Download failed: ${hostname} is on this PC or its local network, and agents may only download from the internet.`);
+}
+
+/** Fetches `url`. For an agent every hop, redirects included, must be a public host. */
+async function fetchFor(url: string, signal: AbortSignal, agent: boolean): Promise<Response> {
+  if (!agent) return fetch(url, { signal });
+  for (let hops = 0; ; hops++) {
+    await refuseLocalHost(url);
+    const response = await fetch(url, { signal, redirect: 'manual' });
+    const location = response.status >= 300 && response.status < 400 ? response.headers.get('location') : null;
+    if (!location) return response;
+    if (hops >= 5) throw new Error(`Download failed: ${url} redirects too many times`);
+    await response.body?.cancel();
+    url = new URL(location, url).href;
+  }
+}
+
+async function download(url: string, workdir: Workdir, signal: AbortSignal, agent = false): Promise<string> {
+  const response = await fetchFor(url, signal, agent);
   if (!response.ok || !response.body) throw new Error(`Download failed: ${url} answered ${response.status}`);
   if (Number(response.headers.get('content-length')) > DOWNLOAD_LIMIT) throw new Error(`Download failed: ${url} is larger than 2 GB`);
   const dir = path.join(workdir.temp, `download-${randomUUID()}`);
@@ -233,7 +271,7 @@ export class ClopService {
     try {
       await previous;
       signal.throwIfAborted();
-      const input = urlPath(url) ?? await download(url, deps.workdir, signal);
+      const input = urlPath(url) ?? await download(url, deps.workdir, signal, req.origin === 'mcp');
       if (!await exists(input)) throw new Error(`File not found: ${input}`);
       if (!(await stat(input)).isFile()) throw new Error(`Not a file: ${input}`);
       const kind = await detectKind(input, { signal });
