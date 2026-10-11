@@ -18,7 +18,8 @@ export interface PrefsHost {
   chooseFolder(title: string, defaultPath?: string): Promise<string | undefined>;
   chooseProgram(title: string): Promise<string | undefined>;
   apps(): Promise<AppEntry[]>;
-  openEditor(request: { pipeline?: string; fileType?: MediaName }): void | Promise<void>;
+  /** Opens the pipeline editor; false when this build has none. */
+  openEditor(request: { pipeline?: string; fileType?: MediaName }): boolean | void | Promise<boolean | void>;
   openExternal(url: string): Promise<void>;
   version(): { name: string; platform: string };
   home: string;
@@ -162,8 +163,8 @@ export function createPrefs(host: PrefsHost) {
       case 'pipeline-editor': {
         if (request.pipeline !== undefined && (typeof request.pipeline !== 'string' || request.pipeline.length > 200)) throw new Error('Choose a pipeline to edit.');
         if (request.fileType !== undefined) oneOf(request.fileType, KINDS, 'a file type');
-        await host.openEditor({ pipeline: request.pipeline as string | undefined, fileType: request.fileType as MediaName | undefined });
-        return {};
+        const opened = await host.openEditor({ pipeline: request.pipeline as string | undefined, fileType: request.fileType as MediaName | undefined });
+        return opened === false ? { message: 'The pipeline editor is not part of this version yet. Create pipelines with the clop command or through an agent.' } : {};
       }
       case 'open': await host.openExternal(LINKS[oneOf(request.target, Object.keys(LINKS) as (keyof typeof LINKS)[], 'a link')]); return {};
       case 'version': return { version: host.version() };

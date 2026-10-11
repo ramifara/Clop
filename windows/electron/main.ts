@@ -726,7 +726,7 @@ else {
       chooseProgram: async title => { const picked = await dialog.showOpenDialog(main, { title, properties: ['openFile'], filters: process.platform === 'win32' ? [{ name: 'Programs', extensions: ['exe'] }] : [] }); return picked.canceled ? undefined : picked.filePaths[0]; },
       apps: async () => bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [],
       // The pipeline editor window arrives later; until then the link does nothing.
-      openEditor: () => {},
+      openEditor: () => false,
       openExternal: url => shell.openExternal(url), version: () => ({ name: app.getVersion(), platform: process.platform }),
     });
     mcp = mcpSettings({

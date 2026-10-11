@@ -35,6 +35,15 @@ test('every visible setting has a row, and a row of its own control unless anoth
   }
 });
 
+test('a row\'s conditions name real settings and values they can have', () => {
+  for (const entry of SETTING_ENTRIES) for (const [key, value] of entry.ui?.when ?? []) {
+    const meta = metas.get(key)!;
+    assert.ok(meta, `${entry.id}: ${key}`);
+    if (typeof value === 'boolean') assert.equal(meta.type, 'boolean', `${entry.id}: ${key}`);
+    else assert.ok(meta.values!.includes(value), `${entry.id}: ${key} is never ${value}`);
+  }
+});
+
 test('row controls fit their settings', () => {
   for (const entry of SETTING_ENTRIES) {
     const control = controlFor(entry, metas)!, types = entry.keys.map(key => metas.get(key)!.type);

@@ -25,7 +25,7 @@ function harness(platform: NodeJS.Platform = process.platform, apps = [{ name: '
     set: async partial => { settings = parseSettings(partial, settings); }, chooseFolder: async () => picks.shift(), chooseProgram: async () => picks.shift(),
     apps: async () => apps, openEditor: request => { opened.push(request); }, openExternal: async url => { links.push(url); }, version: () => ({ name: '1.2.3', platform: 'win32' }), home, platform,
   };
-  return { prefs: createPrefs(host), picks, opened, links, get: () => settings as ClopSettings };
+  return { host, prefs: createPrefs(host), picks, opened, links, get: () => settings as ClopSettings };
 }
 
 test('the working directory comes from the folder picker, is stored with ~, and can be reset', async () => {
@@ -149,6 +149,8 @@ test('the pipeline editor and external links are validated, and links are fixed'
   await h.prefs({ action: 'pipeline-editor' });
   await h.prefs({ action: 'pipeline-editor', pipeline: 'abc', fileType: 'video' });
   assert.deepEqual(h.opened, [{ pipeline: undefined, fileType: undefined }, { pipeline: 'abc', fileType: 'video' }]);
+  const none = createPrefs({ ...h.host, openEditor: () => false });
+  assert.match((await none({ action: 'pipeline-editor' })).message!, /not part of this version/);
   await assert.rejects(h.prefs({ action: 'pipeline-editor', pipeline: 3 }), /Choose a pipeline/);
   await assert.rejects(h.prefs({ action: 'pipeline-editor', fileType: 'gif' }), /file type/);
   await h.prefs({ action: 'open', target: 'releases' });
