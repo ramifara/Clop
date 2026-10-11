@@ -84,7 +84,8 @@ test('recent items are the finished clipboard results, newest first, at most eig
 test('hints show the shortcuts that are on and drop with them', () => {
   const on = trayMenu(state(), recorder().actions);
   assert.equal(find(on, 'Optimise clipboard').accelerator, 'Control+Shift+C');
-  assert.equal(find(on, 'Pause automatic optimisations').accelerator, 'Control+Shift+P');
+  assert.equal(find(on, 'Pause automatic optimisations').accelerator, undefined, 'P is off by default on Windows');
+  assert.equal(find(trayMenu(state({ shortcuts: shortcutsFor({ ...settings, enabledKeys: ['P'] }) }), recorder().actions), 'Pause automatic optimisations').accelerator, 'Control+Shift+P');
   const off = trayMenu(state({ shortcuts: shortcutsFor({ ...settings, enabledKeys: ['Z'], keyComboModifiers: ['Alt', 'Control'] }) }), recorder().actions);
   assert.equal(find(off, 'Optimise clipboard').accelerator, undefined);
   assert.equal(find(off, 'Revert last optimisations').accelerator, 'Control+Alt+Z');
