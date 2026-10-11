@@ -73,8 +73,8 @@ export class RunState {
   get agent() { return this.opts.env.agent === true; }
   /** Refuses an agent's path, as its tokens and captures expanded it, that is on a network share or a device. Call it before the text is resolved. */
   expanded(...texts: string[]) { requireNotRemote(this.agent, ...texts); }
-  /** Refuses an agent's resolved path that is not a local drive-letter path. Call it before the path is looked up or written. */
-  local(...files: string[]) { for (const file of files) requireLocalDrive(this.agent, file, this.opts.env.platform); }
+  /** Refuses an agent's resolved path that is not a local drive-letter path, or is in Clop's recovery folders. Call it before the path is looked up or written. */
+  local(...files: string[]) { for (const file of files) { requireLocalDrive(this.agent, file, this.opts.env.platform); this.opts.env.workdir.keepAgentOut(this.agent, file); } }
   get signal() { return this.opts.signal; }
   marker() { return this.opts.env.marker ?? defaultMarker(); }
   mark(file: string) { return this.marker().markOptimised(file).catch(() => {}); }

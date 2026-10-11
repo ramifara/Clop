@@ -377,3 +377,15 @@ test('an agent\'s name template that expands to a network or device path is refu
   }
   await assert.rejects(executePlacement(agent, { behaviour: 'specificFolder', dest: '\\\\host\\share\\photo' }, produced, original), refused, 'the placement itself checks its destination');
 });
+
+test('an agent\'s result is not placed in the folders where Clop keeps what puts originals back', async t => {
+  const { env, produced, workdir } = await setup(t);
+  const original = path.join(path.dirname(produced), 'photo.png');
+  const agent: PlacementEnv = { ...env, agent: true };
+  for (const dest of [path.join(workdir.backups, 'payload.png'), path.join(workdir.root, 'placing', 'forged.json'), path.join(workdir.batchBackups, 'batch-x', 'manifest.json')]) {
+    await assert.rejects(executePlacement(agent, { behaviour: 'specificFolder', dest }, produced, original), /where Clop keeps the originals it is replacing/, dest);
+    assert.equal(await exists(dest), false, dest);
+  }
+  const mine = path.join(workdir.backups, 'mine.png');
+  assert.equal((await executePlacement(env, { behaviour: 'specificFolder', dest: mine }, produced, original)).path, mine, 'only an agent is kept out');
+});

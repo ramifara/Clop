@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { graphic } from '../media/image.fixtures';
 import { pipelineWorkspace, quoted } from './executor.fixtures';
@@ -127,4 +127,27 @@ test('an agent\'s path step is judged where it is used: a token or capture that 
   // Where the path is local, the same steps work for an agent.
   assert.equal((await w.run('copy(to: "%P/copies/")', photo, agent)).file, path.join(w.files, 'copies', 'photo.jpg'));
   assert.equal((await w.run('if(regex: "^(ph)") -> rename(to: "$1-renamed")', photo, agent)).file, w.file('ph-renamed.jpg'));
+});
+
+test('an agent cannot write into the folders where Clop keeps what it needs to put originals back', async t => {
+  const w = await pipelineWorkspace(t); if (!w) return;
+  const photo = w.file('photo.jpg');
+  await writeFile(photo, 'pixels');
+  const agent = { fileType: 'image' as const, env: { settings: w.settings, workdir: w.workdir, counter: w.counter, marker: w.marker, agent: true } };
+  const refused = /where Clop keeps the originals it is replacing/;
+  const notes = path.join(w.workdir.root, 'placing'), link = path.join(w.dir, 'shortcut');
+  await symlink(w.workdir.backups, link, 'dir');
+  // The forged pair: a payload in the backups and a note in the placing folder that tells the next start to copy it anywhere.
+  const into = (dir: string, name = '') => quoted(path.join(dir, name) + (name ? '' : path.sep));
+  for (const to of [into(w.workdir.backups, 'payload.png'), into(notes, 'forged.json'), into(w.workdir.batchBackups), into(link, 'payload.png'), into(path.join(w.workdir.backups, 'sub', 'deeper'))]) {
+    await assert.rejects(w.run(`copy(to: ${to})`, photo, agent), refused, to);
+    await assert.rejects(w.run(`move(to: ${to})`, photo, agent), refused, to);
+  }
+  await assert.rejects(w.run([makeStep('fork', { location: path.join(w.workdir.backups, 'forked') })], photo, agent), refused);
+  assert.deepEqual(await w.backups(), [], 'nothing was written');
+  assert.equal(await readFile(photo, 'utf8'), 'pixels');
+  assert.equal((await readdir(notes).catch(() => [])).length, 0);
+  // A person's own pipeline is not restricted, and an agent's copy elsewhere works.
+  assert.equal((await w.run(`copy(to: ${into(w.workdir.backups, 'mine.jpg')})`, photo)).file, path.join(w.workdir.backups, 'mine.jpg'));
+  assert.equal((await w.run(`copy(to: ${into(path.join(w.files, 'ok'))})`, photo, agent)).file, path.join(w.files, 'ok', 'photo.jpg'));
 });

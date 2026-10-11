@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import { realpathSync } from 'node:fs';
 import { lstat, mkdir, readdir, readFile, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { copyTo, exists, moveTo, samePath } from './fileops';
 import { expandHome } from './settings/paths';
@@ -17,6 +18,18 @@ async function linkAmong(dir: string): Promise<string | undefined> {
     if ((await lstat(current).catch(() => undefined))?.isSymbolicLink()) return current;
     const parent = path.dirname(current);
     if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+/** `file` with the links and 8.3 short names in its existing part resolved, as Windows would open it. Looks no further than the deepest folder that exists. */
+function resolvedPath(file: string): string {
+  const rest: string[] = [];
+  for (let current = path.resolve(file.replace(/^\\\\\?\\(?=[A-Za-z]:)/, '')); ;) {
+    try { return path.join(realpathSync.native(current), ...rest.reverse()); } catch { /* Not there yet: look one folder up. */ }
+    const parent = path.dirname(current);
+    if (parent === current) return path.join(current, ...rest.reverse());
+    rest.push(path.basename(current));
     current = parent;
   }
 }
@@ -96,6 +109,24 @@ export class Workdir {
   }
 
   /**
+   * Whether `file` is in a folder Clop keeps its recovery files in: the backups, the batch backups and the placement notes.
+   * Judged on what the path opens on disk, so a short name or a link into these folders counts.
+   */
+  holdsRecovery(file: string): boolean {
+    const target = resolvedPath(file);
+    return [this.backups, this.batchBackups, path.join(this.root, PLACING)].some(dir => within(resolvedPath(dir), target) || within(dir, path.resolve(file)));
+  }
+
+  /**
+   * Refuses an agent a path in the recovery folders. `repair` puts back whatever its notes name, so an agent that could write a
+   * note there (a file copied into `placing`, and a payload into `backups`) would have Clop copy that payload to any path on the next start.
+   * This keeps the notes to the ones Clop's own placements write, which is why they need no signature.
+   */
+  keepAgentOut(agent: boolean | undefined, file: string): void {
+    if (agent && this.holdsRecovery(file)) throw new Error(`${file} is in the folders where Clop keeps the originals it is replacing. Agents may not use them: choose another path.`);
+  }
+
+  /**
    * Creates the layout. Refuses a folder that holds other files (unless Clop made it), because the cleaner
    * deletes inside `backups` and `temp`, and refuses links anywhere on the path, because a link could point
    * the cleaner at someone else's files.
@@ -166,7 +197,7 @@ export class Workdir {
       let original: unknown, backup: unknown;
       // A note that cannot be read or acted on is dropped; its backup stays in the backups.
       try { ({ original, backup } = JSON.parse(await readFile(note, 'utf8')) as { original?: unknown; backup?: unknown }); } catch { await rm(note, { force: true }); continue; }
-      if (typeof original === 'string' && typeof backup === 'string' && (within(this.backups, backup) || within(this.batchBackups, backup)) && !await exists(original) && await exists(backup)) {
+      if (typeof original === 'string' && typeof backup === 'string' && path.isAbsolute(original) && (within(this.backups, backup) || within(this.batchBackups, backup)) && !await exists(original) && await exists(backup)) {
         try { await copyTo(backup, original); restored.push(original); } catch { continue; }
       }
       await rm(note, { force: true });

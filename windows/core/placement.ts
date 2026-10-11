@@ -69,8 +69,8 @@ function templateOf(env: PlacementEnv, type: FileType, kind: OutputKind, folder:
 const platformOf = (env: PlacementEnv) => env.platform ?? process.platform;
 const pathApi = (env: PlacementEnv) => (env.platform ?? process.platform) === 'win32' ? path.win32 : path.posix;
 const context = (env: PlacementEnv, file: string) => ({ path: file, counter: env.counter, home: env.home, platform: env.platform });
-/** Refuses an agent's destination that expansion turned into a network share or a device, before anything looks at it. */
-const checkedDestination = (env: PlacementEnv, dest: string) => { requireLocalDrive(env.agent, dest, platformOf(env)); return dest; };
+/** Refuses an agent's destination that expansion turned into a network share or a device, or that is in Clop's recovery folders, before anything looks at it. */
+const checkedDestination = (env: PlacementEnv, dest: string) => { requireLocalDrive(env.agent, dest, platformOf(env)); env.workdir.keepAgentOut(env.agent, dest); return dest; };
 const stemOf = (file: string, env: PlacementEnv) => pathApi(env).parse(file).name;
 const withoutExtension = (file: string, env: PlacementEnv) => { const p = pathApi(env), { dir, name } = p.parse(file); return p.join(dir, name); };
 

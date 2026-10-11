@@ -289,3 +289,18 @@ test('a moved backup that a FAT or exFAT drive left looking old is copied afresh
   await stampArrival(file);
   assert.equal((await stat(file)).ino, after.ino);
 });
+
+test('repair ignores a note whose original is not an absolute path', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-relative-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const workdir = await new Workdir(path.join(dir, 'work')).ensure();
+  const backup = path.join(workdir.backups, 'payload.bin');
+  await writeFile(backup, 'payload');
+  await mkdir(path.join(workdir.root, 'placing'));
+  await writeFile(path.join(workdir.root, 'placing', 'note.json'), JSON.stringify({ original: 'startup.cmd', backup }));
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try { assert.deepEqual(await workdir.repair(), []); } finally { process.chdir(cwd); }
+  assert.equal(await exists(path.join(dir, 'startup.cmd')), false);
+  assert.deepEqual(await readdir(path.join(workdir.root, 'placing')), []);
+});
