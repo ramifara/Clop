@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cardOptimiser } from './card';
 import { ItemEngine, message, type ImportExtra, type ItemAutomation } from './items';
 import { clipboardPNG } from '../core/media/image-codecs';
 import { imageDefaults, rendererSettings } from './settings';
@@ -578,23 +579,7 @@ function startClipboardFallback() {
   clipboardTimer = setInterval(() => { if (settings.enableClipboardOptimiser && !polling) { polling = true; void optimiseClipboard().finally(() => { polling = false; }); } }, 900);
   clipboardTimer.unref();
 }
-/**
- * The CLI's "optimise this file and show a card" through the app's item engine (one adapter, so the engine can change behind
- * it). A card for every kind, but only for requests the engine's plain optimisation expresses (aggressive, and a downscale
- * for images); a crop, speed, bitrate, DPI or compression override the pipe service runs itself, without a card.
- */
-async function optimiseWithCard(file: string, kind: MediaKind, req: OptimisationRequest, signal: AbortSignal) {
-  const downscaled = req.downscaleFactor !== undefined && (kind === 'image' ? req.downscaleFactor < 0.1 : req.downscaleFactor < 1);
-  const changesMore = req.size || req.compression || req.adaptiveOptimisation || req.removeAudio || req.audioBitrate !== undefined || req.pdfDPI !== undefined
-    || (req.changePlaybackSpeedFactor !== undefined && req.changePlaybackSpeedFactor !== 1);
-  if (downscaled || changesMore) return undefined;
-  await makeRoom();
-  const scale = kind === 'image' && req.downscaleFactor ? { scale: req.downscaleFactor } : {};
-  const id = await engine.importPath(file, 'file', { ...defaults(req.aggressiveOptimisation), ...scale }, undefined, { signal });
-  const { result } = engine.get(id);
-  if (result.status !== 'ready') throw new Error(result.error ?? `Clop could not optimise this ${kind}.`);
-  return result.unchanged ? file : engine.output(id);
-}
+const optimiseWithCard = cardOptimiser({ engine: () => engine, makeRoom, defaults });
 /** Requests from `clop` and the MCP server (spec step 24). Settings they change go through `updateSettings`, so they apply at once. */
 async function serveCLI(userData: string) {
   const files = shellEffects();
