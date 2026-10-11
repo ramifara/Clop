@@ -396,7 +396,7 @@ export class ItemEngine extends EventEmitter {
     e.outputPath = e.originalPath;
     Object.assign(e.result, { status: 'ready', width: e.result.originalWidth, height: e.result.originalHeight, outputBytes: e.result.originalBytes,
       format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, maxEdge: undefined, format: 'auto', crop: undefined, compression: undefined }, restored: true, unchanged: true, error: undefined, notes: undefined });
-    e.shown = true; this.changed(); this.emit('ready', id);
+    e.shown = true; this.changed(); this.emit('restored', id); this.emit('ready', id);
   }); }
   /**
    * Removes an item at once, without waiting behind other jobs of its kind, and stops its job if one is running.

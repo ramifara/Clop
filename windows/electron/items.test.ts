@@ -30,7 +30,10 @@ test('optimises an image, resizes from the original and restores exact source by
   assert.deepEqual([engine.get(id).result.width, engine.get(id).result.height], [600, 400]);
   await engine.apply(id, { ...balanced, scale: .75 });
   assert.deepEqual([engine.get(id).result.width, engine.get(id).result.height], [1800, 1200]);
+  const restored: string[] = [];
+  engine.on('restored', (restoredId: string) => restored.push(restoredId));
   await engine.restore(id);
+  assert.deepEqual(restored, [id], 'every restore says so, for what keeps a result\'s state');
   assert.deepEqual(await readFile(engine.output(id)), original);
   assert.equal(engine.get(id).result.restored, true);
 });
