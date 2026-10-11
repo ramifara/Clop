@@ -123,3 +123,31 @@ test('targetSize, stripExif and watermark run on their own', async t => {
   assert.ok(pixel(400 - 20 - 10, 300 - 20 - 10)[0] > 200 && pixel(400 - 20 - 10, 300 - 20 - 10)[1] < 60, 'red in the bottom right corner');
   assert.deepEqual(pixel(10, 10), [255, 255, 255]);
 });
+
+test('an optimise step that the Compatibility lists turn into a conversion follows the converted-file placement, so the WebP stays', async t => {
+  const w = await pipelineWorkspace(t, 'jpegoptim', 'pngquant'); if (!w) return;
+  const input = w.file('photo.webp');
+  await photo(400, 300).webp({ quality: 95 }).toFile(input);
+  const original = await readFile(input);
+  const result = await w.run('optimise', input);
+  assert.equal(result.file, w.file('photo.jpeg'));
+  assert.equal((await sharp(result.file).metadata()).format, 'jpeg');
+  assert.deepEqual(await readFile(input), original, 'the default converted-image placement is the same folder: the original stays');
+  assert.deepEqual(await w.backups(), []);
+  assert.equal(await w.marker.isOptimised(result.file), true);
+  // The setting chooses: in place replaces the WebP, with a backup.
+  Object.assign(w.settings, { convertedImageBehaviour: 'inPlace' });
+  const other = w.file('second.webp');
+  await photo(400, 300, 7).webp({ quality: 95 }).toFile(other);
+  const replaced = await w.run('optimise', other);
+  assert.equal(replaced.file, w.file('second.jpeg'));
+  assert.equal(await stat(other).then(() => true, () => false), false);
+  assert.equal((await w.backups()).length, 1);
+  // A format that did not change stays in place, and a location the pipeline names wins.
+  const png = w.file('shot.png');
+  await graphic(300, 200).png({ compressionLevel: 0 }).toFile(png);
+  assert.equal((await w.run('optimise', png)).file, png);
+  const named = w.file('third.webp');
+  await photo(400, 300, 9).webp({ quality: 95 }).toFile(named);
+  assert.equal((await w.run('optimise(location: "%P/out/%f")', named)).file, w.file(path.join('out', 'third.jpeg')));
+});

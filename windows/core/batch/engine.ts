@@ -65,7 +65,7 @@ function overrides(output: BatchOutput): PlacementOverride {
 const isAsKept = (file: string, kept: { size: number; mtimeMs: number }) => stat(file).then(info => info.size === kept.size && Math.abs(info.mtimeMs - kept.mtimeMs) < 1, () => false);
 
 /** What a media job produced, before it is placed. */
-interface Produced { output: MediaOutput; converted: boolean; allowLarger: boolean; oldSize?: Dimensions; oldDetail?: number; newDetail?: number }
+interface Produced { output: MediaOutput; converted: boolean; /** The Compatibility lists changed the format; no conversion was asked for. */ autoConverted?: boolean; allowLarger: boolean; oldSize?: Dimensions; oldDetail?: number; newDetail?: number }
 
 /**
  * One batch: every file runs through its kind's engine with the batch's parameters, kinds side by side, and its result is
@@ -166,7 +166,7 @@ export class Batch extends EventEmitter {
       if (output.unchanged || (produced.converted && !produced.allowLarger && output.bytes >= item.oldBytes)) {
         Object.assign(item, { status: 'done', unchanged: true, newBytes: item.oldBytes, newFormat: item.oldFormat, newSize: produced.oldSize, newDetail: produced.oldDetail, progress: undefined });
       } else {
-        const placed = await this.place(item, output.path, before);
+        const placed = await this.place(item, output.path, before, produced.autoConverted);
         Object.assign(item, {
           status: 'done', result: placed, newBytes: output.bytes, newFormat: extension(placed).toUpperCase(), progress: undefined,
           newSize: output.width && output.height ? { width: output.width, height: output.height } : produced.oldSize, newDetail: produced.newDetail,
@@ -211,7 +211,7 @@ export class Batch extends EventEmitter {
           await rename(output.path, renamed);
           output.path = renamed;
         }
-        return { output, converted: !!ip.convert && ip.convert !== info.format, allowLarger: ip.allowLarger, oldSize };
+        return { output, converted: !!ip.convert && ip.convert !== info.format, autoConverted: !ip.convert && !output.unchanged && extension(output.path) !== extension(file), allowLarger: ip.allowLarger, oldSize };
       }
       case 'video': {
         const vp = p.video, info = await probe(file, { signal }) as VideoInfo, oldSize = { width: info.width, height: info.height };
@@ -223,8 +223,9 @@ export class Batch extends EventEmitter {
           ...(vp.convert === 'mp4' ? { format: 'mp4' } : {}), ...(convert ? { convert: { codec: convert, compression: { tier: vp.encoder, factor: vp.compression } } } : {}),
           ...(vp.fps ? { fps: vp.fps } : { capVideoFPS: s.capVideoFPS, targetVideoFPS: s.targetVideoFPS, minVideoFPS: s.minVideoFPS }),
           removeAudio: vp.removeAudio, convertAudioToAAC: s.convertAudioToAAC, adaptiveVideoSize: s.adaptiveVideoSize, stripMetadata: s.stripMetadata,
+          ...(vp.convert ? {} : { formatsToConvertToMP4: s.formatsToConvertToMP4 }),
         });
-        return { output, converted: !!vp.convert && extension(output.path) !== extension(file), allowLarger: vp.allowLarger, oldSize };
+        return { output, converted: !!vp.convert && extension(output.path) !== extension(file), autoConverted: !vp.convert && !output.unchanged && extension(output.path) !== extension(file), allowLarger: vp.allowLarger, oldSize };
       }
       case 'pdf': {
         const dp = p.pdf, dpi = dp.dpi === 'adaptive' ? { dpiSetting: 0 } : dp.dpi === 'stepDown' ? { dpiSetting: s.pdfDPI } : { dpi: dp.dpi };
@@ -247,7 +248,7 @@ export class Batch extends EventEmitter {
           formatsToConvertToOutputAudio: s.formatsToConvertToOutputAudio, audioFormat: s.audioFormat,
         });
         const kbps = (bits?: number) => bits === undefined ? undefined : Math.trunc(bits / 1000);
-        return { output, converted: !!format && extension(output.path) !== ext, allowLarger: true, oldDetail: kbps(info.bitrate), newDetail: output.bitrate };
+        return { output, converted: !!format && extension(output.path) !== ext, autoConverted: !format && !output.unchanged && extension(output.path) !== ext, allowLarger: true, oldDetail: kbps(info.bitrate), newDetail: output.bitrate };
       }
     }
   }
@@ -267,12 +268,17 @@ export class Batch extends EventEmitter {
    * original that is written over, or that a converted result replaces in place, moves into the batch backup first, as does
    * a file of the user's already at the destination. The original must not have changed since the job read it (`before`).
    */
-  private async place(item: BatchItem, produced: string, before: { size: number; mtimeMs: number }): Promise<string> {
+  private async place(item: BatchItem, produced: string, before: { size: number; mtimeMs: number }, autoConverted = false): Promise<string> {
     const { env } = this, original = item.path, counter = env.counter.value;
-    const plan = await planPlacement({ settings: env.settings(), workdir: env.workdir, counter: env.counter, marker: env.marker, home: env.home, platform: env.platform }, { produced, original, type: item.kind, overrides: overrides(this.params.output) });
+    // A conversion the Compatibility lists made, with the batch left at "in place", follows the converted-file setting, as an
+    // automatic conversion does everywhere (`applyImageConversionBehaviour`): by default the original stays beside the result.
+    // Any other output the batch asks for covers conversions too.
+    const { autoConvert, ...inPlace } = overrides(this.params.output);
+    const follows = autoConverted && this.params.output.location === 'inPlace';
+    const plan = await planPlacement({ settings: env.settings(), workdir: env.workdir, counter: env.counter, marker: env.marker, home: env.home, platform: env.platform }, { produced, original, type: item.kind, kind: autoConverted ? 'autoConvert' : 'optimised', overrides: follows ? inPlace : { ...inPlace, autoConvert } });
     if (env.counter.value !== counter) env.saved?.(env.counter.value);
     const dest = this.claim(plan.dest ?? original, original), over = samePath(dest, original, env.platform);
-    const removes = over || this.params.output.location === 'inPlace';
+    const removes = over || plan.behaviour === 'inPlace';
     // Whatever was taken aside or created goes back if anything below fails, the manifest write included, so a failed file is exactly as it was.
     const undo: (() => Promise<void>)[] = [];
     /** The note that an original is away from its path until its result is in (`Workdir.journal`): a start after a crash puts it back from the batch backup. */
