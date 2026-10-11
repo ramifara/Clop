@@ -58,7 +58,7 @@ export function PdfDpi() {
   return <div className="compression">
     <div className="chips" role="group" aria-label="PDF image resolution">
       {PDF_DPI_PRESETS.map(preset => <Chip key={preset} on={dpi === preset} onClick={() => change({ pdfDPI: preset })}>{preset === 0 ? 'Auto' : `${preset} dpi`}</Chip>)}
-      <NumberField label="Custom DPI" value={dpi} min={0} max={300} unit="dpi" onCommit={value => { if (value === 0 || value >= 48) change({ pdfDPI: value }); }}/>
+      <NumberField label="Custom DPI" value={dpi} min={0} max={300} unit="dpi" accept={value => value === 0 || value >= 48} onCommit={value => change({ pdfDPI: value })}/>
     </div>
     <small>{dpi === 0 ? 'Clop picks a DPI for each PDF from the density of its images and downscales them to fit.' : `Images in PDFs are downscaled to ${dpi} dpi.`}</small>
   </div>;

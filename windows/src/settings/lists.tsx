@@ -94,22 +94,18 @@ export function ActionsEditor({ settingKey }: { settingKey: 'floatingResultActio
   </div>;
 }
 
-function useModifiers() {
-  const { settings, change } = useSettings();
-  const modifiers = settings.keyComboModifiers as Modifier[];
-  const [problem, setProblem] = useState<string>();
-  const save = (next: Modifier[]) => {
-    const ordered = KEY_MODIFIERS.filter(modifier => next.includes(modifier));
-    const why = triggerProblem(ordered);
-    setProblem(why);
-    if (!why) change({ keyComboModifiers: ordered });
-  };
-  return { modifiers, save, problem };
-}
+/** The modifiers held with an action key, which the shortcut previews and the recorder share. */
+const useModifiers = () => useSettings().settings.keyComboModifiers as Modifier[];
 
 /** The modifiers held with an action key. Tick them, or press the combination you want. */
 export function TriggerKeys() {
-  const { modifiers, save, problem } = useModifiers();
+  const { change } = useSettings(), modifiers = useModifiers();
+  const [problem, setProblem] = useState<string>();
+  const save = (next: Modifier[]) => {
+    const ordered = KEY_MODIFIERS.filter(modifier => next.includes(modifier)), why = triggerProblem(ordered);
+    setProblem(why);
+    if (!why) change({ keyComboModifiers: ordered });
+  };
   return <div className="list">
     <div className="chips">{KEY_MODIFIERS.map(modifier => <Chip key={modifier} on={modifiers.includes(modifier)} onClick={() => save(modifiers.includes(modifier) ? modifiers.filter(other => other !== modifier) : [...modifiers, modifier])}>{modifierLabel(modifier)}</Chip>)}</div>
     <div className="buttons"><AcceleratorRecorder mode="modifiers" label="Record trigger keys" value={modifiers.join('+')} onRecord={({ modifiers: held }) => save(held)}/><small>Or click and press the keys together.</small></div>
@@ -119,8 +115,7 @@ export function TriggerKeys() {
 
 /** Each action key with the shortcut it makes (the trigger keys plus the key), and a switch. Keys the setting holds that this list does not know stay. */
 export function ActionKeys() {
-  const { settings, change } = useSettings();
-  const { modifiers } = useModifiers(), enabled = settings.enabledKeys;
+  const { settings, change } = useSettings(), modifiers = useModifiers(), enabled = settings.enabledKeys;
   return <div className="key-list">{ACTION_KEYS.map(action => {
     const on = enabled.includes(action.key), shortcut = describeAccelerator(formatAccelerator(modifiers, action.key));
     return <label className="key-row" key={action.key}>
@@ -133,8 +128,7 @@ export function ActionKeys() {
 
 /** Hold the trigger keys and press a number to downscale the latest result to that many tenths. */
 export function ResizeKeys() {
-  const { settings, change } = useSettings();
-  const { modifiers } = useModifiers(), keys = settings.quickResizeKeys as ClopSettings['quickResizeKeys'];
+  const { settings, change } = useSettings(), modifiers = useModifiers(), keys = settings.quickResizeKeys as ClopSettings['quickResizeKeys'];
   return <div className="list">
     <small>Hold {describeAccelerator(modifiers.join('+')) || 'the trigger keys'} and press a number to downscale to that percentage.</small>
     <div className="chips">{RESIZE_KEYS.map(key => <Chip key={key} on={keys.includes(key)} title={`${describeAccelerator(formatAccelerator(modifiers, key))} downscales to ${Number(key) * 10}%`} onClick={() => change({ quickResizeKeys: keys.includes(key) ? keys.filter(other => other !== key) : [...keys, key] })}>{key}<small>{Number(key) * 10}%</small></Chip>)}</div>

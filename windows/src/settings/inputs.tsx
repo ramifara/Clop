@@ -32,11 +32,11 @@ export function Switch({ checked, onChange, label, disabled }: { checked: boolea
 }
 
 /** A whole number or decimal. Only a value inside the bounds is saved; anything else outlines the box and the stored value comes back on blur. */
-export function NumberField({ value, onCommit, min = 0, max, unit, decimal = false, label, width = 76 }: { value: number; onCommit(value: number): void; min?: number; max?: number; unit?: string; decimal?: boolean; label: string; width?: number }) {
+export function NumberField({ value, onCommit, min = 0, max, unit, decimal = false, label, width = 76, accept }: { value: number; onCommit(value: number): void; min?: number; max?: number; unit?: string; decimal?: boolean; label: string; width?: number; accept?(value: number): boolean }) {
   const { draft, edit, flush, reset } = useDraft(String(value), text => { const n = Number(text); if (valid(text)) onCommit(n); }, 600);
   function valid(text: string) {
     const n = Number(text);
-    return text.trim() !== '' && Number.isFinite(n) && (decimal || Number.isInteger(n)) && n >= min && (max === undefined || n <= max);
+    return text.trim() !== '' && Number.isFinite(n) && (decimal || Number.isInteger(n)) && n >= min && (max === undefined || n <= max) && (accept?.(n) ?? true);
   }
   return <span className="number-field">
     <input type="number" inputMode="decimal" aria-label={label} style={{ width }} min={min} max={max} step={decimal ? 'any' : 1} value={draft} aria-invalid={!valid(draft)}
