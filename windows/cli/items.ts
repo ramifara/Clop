@@ -5,9 +5,20 @@ import { fileURL } from '../core/ipc/protocol';
 import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } from '../core/media/detect';
 import { resolveHome } from '../core/template';
 import { ValidationError } from './args';
+import type { Context } from './context';
 
 // What the file commands take: files, folders and URLs (`validateItems` and `getURLsFromFolder` in ClopCLI/main.swift
 // and Shared.swift), filtered by the `--types` and `--exclude-types` words.
+
+/**
+ * `refuseUnallowedMCPRequest`: an agent's request asks the gate; anyone else needs no permission. Asked before a path the agent
+ * named is looked up, since looking up a network path sends the user's credentials to that server.
+ */
+export async function gate(ctx: Context, pipeline?: string) {
+  if (ctx.origin !== 'mcp') return;
+  const response = await (await ctx.backend()).settings({ action: 'gate', origin: ctx.origin, pipeline });
+  if (!response.ok) throw new ValidationError(response.error ?? 'Clop refused the request.');
+}
 
 const SAME: Record<string, string[]> = { jpeg: ['jpg', 'jpeg', 'jpe'], jpg: ['jpg', 'jpeg', 'jpe'], tiff: ['tif', 'tiff'], tif: ['tif', 'tiff'], heic: ['heic', 'heif'], heif: ['heic', 'heif'], aiff: ['aif', 'aiff'], aif: ['aif', 'aiff'], mpeg: ['mpg', 'mpeg'], mpg: ['mpg', 'mpeg'] };
 const GENERIC: Record<string, readonly string[]> = { image: IMAGE_EXTENSIONS, picture: IMAGE_EXTENSIONS, video: VIDEO_EXTENSIONS, movie: VIDEO_EXTENSIONS, audio: AUDIO_EXTENSIONS, pdf: ['pdf'] };

@@ -4,7 +4,7 @@ import { parseCompression } from '../core/pipeline/parser';
 import { PDF_DPI_STOPS } from '../core/media/pdf';
 import type { CompressionQuality, CropSize } from '../core/settings/schema';
 import { kebab, ValidationError, type OptionSpec, type Values } from './args';
-import { ALL_TYPES_HELP, AUDIO_TYPES, checkOutputIsDir, chosenTypes, IMAGE_TYPES, normalizeOutput, PDF_TYPES, validateItems, VIDEO_TYPES } from './items';
+import { ALL_TYPES_HELP, AUDIO_TYPES, checkOutputIsDir, chosenTypes, IMAGE_TYPES, gate, normalizeOutput, PDF_TYPES, validateItems, VIDEO_TYPES } from './items';
 import { flag, list, on, option, str, type ClopCommand, type Context } from './context';
 import { checkPipelineArgument } from './read-settings';
 import { ProgressPrinter } from './results';
@@ -177,8 +177,10 @@ async function sendOptimisation(ctx: Context, v: Values, urls: string[], extra: 
   return sendRequest(ctx, urls, { showProgress: !on(v, 'noProgress'), async: on(v, 'async'), gui: on(v, 'gui'), json: on(v, 'json'), operation }, request);
 }
 
-const items = (ctx: Context, v: Values, types: readonly string[], recursive = on(v, 'recursive'), skipErrors = on(v, 'skipErrors')) =>
-  validateItems(list(v, 'items') ?? [], { recursive, skipErrors, types, cwd: ctx.cwd, home: ctx.home });
+const items = async (ctx: Context, v: Values, types: readonly string[], recursive = on(v, 'recursive'), skipErrors = on(v, 'skipErrors')) => {
+  await gate(ctx);
+  return validateItems(list(v, 'items') ?? [], { recursive, skipErrors, types, cwd: ctx.cwd, home: ctx.home });
+};
 
 function cropAndFactor(v: Values) {
   const crop = pixelSize(str(v, 'crop'), 'crop');

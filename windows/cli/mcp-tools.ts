@@ -251,8 +251,13 @@ export async function status(_: Args, call: Call): Promise<ToolOutput> {
  * how to shrink a file that does not exist, or that Clop will not touch, wastes it.
  */
 async function refuseBeforeAsking(call: Call, files: string[] = []) {
+  await refuseUnlessAllowed(call);
   const missing = files.filter(file => !isURL(file) && !exists(local(call, file)));
   if (missing.length) throw new ClopMCPError(`not found: ${missing.join(', ')}`);
+}
+
+/** Before any path the agent gave is looked up: a lookup of a network path sends the user's credentials, which an agent has no right to ask for. */
+async function refuseUnlessAllowed(call: Call) {
   const mcp = await mcpStatus(call);
   if (mcp && mcp.enabled !== true) throw new ClopMCPError(annotate('Clop is not accepting changes from agents.'));
 }
@@ -383,7 +388,7 @@ export async function optimise(a: Args, call: Call): Promise<ToolOutput> {
     compression = chosen === undefined ? undefined : String(Math.trunc(chosen));
   }
   let frames = a.playbackSpeedFrames === undefined || a.playbackSpeedFrames === null ? undefined : argument(a.playbackSpeedFrames);
-  if (frames === undefined && (asNumber(a, 'playbackSpeedFactor') ?? 1) > 1 && mayContainVideo(call, files)) {
+  if (frames === undefined && (asNumber(a, 'playbackSpeedFactor') ?? 1) > 1 && (await refuseUnlessAllowed(call), mayContainVideo(call, files))) {
     const answer = await askFrames(call, speedQuestion(subject(files)), 'clop_optimise', false, files);
     if ('askInChat' in answer) return answer.askInChat;
     frames = answer.settled;

@@ -17,20 +17,13 @@ import { ExitCode, ValidationError } from './args';
 import { openWorkdir } from './backend';
 import { ARROW, bold, CHECKMARK, CIRCLE, dim, ERROR_X, EXCLAMATION, underline } from './colors';
 import { flag, list, on, option, str, type ClopCommand, type Context } from './context';
-import { checkOutputIsDir, chosenTypes, folderFiles, localPath, normalizeOutput } from './items';
+import { checkOutputIsDir, chosenTypes, folderFiles, gate, localPath, normalizeOutput } from './items';
 import { cropSize } from './optimise';
 import { readSettings } from './read-settings';
 import { shellString } from './results';
 
 // The commands that work in this process without the app (ClopCLI/main.swift): `convert` (legacy), `strip-exif`,
 // `crop-pdf` and `uncrop-pdf`. For agents the app's MCP gate is still asked first.
-
-/** `refuseUnallowedMCPRequest`: an agent's request asks the gate; anyone else needs no permission. */
-async function gate(ctx: Context, pipeline?: string) {
-  if (ctx.origin !== 'mcp') return;
-  const response = await (await ctx.backend()).settings({ action: 'gate', origin: ctx.origin, pipeline });
-  if (!response.ok) throw new ValidationError(response.error ?? 'Clop refused the request.');
-}
 
 /** The `%i` counter, read from and written back to `lastAutoIncrementingNumber`. */
 async function withCounter<T>(ctx: Context, task: (counter: Counter) => Promise<T>): Promise<T> {
@@ -137,9 +130,9 @@ const stripExif: ClopCommand = {
   async run(v, ctx) {
     const given = (list(v, 'files') ?? []).map(file => localPath(file, ctx.cwd, ctx.home));
     if (!given.length) throw new ValidationError('At least one file or folder must be specified');
+    await gate(ctx);
     const first = await stat(given[0]).catch(() => undefined);
     const files = first?.isDirectory() ? await folderFiles(given[0], on(v, 'recursive'), chosenTypes(list(v, 'types'), list(v, 'excludeTypes'))) : given;
-    await gate(ctx);
     const results = await Promise.all(files.map(file => strip(ctx, file)));
     if (files.length && !results.some(Boolean)) throw new ExitCode(1);
   },
@@ -169,6 +162,7 @@ const fractional = (size: { width: number; height: number }) => { const ratio = 
 
 /** The PDFs a `crop-pdf`/`uncrop-pdf` call names: the PDFs in a folder given first, else the files as given. */
 async function pdfs(ctx: Context, items: string[], recursive: boolean) {
+  await gate(ctx);
   const given = items.map(item => localPath(item, ctx.cwd, ctx.home));
   if (!given.length) throw new ValidationError('At least one PDF file or folder must be specified');
   return (await stat(given[0]).catch(() => undefined))?.isDirectory() ? folderFiles(given[0], recursive, ['pdf']) : given;
@@ -241,7 +235,6 @@ const cropPdf: ClopCommand = {
     if (!(ratio > 0)) throw new ValidationError('Invalid aspect ratio, must be greater than 0');
     const output = str(v, 'output'), files = await pdfs(ctx, list(v, 'pdfs') ?? [], on(v, 'recursive'));
     await checkOutput(output, files.length, ctx);
-    await gate(ctx);
     const fit = { aspectRatio: ratio, alwaysPortrait: layout === 'portrait', alwaysLandscape: layout === 'landscape' };
     await withCounter(ctx, async counter => {
       for (const pdf of files) {
@@ -266,7 +259,6 @@ const uncropPdf: ClopCommand = {
   async run(v, ctx) {
     const output = str(v, 'output'), files = await pdfs(ctx, list(v, 'pdfs') ?? [], on(v, 'recursive'));
     await checkOutput(output, files.length, ctx);
-    await gate(ctx);
     await withCounter(ctx, async counter => {
       for (const pdf of files) {
         if (!await exists(pdf)) continue;

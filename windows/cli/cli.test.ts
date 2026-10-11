@@ -212,6 +212,15 @@ test('the legacy convert from an agent is refused unless the user allowed agents
   assert.equal(await stat(c.file('icon.webp')).then(() => true, () => false), false);
 });
 
+test('an agent is refused before any path it names is looked up', async t => {
+  const c = await cli(t, false, { CLOP_ORIGIN: 'mcp' });
+  for (const argv of [['optimise', 'nope.png'], ['downscale', '--factor', '0.5', 'nope.png'], ['strip-exif', 'nope.png'], ['crop-pdf', '--paper-size', 'A4', 'nope.pdf']]) {
+    assert.equal(await c.clop(...argv), 64, argv.join(' '));
+    assert.match(c.err(), /not accepting changes from agents/, argv.join(' '));
+    assert.doesNotMatch(c.err(), /does not exist/, argv.join(' '));
+  }
+});
+
 test('mcp status and logs persist read and write the switches', async t => {
   const c = await cli(t);
   assert.equal(await c.clop('mcp'), 0);

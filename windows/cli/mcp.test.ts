@@ -114,6 +114,15 @@ test('questions: "make it smaller" asks the user, and without a way to ask retur
   assert.deepEqual(result.newWidthHeight, [200, 150], 'both: downscaled by half and compressed');
 });
 
+test('questions: an agent that may not make changes is refused before the file it names is looked up', { timeout: TIMEOUT }, async t => {
+  const f = await folder(t);
+  const declining = await connect(t, f, { answer: () => ({ action: 'decline' }) });
+  const refused = await declining.call('clop_optimise', { paths: ['nope.png'] });
+  assert.equal(refused.error, true);
+  assert.match(refused.text, /^Clop is not accepting changes from agents/);
+  assert.match((await declining.call('clop_optimise', { paths: ['nope.mp4'], playbackSpeedFactor: 2 })).text, /^Clop is not accepting changes from agents/);
+});
+
 test('arguments: required ones are named, unknown tools are refused, start and stop open clop:// links', { timeout: TIMEOUT }, async t => {
   const f = await folder(t);
   const opened: string[] = [];
