@@ -16,7 +16,7 @@ import { ClipboardPickup, type ClipboardChange } from './pickup';
 import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
-import { enabledKey, placeholderReply } from './watch-rules';
+import { enabledKey, localFile } from './watch-rules';
 import { FolderResults, LastBatch, restoreAll } from './automation';
 import { appsReply } from './apps';
 import { conflictNotice, shortcutProblem, ShortcutRegistry, shortcutsFor, type ShortcutAction } from '../core/shortcuts';
@@ -1084,17 +1084,18 @@ else {
       saved: value => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); },
     });
     // A cloud-only OneDrive placeholder would download when read, so watched folders and batches leave it alone.
-    const isLocal = async (file: string) => !bridgeReady || !placeholderReply(await bridge.request({ type: 'attributes', paths: [file] }), 1)[0];
+    // Watched folders wait for the helper on Windows, as reading a placeholder downloads it; a batch is what the user asked for.
+    const isLocal = (strict: boolean) => (file: string) => localFile(file, bridgeReady ? paths => bridge.request({ type: 'attributes', paths }) : undefined, !(strict && process.platform === 'win32'));
     watchers = (['image', 'video', 'pdf', 'audio'] as const).map(kind => new FolderWatcher(kind, {
       // The stream hint moves with a renamed file, which the cache keyed by path cannot follow; it counts while the size is unchanged.
       settings: () => settings, home, firstLaunch, owns: file => workdir.owns(file), isOptimised: async file => await marker.isOptimised(file) || await marker.hintMatches(file),
-      isLocal,
+      isLocal: isLocal(true),
       handle: (file, dir) => folders.optimise(file, kind, dir), cancel: files => folders.cancel(files), notice: inform,
       disable: () => toggleSetting({ [enabledKey(kind)]: false }),
     }));
     const counter = () => nameCounter ??= { value: settings.lastAutoIncrementingNumber };
     const saveCounter = (value: number) => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); };
-    batch = setupBatch({ here, devUrl, webPreferences, created: syncNative, quitting: () => quitting, settings: () => settings, owns: file => workdir.owns(file), isLocal, env: () => ({ settings: () => settings, workdir, marker, home, counter: counter(), saved: saveCounter }) });
+    batch = setupBatch({ here, devUrl, webPreferences, created: syncNative, quitting: () => quitting, settings: () => settings, owns: file => workdir.owns(file), isLocal: isLocal(false), env: () => ({ settings: () => settings, workdir, marker, home, counter: counter(), saved: saveCounter }) });
     store.on('change', (next, changed) => {
       settings = next; for (const watcher of watchers) void watcher.update();
       if (changed.some(key => ['keyComboModifiers', 'enabledKeys', 'quickResizeKeys', 'allowClopToAppearInScreenshots'].includes(key))) applyWindowSettings();
