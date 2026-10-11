@@ -113,6 +113,8 @@ export function trayMenu(state: TrayState, actions: TrayActions): TrayItem[] {
 export function toTemplate(items: readonly TrayItem[], report: (error: unknown) => void): MenuItemConstructorOptions[] {
   return items.map(({ click, submenu, ...item }) => ({
     ...item,
+    // The accelerator is a hint of the global shortcut; as a menu accelerator too it would run the action a second time.
+    ...(item.accelerator ? { registerAccelerator: false } : {}),
     ...(submenu ? { submenu: toTemplate(submenu, report) } : {}),
     ...(click ? { click: (menuItem: { checked: boolean }) => guarded(() => click(menuItem.checked), report) } : {}),
   }));

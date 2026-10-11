@@ -139,3 +139,12 @@ test('a checkbox click passes the new state to the handler', () => {
   (option.click as unknown as (item: { checked: boolean }) => void)({ checked: true });
   assert.equal(seen, true);
 });
+
+test('a shortcut hint in the tray menu does not register the accelerator a second time', () => {
+  const [hinted, plain, nested] = toTemplate([
+    { label: 'Optimise clipboard', accelerator: 'Control+Shift+C' }, { label: 'Quit' }, { label: 'More', submenu: [{ label: 'Revert', accelerator: 'Control+Shift+Z' }] },
+  ], () => assert.fail('no error'));
+  assert.deepEqual([hinted.accelerator, hinted.registerAccelerator], ['Control+Shift+C', false]);
+  assert.equal('registerAccelerator' in plain, false);
+  assert.equal((nested.submenu as { registerAccelerator?: boolean }[])[0].registerAccelerator, false);
+});
