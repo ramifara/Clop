@@ -1,4 +1,5 @@
 import sharp, { type Metadata } from 'sharp';
+import { extendedPath } from '../longpath';
 import { access, copyFile, mkdtemp, open, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { run, type RunOptions } from '../run';
@@ -13,7 +14,8 @@ export async function sniffImage(file: string): Promise<{ format?: string; meta?
   if (head.readUInt16BE(0) === 0xff0a || head.equals(Buffer.from('0000000c4a584c200d0a870a', 'hex'))) return { format: 'jxl' };
   if (head.toString('latin1', 0, 2) === 'BM') return { format: 'bmp' };
   // A HEIF whose images differ in size cannot be read as one animation; its primary image still can.
-  const meta = await sharp(file, { animated: true }).metadata().catch(() => sharp(file).metadata()).catch(() => undefined);
+  const long = extendedPath(file);
+  const meta = await sharp(long, { animated: true }).metadata().catch(() => sharp(long).metadata()).catch(() => undefined);
   if (!meta?.format) return {};
   return { format: meta.format === 'heif' ? (meta.compression === 'av1' ? 'avif' : 'heic') : meta.format, meta };
 }
@@ -42,7 +44,7 @@ export async function probeImage(file: string, signal?: AbortSignal): Promise<Im
   // The images of a HEIC can differ in size; sharp reads each one's header without decoding it.
   if (format === 'heic' && pages > 1) {
     pixels = 0;
-    for (let page = 0; page < pages; page++) { const image = await sharp(file, { page }).metadata(); pixels += (image.width ?? 0) * (image.height ?? 0); }
+    for (let page = 0; page < pages; page++) { const image = await sharp(extendedPath(file), { page }).metadata(); pixels += (image.width ?? 0) * (image.height ?? 0); }
   }
   return { format, width: turned ? height : width, height: turned ? width : height, pages: format === 'heic' ? 1 : pages, deep: (meta.bitsPerSample ?? 8) > 8 || meta.depth === 'ushort', pixels, meta };
 }

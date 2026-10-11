@@ -1,6 +1,7 @@
 import { open } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
+import { extendedPath } from '../longpath';
 import { ToolError } from '../run';
 import { ffprobe, probeNumber, probeRate, type FFprobeResult, type FFprobeStream } from './ffprobe';
 import type { MediaKind } from './types';
@@ -68,7 +69,7 @@ export async function probe(file: string, { signal }: { signal?: AbortSignal } =
   if (!kind) throw new Error(`Clop cannot read ${path.basename(file)}: it is not an image, video, audio file or PDF.`);
   if (kind === 'pdf') return { kind, format: 'pdf' };
   if (kind === 'image') {
-    const meta = await sharp(file, { animated: true }).metadata().catch(() => undefined);
+    const meta = await sharp(extendedPath(file), { animated: true }).metadata().catch(() => undefined);
     return { kind, format: meta?.format ?? extension(file), width: meta?.width, height: meta?.pageHeight ?? meta?.height, pages: meta?.pages };
   }
   const result = await ffprobe(file, { signal });

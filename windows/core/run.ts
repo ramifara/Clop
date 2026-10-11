@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as delay } from 'node:timers/promises';
+import { toolArguments } from './longpath';
 import { TOOL_NAMES, toolPath, type ToolName } from './tools';
 
 export interface RunOptions {
@@ -55,7 +56,7 @@ export function run(tool: ToolName | string, args: string[], opts: RunOptions = 
     // where a tool could find a DLL someone left there: the tool's own folder, or Clop's, unless the caller chose one.
     const cwd = opts.cwd ?? (path.isAbsolute(command) ? path.dirname(command) : path.dirname(process.execPath));
     // A detached child leads its own process group on POSIX, so the whole tree can be killed at once.
-    const child = spawn(command, args, { cwd, env: opts.env, windowsHide: true, windowsVerbatimArguments: opts.windowsVerbatimArguments, detached: process.platform !== 'win32', stdio: [opts.input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, isToolName(tool) ? toolArguments(tool, args) : args, { cwd, env: opts.env, windowsHide: true, windowsVerbatimArguments: opts.windowsVerbatimArguments, detached: process.platform !== 'win32', stdio: [opts.input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     const stdout: Buffer[] = [];
     let stderr = '', failure: Error | undefined, timer: NodeJS.Timeout | undefined;
     const stop = (error: Error) => { failure ??= error; killTree(child); };
