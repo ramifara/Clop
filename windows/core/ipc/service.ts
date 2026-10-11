@@ -273,9 +273,15 @@ export class ClopService {
   private async review(req: OptimisationRequest, emit: Emit, fail: (error: string) => void) {
     const { prepareInBatch } = this.deps;
     if (!prepareInBatch) return fail('--review opens the batch window, which needs Clop running. Start Clop and run the command again, or run it without --review.');
+    // The batch window looks the files up at once, so an agent's paths are judged first, as for any other request: as written, then as resolved.
+    const remote = req.origin === 'mcp' ? agentPathRefusal(req.urls) : undefined;
+    if (remote) return fail(remote);
     const files = req.urls.map(url => urlPath(url));
     if (files.some(file => file === undefined)) return fail('--review takes files and folders on this computer, not links.');
-    try { await prepareInBatch(files as string[], req.aggressiveOptimisation); } catch (error) { return fail(message(error)); }
+    try {
+      for (const file of files as string[]) requireLocalDrive(req.origin === 'mcp', file);
+      await prepareInBatch(files as string[], req.aggressiveOptimisation);
+    } catch (error) { return fail(message(error)); }
     emit({ kind: 'done' });
   }
 

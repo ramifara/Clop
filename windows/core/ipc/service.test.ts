@@ -148,6 +148,23 @@ test('an agent\'s request that names a network share or a device anywhere is ref
   assert.deepEqual(await readdir(s.workdir.backups), []);
 });
 
+test('--review from an agent applies the same path guard before the batch window looks the files up', async t => {
+  const added: string[][] = [];
+  const s = await setup(t, { prepareInBatch: async files => { added.push(files); } }, { mcpEnabled: true });
+  const input = s.file('a.png');
+  await graphic(50, 50).png().toFile(input);
+  const refused = /is on a network share or a device\. Agents may only use files and folders on this PC's own drives/;
+  for (const url of ['file://server/share/a.png', 'file:////server/share/dir', 'file:///%5C%5Cserver%5Cshare%5Ca.png']) {
+    const messages = await s.send({ urls: [fileURL(input), url], prepareInBatch: true, origin: 'mcp' });
+    assert.match((messages[0] as { error: { error: string } }).error.error, refused, url);
+    assert.equal(messages.length, 3, 'one refusal per input, then done');
+  }
+  assert.deepEqual(added, [], 'the batch window was never asked to look at a remote path');
+  // A local file from an agent, and a person's own request, still reach the window.
+  assert.deepEqual(await s.send({ urls: [fileURL(input)], prepareInBatch: true, origin: 'mcp' }), [{ kind: 'done' }]);
+  assert.deepEqual(added, [[input]]);
+});
+
 test('an agent\'s download reaches only the internet: a host on this PC or its network is refused, a person\'s is fetched', async t => {
   if (!needTools(t, 'pngquant')) return;
   const s = await setup(t, {}, { mcpEnabled: true });
