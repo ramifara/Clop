@@ -57,6 +57,8 @@ async function click(client, selector) {
   await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point });
 }
 let main, floating, fixture;
+/** Whether a result for `name` shows: as a card, or as a row once more results show than fit and the compact list takes over. */
+const shown = name => floating.evaluate(`[...document.querySelectorAll('.corner-card, .compact-row')].some(row => { const label = row.getAttribute('aria-label') ?? ''; return label === ${JSON.stringify(`Optimised ${name}`)} || (row.classList.contains('compact-row') && label.endsWith(${JSON.stringify(` ${name}`)})); })`);
 const externalClipboard = new WindowsBridge();
 try {
   const pages = () => fetch('http://127.0.0.1:9227/json/list').then(response => response.json());
@@ -189,7 +191,7 @@ try {
     console.log(`Clipboard ${kind}:`, JSON.stringify({ status: item.status, error: item.error, format: item.format, originalBytes: item.originalBytes, outputBytes: item.outputBytes, durationMs: item.durationMs, pages: item.pages }));
     assert.equal(item.status, 'ready', item.error);
     assert.ok(item.outputBytes < item.originalBytes, `The ${kind} should be smaller after optimising`);
-    await until(() => floating.evaluate(`[...document.querySelectorAll('.corner-card')].some(card => card.getAttribute('aria-label') === ${JSON.stringify(`Optimised ${path.basename(file)}`)})`), `The ${kind} card did not render`);
+    await until(() => shown(path.basename(file)), `The ${kind} card did not render`);
     const rewritten = await until(async () => { const [result] = (await externalClipboard.request({ type: 'read' })).paths; return result && result !== file && path.basename(result) === path.basename(file) && result; }, `The clipboard was not rewritten with the optimised ${kind}`);
     assert.equal((await stat(rewritten)).size, item.outputBytes, `The clipboard should hold the optimised ${kind}`);
   }
@@ -209,7 +211,7 @@ try {
     const backups = path.join(profile, 'work', 'backups'), backup = (await readdir(backups)).find(file => file.startsWith(`${path.parse(name).name}-`) && file.endsWith(path.extname(name)));
     assert.ok(backup, `The watched ${kind}'s original should be in the backups`);
     assert.equal((await stat(path.join(backups, backup))).size, originalBytes, `The backup should be the original ${kind}`);
-    await until(() => floating.evaluate(`[...document.querySelectorAll('.corner-card')].some(card => card.getAttribute('aria-label') === ${JSON.stringify(`Optimised ${name}`)})`), `The watched ${kind}'s card did not render`);
+    await until(() => shown(name), `The watched ${kind}'s card did not render`);
   }
   assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'Watched-folder optimisation must not show an error');
   // The clipboard pipeline: a copied image named "to-webp" becomes a WebP card, and the clipboard then holds the WebP.
