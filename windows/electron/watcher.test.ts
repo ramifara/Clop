@@ -331,3 +331,19 @@ test('files held while the helper started are told about when it stops instead',
   assert.match(state.notices[0], /helper is not running/);
   assert.deepEqual(state.handled, []);
 });
+
+test('a late file that is not ignored still lets the burst\'s files go once the window has passed', async t => {
+  const { dir, state, watcher } = await setup(t, { maxImageFileCount: 2 }, {}, { windowMs: 1500 });
+  await watcher.update();
+  for (const name of ['a', 'b', 'c']) { await image(path.join(dir, `${name}.png`)); await pause(250); }
+  await until(() => state.notices.length > 0, 'no notice for too many files');
+  // After the first two have left the window, one more file is no burst; it is optimised, and the burst is forgotten after its own window.
+  await pause(1000);
+  await image(path.join(dir, 'd.png'));
+  await until(() => state.handled.some(([name]) => name === 'd.png'), 'the late file was not optimised');
+  await pause(2600);
+  const before = state.handled.length;
+  await image(path.join(dir, 'a.png'));
+  await until(() => state.handled.length === before + 1, 'a file of the burst was still left alone after the burst ended');
+  assert.equal(state.handled.at(-1)![0], 'a.png');
+});

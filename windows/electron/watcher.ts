@@ -251,9 +251,11 @@ export class FolderWatcher {
       for (const [key] of files) this.cancelled.add(key);
       this.host.cancel(files.map(([, { file }]) => file));
       clearTimeout(this.cleaner);
-      this.cleaner = setTimeout(() => { this.cancelled.clear(); this.recent.clear(); }, this.timing.windowMs);
+      this.cleaner = this.forgetBurst();
       return;
     }
+    // A file that is no part of the burst leaves the burst's files to be forgotten after the window, as they would have been.
+    if (this.cancelled.size) this.cleaner = this.forgetBurst();
     await sleep(this.timing.settleMs);
     if (this.cancelled.has(id) || !(await stat(file).then(info => info.isFile(), () => false))) return;
     // A writer still holding the file is waited for; one that never lets go leaves the file alone rather than failing on it.
@@ -282,6 +284,8 @@ export class FolderWatcher {
       for (const [, { file, dir }] of held) this.dispatch(file, dir);
     }, this.timing.safeDelayMs);
   }
+
+  private forgetBurst() { return setTimeout(() => { this.cancelled.clear(); this.recent.clear(); }, this.timing.windowMs); }
 
   private dispatch(file: string, dir: string) {
     const id = this.id(file);
