@@ -127,7 +127,7 @@ const PENDING_KEYS = [
   'autoHideClipboardResultAfter', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter',
   'convertHDRToSDR', 'defaultLinkExpiration', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnUpload',
   'enableFloatingResults', 'followCursorScreen', 'formatsToConvertToJPEG', 'formatsToConvertToMP4',
-  'formatsToConvertToOutputAudio', 'formatsToConvertToPNG', 'onlyShowDropZoneOnOption', 'onlyShowPresetZonesOnControlTapped', 'optimiseHEICAVIFClipboard',
+  'formatsToConvertToOutputAudio', 'formatsToConvertToPNG', 'onlyShowDropZoneOnOption', 'optimiseHEICAVIFClipboard',
   'optimiseTIFF',
 ];
 

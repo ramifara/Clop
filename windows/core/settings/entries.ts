@@ -218,7 +218,7 @@ const rows: Row[] = [
   { id: 'dropzone.automation.dropZoneAutomation', keys: [], title: 'Drop zone automation', subtitle: 'Run actions on files dropped here: convert, crop, copy, rename and more', keywords: ['pipeline', 'pipelines', 'automation', 'drop', 'actions'], tab: 'dropzone', section: 'Automation', ui: { control: 'sourceAutomation', source: 'dropZone' } },
 
   // presetZones › Showing preset zones
-  { id: 'presetZones.showingpresetzones.onlyShowPresetZonesOnControlTapped', keys: ['onlyShowPresetZonesOnControlTapped'], title: 'Show preset zones by holding or tapping Control', subtitle: 'Hold reveals them while the key is down; tap leaves them up', keywords: [], tab: 'presetZones', section: 'Showing preset zones', ui: { pending: 'preset zones are not shown over the drop zone yet' } },
+  { id: 'presetZones.showingpresetzones.onlyShowPresetZonesOnControlTapped', keys: ['onlyShowPresetZonesOnControlTapped'], title: 'Show preset zones by holding or tapping Control', subtitle: 'Hold reveals them while the key is down; tap leaves them up', keywords: [], tab: 'presetZones', section: 'Showing preset zones' },
 
   // presetZones › Preset zones
   { id: 'presetZones.presetzones.presetZones', keys: ['presetZones'], title: 'Preset zones', subtitle: 'Click a zone to assign or create a pipeline. Drag files onto a zone to run its actions.', keywords: ['drop target', 'quadrant', 'corner', 'control key', 'image', 'video', 'audio', 'pdf', 'automation'], tab: 'presetZones', section: 'Preset zones', ui: { control: 'presetZones' } },

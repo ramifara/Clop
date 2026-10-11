@@ -30,6 +30,7 @@ import { seedBuiltinPipelines } from '../core/pipeline/builtins';
 import { EDITOR_SETTING_KEYS } from '../core/pipeline/editor-state';
 import { cellCount, draggedType, gridHeight, tilesFor, zonePipeline } from '../core/pipeline/zones';
 import { EditorService } from './editor';
+import { PresetReveal } from './preset-reveal';
 import { pipelinesSkipOptimisation, type PipelinesOutcome } from '../core/pipeline/triggers';
 import type { PipelineEffects } from '../core/pipeline/executor';
 import type { MediaKind } from '../core/media/types';
@@ -75,7 +76,8 @@ let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefine
 let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
 let dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
 /** The files being dragged, and whether Ctrl or Alt is held, as the Windows helper reports them: Ctrl or Alt shows the preset zone tiles. */
-let dragFiles: string[] = [], dragModifiers = { ctrl: false, alt: false }, presetsLatched = false;
+let dragFiles: string[] = [], presetsLatched = false;
+const presetReveal = new PresetReveal();
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
 const compactMode = new CompactMode({
@@ -135,7 +137,7 @@ const currentSequence = async () => bridgeReady ? sequenceReply(await bridge.req
 /** Whether a result is still in the shelf and finished; a card can be dismissed while its import runs. */
 const isReady = (id: string) => { try { return engine.get(id).result.status === 'ready'; } catch { return false; } };
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
-const presetsRevealed = () => dragModifiers.ctrl || dragModifiers.alt;
+const presetsRevealed = () => presetReveal.revealed(settings.onlyShowPresetZonesOnControlTapped);
 /** The preset zone tiles for the files being dragged. */
 function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, draggedType(dragFiles, mediaKind)) }; }
 const visible = () => engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id));
@@ -1111,17 +1113,17 @@ else {
       bridge.on('foreground', event => pickup.focus(Number(event.process)));
       bridge.on('drag-start', event => {
         if (!settings.enableDragAndDrop) return;
-        dragging = true; dropActive = true; dragModifiers = { ctrl: false, alt: false }; presetsLatched = false;
+        dragging = true; dropActive = true; presetReveal.reset(); presetsLatched = false;
         dragFiles = Array.isArray(event.paths) ? (event.paths as unknown[]).filter((file): file is string => typeof file === 'string').slice(0, 64) : [];
         floating.setIgnoreMouseEvents(false); syncFloating(); broadcast();
       });
-      // The helper reads Ctrl and Alt while a drag lasts; either one shows the preset zone tiles.
+      // The helper reads Ctrl and Alt while a drag lasts; holding either shows the preset zone tiles, or tapping it with `onlyShowPresetZonesOnControlTapped`.
       bridge.on('drag-modifiers', event => {
         if (!dragging) return;
-        dragModifiers = { ctrl: event.ctrl === true, alt: event.alt === true }; presetsLatched ||= presetsRevealed(); syncFloating(); broadcast();
+        presetReveal.update({ ctrl: event.ctrl === true, alt: event.alt === true }, settings.onlyShowPresetZonesOnControlTapped); presetsLatched ||= presetsRevealed(); syncFloating(); broadcast();
       });
       // The tiles stay for the moment a drop on one needs to land.
-      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; dragFiles = []; dragModifiers = { ctrl: false, alt: false }; presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
+      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; dragFiles = []; presetReveal.reset(); presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
       bridge.on('stopped', () => { bridgeReady = false; bridgeStopped = true; pickup.cancel(); startClipboardFallback(); for (const watcher of watchers) watcher.resume(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));
