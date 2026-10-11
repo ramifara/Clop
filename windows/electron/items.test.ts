@@ -205,11 +205,13 @@ test('optimises audio, previewing its cover art or a drawn placeholder', async t
   assert.ok(Math.abs(result.durationMs! - 2000) < 100, `${result.durationMs}`);
   assert.ok(result.outputBytes < result.originalBytes);
   assert.deepEqual(await previewSize(result.preview), [300, 200]);
+  assert.equal(result.coverArt, true, 'the card can tell it has cover art');
   // WAV becomes MP3 by the default formatsToConvertToMP3.
   const wav = await engine.importPath(await tone(path.join(dir, 'take.wav')), 'drop', balanced), take = engine.get(wav).result;
   assert.equal(take.status, 'ready', take.error);
   assert.deepEqual([take.format, path.extname(engine.output(wav))], ['mp3', '.mp3']);
   assert.equal(take.preview, await placeholder('audio'));
+  assert.equal(take.coverArt, false, 'and that a file without any has none');
   await engine.restore(wav);
   assert.equal(engine.get(wav).result.format, 'wav');
 });

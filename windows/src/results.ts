@@ -9,7 +9,7 @@ export const NOUNS = { image: 'image', video: 'video', pdf: 'PDF', audio: 'audio
 export type Run = (task: () => Promise<unknown>, success?: string) => Promise<void>;
 
 /** What the corner buttons need to know about a card beyond the card itself. */
-export const factsFor = (state: Pick<AppState, 'native' | 'pipelines'>, item: ItemResult): Facts => ({ native: state.native, pipelines: state.pipelines?.filter(pipeline => !pipeline.fileType || pipeline.fileType === item.kind) });
+export const factsFor = (state: Pick<AppState, 'native' | 'pipelines'>, item: ItemResult): Facts => ({ native: state.native, pipelines: state.pipelines?.filter(pipeline => !pipeline.fileType || pipeline.fileType === item.kind), ...(item.coverArt === undefined ? {} : { hasCoverArt: item.coverArt }) });
 /** The buttons a card shows: `floatingResultActions` on a full card, `compactResultActions` in the list. A full card has panels of its own for images; the list opens menus instead. */
 export const cardButtons = (state: Pick<AppState, 'native' | 'pipelines' | 'settings'>, item: ItemResult, compact: boolean): ButtonDef[] =>
   compact ? buttonsFor(item, state.settings.compactResultActions, factsFor(state, item), MAX_COMPACT_BUTTONS, false) : buttonsFor(item, state.settings.floatingResultActions, factsFor(state, item), MAX_FLOATING_BUTTONS, true);

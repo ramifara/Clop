@@ -32,3 +32,11 @@ test('the close button of a compact row that is processing stops it, and one tha
   // The browser preview cannot stop a job.
   assert.deepEqual(await press('processing', false), ['dismiss a']);
 });
+
+test('a card button for the cover art is offered only for an audio file that has some', async () => {
+  const { cardButtons } = await import('./results');
+  const settings = { ...defaultSettings(), compactResultActions: ['downscale'] };
+  const buttons = (coverArt?: boolean) => cardButtons({ native: true, pipelines: [], settings }, { ...item('ready'), kind: 'audio', ...(coverArt === undefined ? {} : { coverArt }) }, true).map(button => button.label);
+  assert.deepEqual(buttons(true), ['Downscale cover art']);
+  assert.deepEqual(buttons(false), []);
+});

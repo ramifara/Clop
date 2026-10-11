@@ -184,7 +184,7 @@ export class ItemEngine extends EventEmitter {
     const preview = await mediaThumbnail(base.kind, staged, { durationMs: info?.durationMs, signal }), bytes = (await stat(staged)).size;
     const result: ItemResult = {
       ...base, originalBytes: bytes, outputBytes: bytes, originalWidth: video?.width ?? 0, originalHeight: video?.height ?? 0, width: video?.width ?? 0, height: video?.height ?? 0,
-      format, originalPreview: preview, preview, durationMs: info?.durationMs,
+      format, originalPreview: preview, preview, durationMs: info?.durationMs, ...(info?.kind === 'audio' ? { coverArt: info.hasCoverArt } : {}),
     };
     return { result, originalPath: staged, outputPath: staged, directory, inputFormat: format, revision: 0, cancel: new AbortController(), jobs: new Set() };
   }
@@ -270,6 +270,8 @@ export class ItemEngine extends EventEmitter {
         : (r.kind === 'video' && options.crop) || (r.kind === 'pdf' && edit) ? await mediaThumbnail(r.kind, output.path, { durationMs: output.durationMs ?? r.durationMs, signal }) : r.originalPreview;
       // With pipelines still to run, the result is not ready yet: copying or dragging it now would hand out the file before them.
       const following = automation && !automation.skipOptimisation;
+      // Optimising can drop the cover art (the `audioCoverArt` setting).
+      if (r.kind === 'audio') r.coverArt = await probe(output.path, { signal }).then(info => info.kind === 'audio' ? info.hasCoverArt : undefined, () => r.coverArt);
       Object.assign(r, { status: following ? 'processing' : 'ready', options, revision: e.revision, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes, preview,
         durationMs: output.durationMs ?? r.durationMs, pages: output.pages ?? r.pages, progress: undefined, unchanged: !!output.unchanged, restored: false });
       if (following) {
@@ -341,6 +343,7 @@ export class ItemEngine extends EventEmitter {
         const media = await probe(outcome.file, { signal }).catch(() => undefined) as VideoInfo | AudioInfo | undefined;
         if (media?.kind === 'video') Object.assign(r, { width: media.width, height: media.height });
         if (media?.durationMs) r.durationMs = media.durationMs;
+        if (media?.kind === 'audio') r.coverArt = media.hasCoverArt;
       }
     } else if (outcome.anyRan) {
       // The pipelines ended on a file that is gone (a final `delete`): there is no result to copy, drag or reveal.
@@ -399,6 +402,7 @@ export class ItemEngine extends EventEmitter {
     // A pipeline's file outside the shelf is no longer the result once the original is back.
     e.placedPath = e.placement ? await e.placement.restore() : undefined;
     e.outputPath = e.originalPath;
+    if (e.result.kind === 'audio') e.result.coverArt = await probe(e.originalPath).then(info => info.kind === 'audio' ? info.hasCoverArt : undefined, () => e.result.coverArt);
     Object.assign(e.result, { status: 'ready', width: e.result.originalWidth, height: e.result.originalHeight, outputBytes: e.result.originalBytes,
       format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, speed: undefined, maxEdge: undefined, format: 'auto', crop: undefined, compression: undefined }, restored: true, unchanged: true, error: undefined, notes: undefined });
     e.shown = true; this.changed(); this.emit('restored', id); this.emit('ready', id);

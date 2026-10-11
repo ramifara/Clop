@@ -30,6 +30,8 @@ export interface ItemResult {
   width: number; height: number; format: string; originalPreview: string; preview: string;
   options: ImageOptions; error?: string; unchanged?: boolean; restored?: boolean; animated: boolean; createdAt: number;
   durationMs?: number; pages?: number; progress?: number;
+  /** Audio: whether the current file has cover art, which decides whether the card offers to downscale it. */
+  coverArt?: boolean;
   /** Counts the changes to the result's file, so a window showing it can tell a new one from the one it has. */
   revision?: number;
   /** What attached or chosen pipelines reported: warnings, and pipelines that failed. */
