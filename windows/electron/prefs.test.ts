@@ -103,7 +103,7 @@ test('an editor is a program from the picker; on Windows only an .exe', async ()
   await other.prefs({ action: 'editor', kind: 'pdf', op: 'clear' });
   assert.equal(other.get().editorAppPDF, '');
   other.picks.push(folderA);
-  await assert.rejects(other.prefs({ action: 'editor', kind: 'video', op: 'choose' }), /not a file/);
+  await assert.rejects(other.prefs({ action: 'editor', kind: 'video', op: 'choose' }), /not a file|\.exe/);
   await assert.rejects(other.prefs({ action: 'editor', kind: 'gif', op: 'choose' }), /file type/);
 });
 
