@@ -229,7 +229,11 @@ export async function runSolo(run: RunState, step: PipelineStep, progress: Progr
       return place(convertLocation(run, p.location), gif.path);
     }
     case 'targetSize': {
-      if ((await stat(input)).size <= p.bytes) return p.location !== 'inPlace' ? place(p.location, input) : undefined;
+      if ((await stat(input)).size <= p.bytes) {
+        if (p.location === 'inPlace') return;
+        // A temporary result is a copy of its own, so later steps never change the file it came from.
+        return place(p.location, p.location === 'temporaryFolder' ? await copyTo(input, path.join(await run.scratch(), path.basename(input))) : input);
+      }
       return place(p.location, await fitUnder(run, p.bytes, progress));
     }
     case 'stripExif': {
