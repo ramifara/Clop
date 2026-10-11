@@ -11,7 +11,7 @@ import { needTools } from '../core/testing';
 import { DECLINED_PREFIX, INSTRUCTIONS, SMALLER_OPTIONS_TEXT } from './mcp-copy';
 import { connect, folder } from './mcp.fixtures';
 import { TOOLS } from './mcp-table';
-import { speedSteps, withFrames } from './mcp-tools';
+import { annotate, speedSteps, withFrames } from './mcp-tools';
 
 test('stdio: initialize, 23 tools, and clop_optimise headless on a file', async t => {
   if (!needTools(t, 'pngquant')) return;
@@ -44,7 +44,7 @@ test('the gate: agents are refused until the user allows them, and can never fli
   const { call } = await connect(t, f);
   const refused = await call('clop_optimise', { paths: ['a.png'], compression: '60' });
   assert.equal(refused.error, true);
-  assert.match(refused.text, /^Clop is not accepting changes from agents\. .* or call clop_start_server, which puts that question on screen for them\.$/);
+  assert.equal(refused.text, 'Clop is not accepting changes from agents. Ask the user to allow it in Clop Settings, MCP.', 'the refusal already says what to do, once');
   const set = await call('clop_settings_set', { key: 'stripMetadata', value: 'false' });
   assert.equal(set.error, true);
   assert.match(set.text, /not accepting changes from agents/);
@@ -66,7 +66,7 @@ test('mcpAllowScriptSteps: a pipeline with a script step is refused until the us
   const steps = 'runScript(code: "echo hi") -> optimise()';
   const refused = await call('clop_pipeline_write', { name: 'echo', steps });
   assert.equal(refused.error, true);
-  assert.match(refused.text, /not accepting script steps from agents.*Script steps are behind their own switch\. Ask the user to allow them in Clop Settings, MCP\./s);
+  assert.match(refused.text, /^Clop is not accepting script steps from agents, .*ask the user to allow script steps in Clop Settings, MCP\.$/);
   await graphic(40, 30).png().toFile(f.file('a.png'));
   const run = await call('clop_pipeline_run', { pipeline: steps, paths: [f.file('a.png')] });
   assert.equal(run.error, true);
@@ -118,6 +118,23 @@ test('arguments: required ones are named, unknown tools are refused, start and s
   const pdf = await call('clop_crop_pdf', { paths: ['x.pdf'], forDevice: 'Nokia 3310' });
   assert.equal(pdf.error, true);
   assert.match(pdf.text, /^Unknown device "Nokia 3310"\.\n\n/, 'the listing replaces the pointer at a flag');
+});
+
+test('the next step is added to a refusal once, and never to a message that already says to ask the user', () => {
+  const refusal = 'Clop is not accepting changes from agents.';
+  assert.match(annotate(refusal), /^Clop is not accepting changes from agents\. Ask the user to allow agent changes in Clop Settings, MCP, or call clop_start_server/);
+  assert.equal(annotate(`${refusal} Ask the user to allow it in Clop Settings, MCP.`), `${refusal} Ask the user to allow it in Clop Settings, MCP.`);
+  assert.equal(annotate(annotate(refusal)), annotate(refusal));
+  assert.equal(annotate('Script steps are off. Ask the user to allow script steps.'), 'Script steps are off. Ask the user to allow script steps.');
+});
+
+test('a refusal before a question reads once', async t => {
+  const f = await folder(t);
+  await graphic(40, 30).png().toFile(f.file('a.png'));
+  const { call } = await connect(t, f);
+  const refused = await call('clop_optimise', { paths: ['a.png'] });
+  assert.equal(refused.error, true);
+  assert.equal(refused.text.match(/Ask the user/g)?.length, 1, refused.text);
 });
 
 test('video speed-ups get frames: keep or drop written into each changeSpeed step that has none', () => {

@@ -112,6 +112,8 @@ export async function text(call: Call, args: string[], timeout = 30): Promise<To
 /** Clop's refusals come back verbatim with the next step, which is always "ask the user". Clop for Windows has no Pro licence. */
 export function annotate(message: string): string {
   const low = message.toLowerCase();
+  // A message that already tells the agent to ask the user needs no second telling.
+  if (low.includes('ask the user')) return message;
   if (low.includes('script') && low.includes('allow')) {
     return `${message} Script steps are behind their own switch. Ask the user to allow them in Clop Settings, MCP. Prefer a built-in step: it is faster, the editor understands it, and it survives a Clop update.`;
   }
@@ -237,7 +239,7 @@ async function refuseBeforeAsking(call: Call, files: string[] = []) {
   const missing = files.filter(file => !isURL(file) && !exists(local(call, file)));
   if (missing.length) throw new ClopMCPError(`not found: ${missing.join(', ')}`);
   const mcp = await mcpStatus(call);
-  if (mcp && mcp.enabled !== true) throw new ClopMCPError(annotate('Clop is not accepting changes from agents. Ask the user to allow it in Clop Settings, MCP.'));
+  if (mcp && mcp.enabled !== true) throw new ClopMCPError(annotate('Clop is not accepting changes from agents.'));
 }
 
 // MARK: Questions
