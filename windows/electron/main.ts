@@ -62,7 +62,7 @@ import { setupBatch } from './batch-window';
 import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
 import { expandHome } from '../core/settings/paths';
 import { menuTemplate } from './card-menu';
-import { coverArtCard, eachResult, editorLabel, editorProgram, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, startProgram, type CardCreation, type CardHost } from './cards';
+import { coverArtCard, eachResult, editorLabel, editorProgram, makesNewCard, mediaFacts, openWithDialog, pageCard, readyIds, runPlan, savePages, startProgram, type CardCreation, type CardHost } from './cards';
 import { CompactMode, cardsThatFit } from './compact';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -881,8 +881,8 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
   if (ids.length > 1) {
     const action = (raw as { action?: unknown } | null)?.action;
     if (typeof action !== 'string' || !(BATCH_ACTIONS as readonly string[]).includes(action)) throw new Error('This action works on one result at a time.');
-    if (action === 'saveAs') return saveResults(window, ids);
-    if (action === 'copy') return copy(ids);
+    if (action === 'saveAs') return saveResults(window, readyIds(engine, ids));
+    if (action === 'copy') return copy(readyIds(engine, ids));
     if (action === 'restore') {
       const { restored, failures } = await restoreAll(engine, ids);
       const clipboardIds = restored.filter(id => engine.has(id) && engine.get(id).result.source === 'clipboard');

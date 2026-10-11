@@ -271,13 +271,13 @@ export function itemMenu(item: CardItem, facts: Facts): MenuNode[] {
 export const BATCH_ACTIONS: readonly ActionId[] = ['saveAs', 'copy', 'restore', 'stripExif', 'dismiss', 'downscale', 'speed', 'aggressive', 'bitrate', 'hdrToSdr'];
 /**
  * The menu over a selection of results (`BatchRightClickMenuView`): what works on several at once. `facts` is for the first video (HDR) and
- * the first audio file (its format's bitrates), as macOS looks at the first one too. macOS also offers QuickLook, sending and shelf apps,
+ * the first audio file (its format's bitrates), as macOS looks at the first one too. Saving and copying work on the finished results, so they wait for one. macOS also offers QuickLook, sending and shelf apps,
  * which have no counterpart here (Preview opens one window per result and is left out).
  */
 export function batchMenu(items: CardItem[], facts: Facts = { native: true }): MenuNode[] {
   const of = (...kinds: MediaKind[]) => items.filter(item => kinds.includes(item.kind));
   const sized = of('image', 'video'), nodes: MenuNode[] = [
-    label('Save all to folder…', { action: 'saveAs' }), label('Copy to clipboard', { action: 'copy' }), sep,
+    label('Save all to folder…', { action: 'saveAs' }, { enabled: items.some(item => item.status === 'ready') }), label('Copy to clipboard', { action: 'copy' }, { enabled: items.some(item => item.status === 'ready') }), sep,
     label('Restore all', { action: 'restore' }, { enabled: items.some(item => !item.restored) }), sep,
   ];
   if (sized.length) nodes.push(sub('Downscale', 'downscale', sized[0], facts, { enabled: sized.some(item => item.kind !== 'image' || item.options.scale > 0.1) }));

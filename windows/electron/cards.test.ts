@@ -17,7 +17,7 @@ import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { run } from '../core/run';
 import { needTools } from '../core/testing';
 import { Workdir } from '../core/workdir';
-import { coverArtCard, eachResult, editorLabel, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, type CardCreation, type CardHost } from './cards';
+import { coverArtCard, eachResult, editorLabel, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, readyIds, runPlan, savePages, type CardCreation, type CardHost } from './cards';
 import { ItemEngine } from './items';
 import type { PipelineHost } from './pipelines';
 import type { ItemResult } from '../src/types';
@@ -193,6 +193,17 @@ test('menus follow the kind and the card: running cards offer little, audio and 
   assert.ok(!labels(itemMenu(card('image'), { ...facts, native: false })).includes('Open with…'));
   assert.deepEqual(labels(batchMenu([card('image'), card('pdf')])).slice(0, 3), ['Save all to folder…', 'Copy to clipboard', 'Restore all']);
   assert.ok(!labels(batchMenu([card('pdf'), card('audio')])).includes('Strip EXIF metadata'));
+  // Saving and copying take the finished results, so they wait while none is.
+  const enabled = (items: CardItem[]) => batchMenu(items).flatMap(node => 'label' in node && (node.label === 'Save all to folder…' || node.label === 'Copy to clipboard') ? [node.enabled !== false] : []);
+  assert.deepEqual(enabled([{ ...card('image'), status: 'processing' }, { ...card('pdf'), status: 'error' }]), [false, false]);
+  assert.deepEqual(enabled([{ ...card('image'), status: 'processing' }, card('pdf')]), [true, true]);
+});
+
+test('saving or copying a selection takes the finished results and says when there are none', () => {
+  const status: Record<string, string> = { a: 'ready', b: 'processing', c: 'error', d: 'ready' };
+  const engine = { has: (id: string) => id in status, get: (id: string) => ({ result: { status: status[id] } }) } as never;
+  assert.deepEqual(readyIds(engine, ['a', 'b', 'c', 'd', 'gone']), ['a', 'd']);
+  assert.throws(() => readyIds(engine, ['b', 'c']), /Wait for the selected results to finish/);
 });
 
 test('corner buttons come from the configured names, by kind, without the ones Windows lacks', () => {

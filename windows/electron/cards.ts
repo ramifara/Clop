@@ -112,6 +112,12 @@ export async function editorProgram(editor: string, { platform = process.platfor
   if (platform === 'win32' && await marked(program)) throw new Error(`Windows marked ${name} as downloaded from the internet. Unblock it in its file properties first.`);
   return program;
 }
+/** The selected results that are finished: saving or copying a selection leaves out one still processing or failed, and says so when none is ready. */
+export function readyIds(engine: Pick<ItemEngine, 'has' | 'get'>, ids: readonly string[]) {
+  const ready = ids.filter(id => engine.has(id) && engine.get(id).result.status === 'ready');
+  if (!ready.length) throw new Error('Wait for the selected results to finish first.');
+  return ready;
+}
 /**
  * Runs an action on each of several results, one after another. A result `skip` says the action does not fit is left out without a word;
  * a failure is reported with the result's name and does not stop the rest. `done` holds the results the action ran on and finished.
