@@ -15,7 +15,7 @@ export function parseCompareView(value: unknown): { page: number } {
 
 /**
  * The original and the current result, for the compare window. Images the window cannot show as they are (HEIC, JPEG XL, BMP,
- * TIFF) are shown as full-size PNGs, PDFs as a rendered page each, and videos and audio files play as they are.
+ * TIFF) are shown as full-size PNGs, PDFs as a rendered page each (the whole page, not its crop box), and videos and audio files play as they are.
  */
 export async function compareSources(entry: ViewEntry, view: { page: number }, files: MediaFiles, signal?: AbortSignal): Promise<CompareSources> {
   const { result: item } = entry;
@@ -28,7 +28,8 @@ export async function compareSources(entry: ViewEntry, view: { page: number }, f
     if (item.kind === 'pdf') {
       // The original can have fewer pages than a result that gained some; its last page stands in.
       const count = (await loadPDF(file, { allowEncrypted: true })).getPageCount(), number = Math.min(page, count);
-      shown = await pdfPagePreview(file, viewFile(entry.directory, file, `compare-page${number}.png`), number, 2, { signal });
+      // The whole page on both sides, as CompareView.swift's `displayBox = .mediaBox` does: a result's crop box would otherwise misalign the split.
+      shown = await pdfPagePreview(file, viewFile(entry.directory, file, `compare-page${number}.png`), number, 2, { wholePage: true, signal });
     }
     const bitrate = item.kind === 'audio' ? await audioMetadata(file, { signal }).then(info => info.bitrate && Math.round(info.bitrate / 1000), () => undefined) : undefined;
     return { url: files.url(shown), kind: item.kind, format, ...facts, ...(bitrate ? { bitrate } : {}) };

@@ -136,11 +136,11 @@ test('crops, extends and uncrops a PDF\'s pages on the current result, showing e
   assert.deepEqual(source.uncropped, { width: 288, height: 216 });
   const [w, h] = await pngSize(await fetchFile(files, source.preview)) as number[];
   assert.ok(Math.abs(w / h - 288 / 216) < .02, `whole page ${w}×${h}`);
-  // Each side of the compare window is a rendered page within the crop box.
+  // Each side of the compare window is the whole rendered page, not the crop box, so a split lines up.
   const compare = await compareSources(engine.get(id), { page: 1 }, files);
   assert.deepEqual([compare.page, compare.pages], [1, 2]);
   const [cw, ch] = await pngSize(await fetchFile(files, compare.result.url)) as number[], [ow, oh] = await pngSize(await fetchFile(files, compare.original.url)) as number[];
-  assert.ok(Math.abs(cw / ch - 1) < .02 && Math.abs(ow / oh - 288 / 216) < .02, `${cw}×${ch} and ${ow}×${oh}`);
+  assert.ok(Math.abs(cw / ch - 288 / 216) < .02 && Math.abs(ow / oh - 288 / 216) < .02 && cw === ow && ch === oh, `${cw}×${ch} and ${ow}×${oh}`);
   await engine.crop(id, { type: 'pdf-uncrop' });
   for (const page of await boxes(engine.output(id))) assert.deepEqual(round(page.crop), round(page.media));
   assert.equal((await cropSource(engine.get(id), { page: 1, time: 0 }, files)).uncropped, undefined);
