@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { appAnswers, appPipe, ForgedServer, postMessage, sendMessage } from '../core/ipc/client';
+import { appAnswers, AppNotResponding, appPipe, ForgedServer, postMessage, sendMessage } from '../core/ipc/client';
 import type { OptimisationRequest, PipeEndpoint, ServerMessage, SettingsRequest, SettingsResponse, StopOptimisationRequest } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
 import { handleSettingsRequest } from '../core/ipc/settings';
@@ -52,7 +52,8 @@ class HeadlessBackend implements Backend {
   readonly app = false;
   private service?: Promise<ClopService>;
   private store?: Promise<SettingsStore>;
-  constructor(private readonly options: BackendOptions) {}
+  /** `appBusy`: the app is running but did not answer, so a settings change written here would be lost to its next save. */
+  constructor(private readonly options: BackendOptions, private readonly appBusy = false) {}
 
   private loadStore() {
     const { userData, home } = this.options;
@@ -78,19 +79,25 @@ class HeadlessBackend implements Backend {
   async queue(): Promise<void> { throw new Error('Queueing needs the running app.'); }
   async stop(request: StopOptimisationRequest) { (await this.loadService()).stop(request); }
   /** Settings need no work directory, so a settings command never creates one. */
-  async settings(request: SettingsRequest) { return handleSettingsRequest(request, await this.loadStore()); }
+  async settings(request: SettingsRequest): Promise<SettingsResponse> {
+    if (this.appBusy && (request.action === 'set' || request.action === 'update')) return { ok: false, error: 'Clop is running but not answering, so the settings were not changed: the app would write over a change made here. Try again once it responds, or quit Clop and run the command again.' };
+    return handleSettingsRequest(request, await this.loadStore());
+  }
 }
 
 /**
  * The running app's backend when it answers and proves it is the app, otherwise this process's own. A published pipe
- * that answers without proof (a stale name someone else took) gets nothing; `warn` says so and the work runs here.
+ * that answers without proof (a stale name someone else took) gets nothing; `warn` says so and the work runs here. A
+ * pipe that is held but silent is most likely the app itself, busy or hung: the work runs here too, but settings are
+ * not changed behind its back.
  */
 export async function connectBackend(options: BackendOptions, warn: (text: string) => void = () => {}): Promise<Backend> {
   const endpoint = await appPipe(options.userData);
   if (endpoint) {
     try { if (await appAnswers(endpoint)) return new AppBackend(endpoint); } catch (error) {
-      if (!(error instanceof ForgedServer)) throw error;
+      if (!(error instanceof ForgedServer || error instanceof AppNotResponding)) throw error;
       warn(`${error.message} Running here instead.\n`);
+      if (error instanceof AppNotResponding) return new HeadlessBackend(options, true);
     }
   }
   return new HeadlessBackend(options);

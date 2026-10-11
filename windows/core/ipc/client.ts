@@ -8,7 +8,9 @@ import { encodeMessage, LineReader, parseServerMessage, pipeInfoFile, validProof
 
 /** The app is not running, or not listening: the caller runs the request headless instead. */
 export class AppNotRunning extends Error { override name = 'AppNotRunning'; constructor() { super('Clop is not running.'); } }
-/** Something answers on the published pipe but cannot prove it is the app: a stale name someone else took over. Nothing was sent to it. */
+/** Something listens on the published pipe but never answered the greeting: most likely the app, busy or hung. Nothing was sent to it. */
+export class AppNotResponding extends Error { override name = 'AppNotResponding'; constructor() { super('Clop is running but did not answer, so nothing was sent to it.'); } }
+/** Something answers on the published pipe with a wrong proof: a stale name someone else took over. Nothing was sent to it. */
 export class ForgedServer extends Error { override name = 'ForgedServer'; constructor() { super('The pipe Clop published is answered by something that is not Clop, so nothing was sent to it.'); } }
 
 /** Where the running app said it listens, with its key, or undefined when it published nothing. */
@@ -25,7 +27,8 @@ interface Connection { socket: net.Socket }
 
 /**
  * Connects and runs the handshake. Resolves once the app proved itself; `onLine` then gets every later line. Rejects
- * with `AppNotRunning` when nothing listens and `ForgedServer` when the answer is wrong or never comes.
+ * with `AppNotRunning` when nothing listens, `ForgedServer` when the answer is wrong, and `AppNotResponding` when the
+ * listener closes or stays silent without answering.
  */
 function connect(endpoint: PipeEndpoint, onLine: (line: string) => void, timeoutMs: number): Promise<Connection> {
   return new Promise((resolve, reject) => {
@@ -33,7 +36,7 @@ function connect(endpoint: PipeEndpoint, onLine: (line: string) => void, timeout
     let connected = false, proven = false;
     const socket = net.connect(endpoint.pipe);
     const fail = (error: Error) => { clearTimeout(timer); socket.destroy(); reject(error); };
-    const timer = setTimeout(() => fail(connected ? new ForgedServer() : new AppNotRunning()), timeoutMs);
+    const timer = setTimeout(() => fail(connected ? new AppNotResponding() : new AppNotRunning()), timeoutMs);
     const lines = new LineReader(line => {
       if (proven) return onLine(line);
       let proof: unknown;
@@ -44,19 +47,23 @@ function connect(endpoint: PipeEndpoint, onLine: (line: string) => void, timeout
     });
     socket.on('connect', () => { connected = true; socket.write(`${JSON.stringify({ hello: nonce })}\n`); });
     socket.on('data', chunk => { try { lines.push(chunk); } catch (error) { if (proven) socket.destroy(error as Error); else fail(new ForgedServer()); } });
-    socket.on('error', (error: NodeJS.ErrnoException) => { if (!proven) fail(!connected && NOT_LISTENING.has(error.code ?? '') ? new AppNotRunning() : error); });
-    socket.once('close', () => { if (!proven) fail(connected ? new ForgedServer() : new AppNotRunning()); });
+    socket.on('error', (error: NodeJS.ErrnoException) => { if (!proven) fail(!NOT_LISTENING.has(error.code ?? '') ? error : connected ? new AppNotResponding() : new AppNotRunning()); });
+    socket.once('close', () => { if (!proven) fail(connected ? new AppNotResponding() : new AppNotRunning()); });
   });
 }
 
-/** Whether the app answers on `endpoint`. Rejects with `ForgedServer` when something answers that cannot prove it is the app. */
+/**
+ * Whether the app answers on `endpoint`. Rejects with `ForgedServer` when something answers that cannot prove it is the
+ * app, and `AppNotResponding` when something listens but does not answer.
+ */
 export async function appAnswers(endpoint: PipeEndpoint, timeoutMs = 2000): Promise<boolean> {
   try { (await connect(endpoint, () => {}, timeoutMs)).socket.destroy(); return true; } catch (error) { if (error instanceof AppNotRunning) return false; throw error; }
 }
 
 /**
  * Sends one message and calls `onMessage` for each answer line until the app closes the connection. Rejects with
- * `AppNotRunning` when nothing listens on the pipe, `ForgedServer` when the listener is not the app, and with the app's
+ * `AppNotRunning` when nothing listens on the pipe, `ForgedServer` when the listener is not the app, `AppNotResponding`
+ * when it does not answer the greeting, and with the app's
  * words for a `failed` answer. `signal` closes the connection; the app keeps working on what it was sent, as macOS does
  * for a CLI that goes away.
  */

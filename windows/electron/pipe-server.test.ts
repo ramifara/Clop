@@ -6,7 +6,7 @@ import path from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { main } from '../cli/main';
 import type { IO } from '../cli/results';
-import { appPipe, AppNotRunning, ForgedServer, sendMessage } from '../core/ipc/client';
+import { appPipe, AppNotResponding, AppNotRunning, ForgedServer, sendMessage } from '../core/ipc/client';
 import { helloProof, newPipeKey, newPipePath, pipeInfoFile, type ClientMessage, type ServerMessage } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
 import { OptimisedMarker } from '../core/marker';
@@ -108,6 +108,34 @@ test('a pipe that cannot prove it is the app gets no request, and the CLI runs h
   assert.match(err.join(''), /answered by something that is not Clop, so nothing was sent to it\. Running here instead\./);
   assert.equal(JSON.parse(await readFile(path.join(dir, 'settings.json'), 'utf8')).stripMetadata, false, 'the change went to the settings file');
   assert.ok(heard.every(text => !text.includes('stripMetadata')), 'the squatter only ever saw greetings');
+});
+
+test('a held pipe that does not answer is a busy app: the CLI reads settings here but does not change them', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-silent-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  // One listener never answers, one hangs up on every greeting: neither is a wrong proof.
+  const sockets = new Set<net.Socket>();
+  const silent = net.createServer(socket => { sockets.add(socket); }), hangUp = net.createServer(socket => socket.on('data', () => socket.destroy()));
+  const silentPipe = newPipePath(), hangUpPipe = newPipePath();
+  await new Promise<void>(resolve => silent.listen(silentPipe, resolve));
+  await new Promise<void>(resolve => hangUp.listen(hangUpPipe, resolve));
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy();
+    await Promise.all([silent, hangUp].map(server => new Promise<void>(resolve => server.close(() => resolve()))));
+  });
+  const key = newPipeKey(), read: ClientMessage = { kind: 'settings', request: { action: 'read' } };
+  await assert.rejects(sendMessage({ pipe: silentPipe, key }, read, undefined, { connectTimeoutMs: 100 }), AppNotResponding);
+  await assert.rejects(sendMessage({ pipe: hangUpPipe, key }, read), AppNotResponding);
+
+  await writeFile(pipeInfoFile(dir), JSON.stringify({ pipe: hangUpPipe, pid: 1, key }));
+  const out: string[] = [], err: string[] = [];
+  const cli = (...argv: string[]) => main(argv, { io: { out: text => { out.push(text); }, err: text => { err.push(text); }, errTTY: false }, cwd: dir, options: { userData: dir, home: dir }, env: {}, colours: false });
+  assert.notEqual(await cli('settings', 'set', 'stripMetadata', 'false'), 0);
+  assert.match(err.join(''), /Clop is running but did not answer, so nothing was sent to it\. Running here instead\./);
+  assert.match(err.join(''), /Clop is running but not answering, so the settings were not changed/);
+  await assert.rejects(readFile(path.join(dir, 'settings.json')), { code: 'ENOENT' }, 'nothing was written behind the app');
+  assert.equal(await cli('settings', 'get', 'pdfDPI', '--json'), 0, err.join(''));
+  assert.equal(JSON.parse(out.join('')).settings[0].value, '0');
 });
 
 test('a CLI with no app published runs headless', async t => {
