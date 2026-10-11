@@ -38,7 +38,8 @@ function localImagePreview(): Plugin {
   // The settings actions that need a picker answer that pickers work in the desktop app; the rest run for real on the preview's settings.
   const desktopOnly = async (): Promise<never> => { throw new Error('Pickers work in the desktop app.'); };
   const prefs = createPrefs({
-    settings: () => settings, defaults: () => defaultSettings(), set: async partial => { settings = parseSettings(partial, settings); }, home: os.homedir(),
+    settings: () => settings, defaults: () => defaultSettings(), set: async partial => { settings = parseSettings(partial, settings); },
+    update: async change => { settings = parseSettings(change(settings), settings); }, home: os.homedir(),
     chooseFolder: desktopOnly, chooseProgram: desktopOnly, apps: async () => [], openEditor: async () => { throw new Error('The pipeline editor opens in the desktop app.'); }, openExternal: desktopOnly, version: () => ({ name: 'preview', platform: 'preview' }),
     checkUpdates: async () => 'Updates are checked by the desktop app.', saveDebugDump: async () => { throw new Error('The debug dump is saved by the desktop app.'); },
   });
