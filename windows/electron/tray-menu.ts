@@ -31,6 +31,8 @@ export interface TrayState {
   canBringBack: boolean;
   /** The command-line tool item: only the portable app offers to install it (an installed one has it beside the app). */
   cli?: { installed: boolean };
+  /** The Explorer right-click entries: only the portable app offers to add them (the installer adds its own). */
+  explorer?: { installed: boolean };
   version: string;
 }
 export interface TrayActions {
@@ -50,10 +52,11 @@ export interface TrayActions {
   stopAll(): void;
   set(change: Partial<TraySettings>): void | Promise<unknown>;
   toggleCLI(): void;
+  toggleExplorer(): void | Promise<unknown>;
+  checkForUpdates(): void | Promise<unknown>;
+  saveDebugDump(): void | Promise<unknown>;
   quit(): void;
 }
-/** Items later changes add to a section: Task 21's debug dump goes under About and its update check just above the screenshots switch. */
-export interface TrayExtras { about?: TrayItem[]; updates?: TrayItem[] }
 
 const RECENT = 8, NAME_MAX = 36;
 const size = (bytes: number) => bytes >= 1_048_576 ? `${(bytes / 1_048_576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -68,7 +71,7 @@ export type TrayVariant = 'normal' | 'paused' | 'working';
 export const trayVariant = (state: { working: boolean; paused: boolean }): TrayVariant => state.working ? 'working' : state.paused ? 'paused' : 'normal';
 export const trayTooltip = (variant: TrayVariant) => variant === 'working' ? 'Clop: working' : variant === 'paused' ? 'Clop: automatic optimisations are paused' : 'Clop';
 
-export function trayMenu(state: TrayState, actions: TrayActions, extras: TrayExtras = {}): TrayItem[] {
+export function trayMenu(state: TrayState, actions: TrayActions): TrayItem[] {
   const { settings } = state, hint = (kind: Parameters<typeof hintFor>[1]) => hintFor(state.shortcuts, kind);
   return [
     { label: 'Show latest results', click: actions.showLatest },
@@ -93,10 +96,11 @@ export function trayMenu(state: TrayState, actions: TrayActions, extras: TrayExt
     { label: 'Keep drop zone visible', type: 'checkbox', checked: settings.keepDropZoneVisible, click: checked => actions.set({ keepDropZoneVisible: checked }) },
     { label: 'Pause automatic optimisations', type: 'checkbox', checked: settings.pauseAutomaticOptimisations, accelerator: hint('pause'), click: checked => actions.set({ pauseAutomaticOptimisations: checked }) },
     ...(state.cli ? [{ label: state.cli.installed ? 'Remove command-line tool' : 'Install command-line tool', click: actions.toggleCLI }] : []),
+    ...(state.explorer ? [{ label: state.explorer.installed ? 'Remove Explorer menu entries' : 'Add Explorer menu entries', click: actions.toggleExplorer }] : []),
     separator,
-    ...(extras.updates ?? []),
+    { label: 'Check for updates…', click: actions.checkForUpdates },
     { label: 'Show Clop UI in screenshots', type: 'checkbox', checked: settings.allowClopToAppearInScreenshots, click: checked => actions.set({ allowClopToAppearInScreenshots: checked }) },
-    { label: 'About', submenu: [{ label: `Version ${state.version}`, enabled: false }, ...(extras.about ?? [])] },
+    { label: 'About', submenu: [{ label: `Version ${state.version}`, enabled: false }, separator, { label: 'Save debug dump', click: actions.saveDebugDump }] },
     separator,
     { label: 'Quit Clop', click: actions.quit },
   ];

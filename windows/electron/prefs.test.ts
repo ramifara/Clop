@@ -19,13 +19,13 @@ after(() => rm(root, { recursive: true, force: true }));
 /** A host that keeps settings in memory, answers pickers from `picks` and records what the main process was asked to do. */
 function harness(platform: NodeJS.Platform = process.platform, apps = [{ name: 'Figma', path: 'C:\\Apps\\Figma.exe', running: true }]) {
   let settings = defaultSettings({ home, desktop: path.join(home, 'Desktop'), userData: path.join(home, 'AppData') });
-  const picks: string[] = [], opened: unknown[] = [], links: string[] = [];
+  const picks: string[] = [], opened: unknown[] = [], links: string[] = [], checks: (string | undefined)[] = [];
   const host: PrefsHost = {
     settings: () => settings, defaults: () => defaultSettings({ home, desktop: path.join(home, 'Desktop'), userData: path.join(home, 'AppData') }),
     set: async partial => { settings = parseSettings(partial, settings); }, chooseFolder: async () => picks.shift(), chooseProgram: async () => picks.shift(),
-    apps: async () => apps, openEditor: tab => { opened.push(tab); }, openExternal: async url => { links.push(url); }, version: () => ({ name: '1.2.3', platform: 'win32' }), home, platform,
+    apps: async () => apps, openEditor: tab => { opened.push(tab); }, openExternal: async url => { links.push(url); }, version: () => ({ name: '1.2.3', platform: 'win32' }), checkUpdates: async () => checks.shift(), saveDebugDump: async () => path.join(root, 'debug', 'clop-debug-dump-1.zip'), home, platform,
   };
-  return { host, prefs: createPrefs(host), picks, opened, links, get: () => settings as ClopSettings };
+  return { host, prefs: createPrefs(host), picks, opened, links, checks, get: () => settings as ClopSettings };
 }
 
 test('the working directory comes from the folder picker, is stored with ~, and can be reset', async () => {
@@ -155,6 +155,14 @@ test('the pipeline editor and external links are validated, and links are fixed'
   for (const target of ['https://evil.example', 'file:///C:/Windows', undefined]) await assert.rejects(h.prefs({ action: 'open', target }), /Choose a link/);
   assert.deepEqual((await h.prefs({ action: 'version' })).version, { name: '1.2.3', platform: 'win32' });
   assert.ok((await h.prefs({ action: 'meta' })).meta!.some(meta => meta.key === 'stripMetadata'));
+});
+
+test('the Updates and About buttons check for updates and save the debug dump', async () => {
+  const h = harness();
+  h.checks.push('Clop 1.2.3 is up to date.', undefined);
+  assert.deepEqual(await h.prefs({ action: 'check-updates' }), { message: 'Clop 1.2.3 is up to date.' });
+  assert.deepEqual(await h.prefs({ action: 'check-updates' }), {}, 'a new version is offered in a dialog instead');
+  assert.match((await h.prefs({ action: 'debug-dump' })).message!, /^Saved clop-debug-dump-1\.zip and showed it in Explorer/);
 });
 
 test('anything that is not a known action is refused', async () => {

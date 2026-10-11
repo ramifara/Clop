@@ -7,6 +7,7 @@ import { CompactList } from './Compact';
 import { factsFor, toastFor, type Run } from './results';
 import { Icon } from './icons';
 import { SettingsWindow } from './SettingsWindow';
+import { Welcome } from './Welcome';
 import { TILE, cellCount, gridHeight, tileAt, tileOrigin } from '../core/pipeline/zones';
 import { glyph } from './editor/glyphs';
 import { MenuPopup, MenuView } from './Menu';
@@ -75,7 +76,7 @@ export function App() {
   useEffect(() => {
     if (!state?.native || preferences) return;
     const move = (event: MouseEvent) => {
-      const hit = document.elementFromPoint(event.clientX, event.clientY)?.closest('.corner-card,.drop-target,.preset-grid,.corner-notice,.stack-actions,.compact-list,.menu-popup');
+      const hit = document.elementFromPoint(event.clientX, event.clientY)?.closest('.corner-card,.drop-target,.preset-grid,.corner-notice,.welcome-card,.stack-actions,.compact-list,.menu-popup');
       if (Boolean(hit) !== interactive.current) { interactive.current = Boolean(hit); void api.window(hit ? 'interactive' : 'passthrough'); }
     };
     document.addEventListener('mousemove', move); return () => document.removeEventListener('mousemove', move);
@@ -118,6 +119,7 @@ export function App() {
       {!tilesFirst && tiles}
       {compact ? <CompactList state={state} run={run} selection={selection} onSelection={setSelection} onMenu={openMenu} onSelect={setSelected}/>
         : cards.map(item => <ResultCard key={item.id} item={item} state={state} run={run} onSelect={() => setSelected(item.id)} onMenu={openMenu}/>)}
+      {state.welcome && <Welcome settings={state.settings} onDismiss={() => void api.window('finish-welcome')}/>}
       {(error || state.notice) && <div className="corner-notice" role="alert"><span>{error || state.notice}</span><button aria-label="Dismiss message" onClick={() => { setError(''); void api.window('dismiss-notice'); }}><Icon name="close" size={12}/></button></div>}
       {!compact && state.items.length > 1 && state.settings.showCopyClearButtons && <div className="stack-actions"><button onClick={() => void run(() => api.copy(state.items[0].id), 'Copied')}>Copy latest</button><button onClick={() => void run(async () => { for (const item of state.items) await api.dismiss(item.id); })}>Clear all</button></div>}
       {message && <div className="copy-toast" role="status">{message}</div>}

@@ -18,12 +18,12 @@ const find = (items: TrayItem[], label: string) => items.find(item => item.label
 
 test('the menu has the macOS order of sections, with the Windows items where they belong', () => {
   const { actions } = recorder();
-  assert.deepEqual(labels(trayMenu(state({ copier: { id: 'c:\\app.exe', name: 'app', ignored: false }, cli: { installed: false } }), actions)), [
+  assert.deepEqual(labels(trayMenu(state({ copier: { id: 'c:\\app.exe', name: 'app', ignored: false }, cli: { installed: false }, explorer: { installed: false } }), actions)), [
     'Show latest results', 'Recent clipboard items', 'Batch optimiser…', 'Pipelines…', 'Settings…', '-',
     'Optimise clipboard', 'Optimise clipboard (aggressive)', 'Downscale and preview the clipboard', 'Ignore clipboard events from app', '-',
     'Open backups folder', 'Open working directory', 'Force clean working directory', 'Revert last optimisations', 'Bring back last result', 'Stop all', '-',
-    'Watch clipboard', 'Keep drop zone visible', 'Pause automatic optimisations', 'Install command-line tool', '-',
-    'Show Clop UI in screenshots', 'About', '-', 'Quit Clop',
+    'Watch clipboard', 'Keep drop zone visible', 'Pause automatic optimisations', 'Install command-line tool', 'Add Explorer menu entries', '-',
+    'Check for updates…', 'Show Clop UI in screenshots', 'About', '-', 'Quit Clop',
   ]);
 });
 
@@ -31,6 +31,7 @@ test('items with no subject are left out: no copying app, no portable install', 
   const found = labels(trayMenu(state(), recorder().actions));
   assert.ok(!found.some(label => label?.startsWith('Ignore clipboard events')));
   assert.ok(!found.some(label => label?.includes('command-line')));
+  assert.ok(!found.some(label => label?.includes('Explorer')));
   assert.ok(!found.includes('Sending files'));
 });
 
@@ -91,12 +92,23 @@ test('hints show the shortcuts that are on and drop with them', () => {
   assert.equal(find(off, 'Revert last optimisations').accelerator, 'Control+Alt+Z');
 });
 
-test('later changes add to About and above the screenshots switch without touching the rest', () => {
-  const noop = () => {};
-  const items = trayMenu(state(), recorder().actions, { about: [{ label: 'Create debug dump', click: noop }], updates: [{ label: 'Check for updates', click: noop }] });
-  assert.deepEqual(labels(find(items, 'About').submenu!), ['Version 1.2.3', 'Create debug dump']);
+test('update checks sit above the screenshots switch, and About holds the version and the debug dump', () => {
+  const { actions, calls } = recorder();
+  const items = trayMenu(state(), actions);
   const names = labels(items);
-  assert.equal(names[names.indexOf('Check for updates') + 1], 'Show Clop UI in screenshots');
+  assert.equal(names[names.indexOf('Check for updates…') + 1], 'Show Clop UI in screenshots');
+  assert.deepEqual(labels(find(items, 'About').submenu!), ['Version 1.2.3', '-', 'Save debug dump']);
+  find(items, 'Check for updates…').click!(false);
+  find(find(items, 'About').submenu!, 'Save debug dump').click!(false);
+  assert.deepEqual(calls, ['checkForUpdates false', 'saveDebugDump false']);
+});
+
+test('the portable app offers to add the Explorer entries, or remove them once added', () => {
+  const { actions, calls } = recorder();
+  const off = find(trayMenu(state({ explorer: { installed: false } }), actions), 'Add Explorer menu entries');
+  const on = find(trayMenu(state({ explorer: { installed: true } }), actions), 'Remove Explorer menu entries');
+  off.click!(false); on.click!(false);
+  assert.deepEqual(calls, ['toggleExplorer false', 'toggleExplorer false']);
 });
 
 test('the icon follows the engine: working while it works, paused when paused, else normal', () => {
