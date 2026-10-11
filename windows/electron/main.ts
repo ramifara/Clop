@@ -35,7 +35,7 @@ import { newPipePath, type OptimisationRequest } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
 import { shellEffects } from '../core/shell-effects';
 import { MEDIA_SCHEME, MediaFiles } from './media-files';
-import { cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
+import { applyCrop, cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
 import { compareSources, parseCompareView } from './compare';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -607,7 +607,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'open-crop': await openView('crop', id); break;
     case 'open-compare': await openView('compare', id); break;
     case 'crop-source': return cropSource(engine.get(id), parseCropView(args[1]), media);
-    case 'crop': await engine.crop(id, parseCropRequest(args[1], engine.get(id).result.kind)); if (copiesBack(id)) await copy([id]); break;
+    case 'crop': await applyCrop(engine, id, parseCropRequest(args[1], engine.get(id).result.kind)); if (copiesBack(id)) await copy([id]); break;
     case 'crop-sizes': return settings.savedCropSizes;
     case 'save-crop-sizes': settings = await store.set({ savedCropSizes: parseSavedCropSizes(args[0]) }); broadcast(); return settings.savedCropSizes;
     case 'compare-sources': return compareSources(engine.get(id), parseCompareView(args[1]), media);

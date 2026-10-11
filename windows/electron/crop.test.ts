@@ -11,7 +11,7 @@ import { boxes, photoPDF, round } from '../core/media/pdf.fixtures';
 import type { CropSize } from '../core/settings/schema';
 import { ItemEngine } from './items';
 import { MediaFiles } from './media-files';
-import { cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
+import { applyCrop, cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
 import { compareSources, parseCompareView } from './compare';
 
 const balanced = { mode: 'balanced', format: 'auto', scale: 1 } as const;
@@ -100,6 +100,15 @@ test('crops an image from its original, keeps the crop through other changes and
   assert.deepEqual([result.width, result.height, result.options.crop], [400, 200, undefined]);
   await engine.apply(id, { ...result.options, scale: .5 });
   assert.deepEqual([engine.get(id).result.width, engine.get(id).result.height], [200, 100]);
+});
+
+test('a crop that fails is reported to the crop window instead of closing it', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine } = f;
+  const id = await engine.importBuffer(await halves(), 'halves.png', 'drop', balanced);
+  await rm(engine.get(id).originalPath);
+  await assert.rejects(applyCrop(engine, id, { type: 'size', size: size(200, 200) }), /\S/);
+  assert.equal(engine.get(id).result.status, 'error');
 });
 
 test('crops a video from its original and previews the cropped frame', async t => {

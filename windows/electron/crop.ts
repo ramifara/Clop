@@ -4,6 +4,7 @@ import { loadPDF, rotateCropRect } from '../core/media/pdf';
 import type { MediaKind } from '../core/media/types';
 import type { CropSize } from '../core/settings/schema';
 import type { CropRect, CropRequest, CropSource, ItemResult } from '../src/types';
+import type { ItemEngine } from './items';
 import type { MediaFiles } from './media-files';
 import { imagePreview, pdfPagePreview, videoFramePreview, viewFile } from './previews';
 
@@ -106,4 +107,12 @@ export async function cropSource(entry: ViewEntry, view: { page: number; time: n
       return { item, preview: files.url(preview), width, height, page: number, pages: pages.length, ...(isFullFrame(initialRect) ? {} : { initialRect }), ...(cropped ? { uncropped: { width, height } } : {}) };
     }
   }
+}
+
+/** Crops a result and waits for it. The engine records a failure on the item rather than throwing, so it is raised here for the crop window to show. */
+export async function applyCrop(engine: ItemEngine, id: string, request: CropRequest) {
+  await engine.crop(id, request);
+  // A result dismissed meanwhile has nothing to report.
+  const result = engine.has(id) ? engine.get(id).result : undefined;
+  if (result?.status === 'error') throw new Error(result.error ?? 'Could not crop this file.');
 }
