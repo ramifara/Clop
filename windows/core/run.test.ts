@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { queue, retryBusy, run, ToolError, type QueueKind } from './run';
 
@@ -16,6 +18,12 @@ test('returns stdout bytes and stderr text, and feeds input on stdin', async () 
   assert.deepEqual([...echo.stdout], [0, 1, 255]);
   assert.equal(echo.stderr, 'note');
   assert.equal(echo.code, 0);
+});
+
+test('a tool runs in its own folder, not the folder Clop started in, unless the caller chooses one', async () => {
+  const where = async (cwd?: string) => (await run(node, ['-e', 'process.stdout.write(process.cwd())'], { cwd })).stdout.toString();
+  assert.equal(await where(), path.dirname(node));
+  assert.equal(await where(os.tmpdir()), os.tmpdir());
 });
 
 test('rejects with the last stderr lines when the tool fails', async () => {
