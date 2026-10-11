@@ -376,6 +376,19 @@ test('stopping ends running and queued jobs, which can then run again', async t 
   engine.stop([id]);
   assert.equal(engine.get(id).result.status, 'ready', 'stopping a finished result changes nothing');
 });
+test('an import given a signal stops with it, while staging and while its job runs', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine, dir } = f;
+  const gone = new AbortController(); gone.abort();
+  await assert.rejects(engine.importBuffer(await sampleImage(), 'early.png', 'file', balanced, { signal: gone.signal }), { name: 'AbortError' });
+  assert.deepEqual(engine.list(), []);
+  const clipPath = await clip(path.join(dir, 'long.mp4'), { width: 640, height: 360, seconds: 4 }), stop = new AbortController();
+  const job = engine.importPath(clipPath, 'file', balanced, undefined, { signal: stop.signal });
+  while (!engine.list().length || engine.list()[0].status !== 'processing') await new Promise(resolve => setTimeout(resolve, 10));
+  stop.abort();
+  const id = await job;
+  assert.deepEqual([engine.get(id).result.status, engine.get(id).result.error], ['error', 'Stopped.']);
+});
 test('a dismissed result can be brought back as the newest', async t => {
   const f = await fixture(t); if (!f) return;
   const { engine } = f;

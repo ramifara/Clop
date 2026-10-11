@@ -72,6 +72,8 @@ interface Entry {
 /** `placement` puts each result back where the file came from; `staged` hears the result's id as soon as it is in the shelf; `automation` runs attached pipelines. */
 export interface ImportExtra {
   placement?: ItemPlacement; staged?: (id: string) => void; automation?: ItemAutomation;
+  /** Stops the import while it stages and the optimisation after it, as Stop does. */
+  signal?: AbortSignal;
   /** More of the above for what the file turns out to be, once its content has been read: a dropped file's name can lie about its kind. */
   late?: (kind: MediaKind) => Pick<ImportExtra, 'staged' | 'automation'> | undefined;
 }
@@ -126,7 +128,7 @@ export class ItemEngine extends EventEmitter {
   }
   private async add(name: string, source: ItemResult['source'], options: ImageOptions, write: (staged: string) => Promise<unknown>, extra: ImportExtra = {}) {
     options = parseOptions(options);
-    const importing = new AbortController(), signal = AbortSignal.any([this.controller.signal, importing.signal]);
+    const importing = new AbortController(), signal = AbortSignal.any([this.controller.signal, importing.signal, ...extra.signal ? [extra.signal] : []]);
     signal.throwIfAborted();
     this.staging.add(importing);
     // A long name loses the end of its stem, never its extension, which says what the file is.
@@ -152,6 +154,7 @@ export class ItemEngine extends EventEmitter {
     } catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
     finally { this.staging.delete(importing); }
     const job = this.job(entry);
+    if (extra.signal?.aborted) job.abort(); else extra.signal?.addEventListener('abort', () => job.abort(), { once: true });
     await this.schedule(entry.result.kind, () => this.process(id, options, job));
     return id;
   }
