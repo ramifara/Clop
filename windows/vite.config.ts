@@ -9,11 +9,20 @@ import { MediaFiles } from './electron/media-files';
 import { cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './electron/crop';
 import { compareSources, parseCompareView } from './electron/compare';
 import { imageDefaults, rendererSettings } from './electron/settings';
+import os from 'node:os';
+import { seedBuiltinPipelines } from './core/pipeline/builtins';
+import { tilesFor } from './core/pipeline/zones';
+import { EditorService } from './electron/editor';
+import { demoSettings } from './scripts/preview-demo';
 import { defaultSettings, parseSettings } from './core/settings/schema';
 import type { ImageOptions } from './src/types';
 
 function localImagePreview(): Plugin {
   let settings = defaultSettings();
+  settings = parseSettings(seedBuiltinPipelines(settings.savedPipelines, 0), settings);
+  // CLOP_PREVIEW_DEMO=1 fills the editor with example attachments and preset zones, for screenshots.
+  if (process.env.CLOP_PREVIEW_DEMO) settings = parseSettings(demoSettings(settings), settings);
+  const editor = new EditorService({ settings: () => settings, change: async patch => { settings = parseSettings(patch, settings); }, context: () => ({ home: os.homedir() }) });
   const session = path.resolve('.preview-data', `session-${Date.now()}`);
   const engine = new ItemEngine(session, () => settings), media = new MediaFiles([session], '/api/media/');
   return {
@@ -39,6 +48,7 @@ function localImagePreview(): Plugin {
           if (req.method === 'GET' && req.url.startsWith('/api/png/')) {
             res.setHeader('Content-Type', 'image/png'); res.end(await sharp(engine.output(req.url.split('/').pop()!)).png().toBuffer()); return;
           }
+          if (req.method === 'GET' && req.url === '/api/editor-state') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(editor.state())); return; }
           if (req.method === 'GET' && req.url.startsWith('/api/media/')) {
             const headers = new Headers(); if (req.headers.range) headers.set('range', req.headers.range);
             const response = await media.handle(new Request(`http://preview${req.url}`, { headers }));
@@ -54,6 +64,7 @@ function localImagePreview(): Plugin {
             for await (const chunk of req) { size += chunk.length; if (size > 48 * 1024 * 1024) throw new Error('Use an image smaller than 32 MB in the browser preview.'); chunks.push(Buffer.from(chunk)); }
             const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
             switch (req.url) {
+              case '/api/editor-command': res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(await editor.command(body))); return;
               case '/api/import':
                 if (engine.list().length >= 40) throw new Error('Dismiss some images before adding more.');
                 await engine.importBuffer(Buffer.from(body.data, 'base64'), String(body.name), 'drop', { ...imageDefaults(settings), ...(body.aggressive === true ? { mode: 'aggressive' } : {}) }); break;
@@ -69,7 +80,7 @@ function localImagePreview(): Plugin {
             }
           }
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify(reply ?? { items: engine.list(), settings, native: false, platform: 'preview' }));
+          res.end(JSON.stringify(reply ?? { items: engine.list(), settings, native: false, platform: 'preview', presets: { revealed: false, ...tilesFor(settings.presetZones, settings.savedPipelines, 'image') } }));
         } catch (error) { res.statusCode = 400; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: message(error) })); }
       });
     },

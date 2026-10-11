@@ -29,7 +29,7 @@ function usedBy(state: EditorState, id: string): string[] {
 }
 
 export function Library({ state, send }: { state: EditorState; send: Send }) {
-  const [selected, setSelected] = useState<string>(), [draft, setDraft] = useState<Draft>(blank()), [saved, setSaved] = useState(''), [filter, setFilter] = useState(''), [note, setNote] = useState(''), [confirming, setConfirming] = useState(false);
+  const [selected, setSelected] = useState<string>(), [draft, setDraft] = useState<Draft>(blank), [saved, setSaved] = useState(() => JSON.stringify(blank())), [filter, setFilter] = useState(''), [note, setNote] = useState(''), [confirming, setConfirming] = useState(false);
   const [serverProblems, setServerProblems] = useState<Problem[]>([]);
   const entry = state.library.find(candidate => candidate.key === selected);
   const dirty = JSON.stringify(draft) !== saved;
