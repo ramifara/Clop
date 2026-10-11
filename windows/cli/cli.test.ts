@@ -14,14 +14,14 @@ import { validateItems } from './items';
 import { main } from './main';
 
 /** A folder of files and an empty app data folder; `clop` runs headless in this process with captured output. */
-async function cli(t: TestContext, colours = false) {
+async function cli(t: TestContext, colours = false, env: Record<string, string> = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-cli-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const userData = path.join(dir, 'data');
   const io = { out: [] as string[], err: [] as string[] };
   const clop = async (...argv: string[]) => {
     io.out.length = 0; io.err.length = 0;
-    return main(argv, { io: { out: text => { io.out.push(text); }, err: text => { io.err.push(text); }, errTTY: false }, cwd: dir, options: { userData, home: dir }, env: {}, colours });
+    return main(argv, { io: { out: text => { io.out.push(text); }, err: text => { io.err.push(text); }, errTTY: false }, cwd: dir, options: { userData, home: dir }, env, colours });
   };
   const settings = async () => JSON.parse(await readFile(path.join(userData, 'settings.json'), 'utf8'));
   return { dir, userData, clop, settings, out: () => io.out.join(''), err: () => io.err.join(''), file: (name: string) => path.join(dir, name) };
@@ -202,6 +202,14 @@ test('the legacy convert writes next to the original and refuses to overwrite wi
   assert.match(c.err(), /icon\.webp already exists, use `--force` to replace/);
   assert.equal(await c.clop('convert', '-f', 'webp', '--force', '-o', 'out/%f-q%q', 'icon.png'), 0, c.err());
   assert.deepEqual(await readdir(c.file('out')), ['icon-q60.webp']);
+});
+
+test('the legacy convert from an agent is refused unless the user allowed agents', async t => {
+  const c = await cli(t, false, { CLOP_ORIGIN: 'mcp' });
+  await graphic(120, 80).png().toFile(c.file('icon.png'));
+  assert.equal(await c.clop('convert', '-f', 'webp', 'icon.png'), 64, c.err());
+  assert.match(c.err(), /not accepting changes from agents/);
+  assert.equal(await stat(c.file('icon.webp')).then(() => true, () => false), false);
 });
 
 test('mcp status and logs persist read and write the switches', async t => {

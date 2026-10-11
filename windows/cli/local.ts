@@ -79,6 +79,7 @@ The extension of the conversion format is automatically added.`, 'o'),
     if (!/^\d+$/.test(quality) || Number(quality) > 100) throw new ValidationError(`The value '${quality}' is invalid for '-q <quality>'`);
     const given = (list(v, 'files') ?? []).map(file => localPath(file, ctx.cwd, ctx.home));
     if (!given.length) throw new ValidationError('At least one image must be specified');
+    await gate(ctx);
     const files: string[] = [];
     for (const file of given) if ((await stat(file).catch(() => undefined))?.isFile()) files.push(file);
     const output = normalizeOutput(str(v, 'output'), ctx.cwd, ctx.home)?.replaceAll('%q', quality);
