@@ -75,7 +75,7 @@ async function rootedDestination(env: PlacementEnv, template: string, root: stri
   const p = pathApi(env), platform = platformOf(env), inside = (file: string) => { const relative = p.relative(root, file); return relative !== '' && relative !== '..' && !relative.startsWith(`..${p.sep}`) && !p.isAbsolute(relative) ? relative : undefined; };
   // Already at the templated place under the folder: leave it, so a template is never stacked.
   const held = inside(original);
-  if (held && nameMatchesTemplate(withoutExtension(held, env), template, { platform })) return original;
+  if (held && nameMatchesTemplate(withoutExtension(held, env), template, { platform, singleFileName: true })) return original;
   const dest = expandPathTemplate(template, { ...context(env, original), relativeTo: root });
   if (!inside(dest)) throw new Error(`The name template ${template} puts ${stemOf(original, env)} outside the chosen folder.`);
   await mkdir(p.dirname(dest), { recursive: true });

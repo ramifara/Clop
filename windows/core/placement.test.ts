@@ -327,3 +327,10 @@ test('a chosen folder holds a nested original only at the templated place, never
   const inSub = { ...overrides, specificFolderTemplate: 'sub/%f' };
   assert.equal(await destinationPath(env, 'image', 'optimised', path.join(source, 'sub', 'photo.png'), inSub), path.join(source, 'sub', 'photo.png'));
 });
+
+test('outside a chosen folder, %f matches any text as on macOS, so a nested file under a specific-folder template counts as placed', async t => {
+  const { env, source } = await setup(t, { ...behaviour('specificFolder'), specificFolderNameTemplateImage: '%P/optimised/%f' });
+  const nested = path.join(source, 'optimised', 'trip', 'photo.png');
+  assert.equal(await destinationPath(env, 'image', 'optimised', nested), nested, 'already under the templated folder');
+  assert.equal(isTemplatedCopy(env, 'image', nested), true);
+});
