@@ -340,6 +340,23 @@ test('a conversion run on a watched file from its card moves the placement with 
   assert.equal((await readFile(file)).equals(original), true, 'the original is back where it was');
   assert.equal(await exists(converted), false, 'and the converted file is gone');
 });
+test('a watched video made bigger again from its card can still be restored to the original', async t => {
+  const f = await setup(t); if (!f) return;
+  const file = await clip(path.join(f.dir, 'clip.mp4'), { width: 640, height: 360, seconds: 1 }), original = await readFile(file);
+  assert.equal(await f.folders.optimise(file, 'video', f.dir), file);
+  const [item] = f.engine.list();
+  assert.equal(item.status, 'ready', item.error);
+  const host: CardHost = { engine: f.engine, settings: () => f.state.settings, pipeline: { env: f.env, effects: () => new FakeEffects(), counterChanged: () => {}, keep: () => {} } };
+  const card = (arg: number) => runPlan(host, item.id, planFor(f.engine.get(item.id).result, parseInvocation('video', { action: 'downscale', arg })) as never);
+  await card(0.5);
+  assert.equal(f.engine.get(item.id).result.status, 'ready', f.engine.get(item.id).result.error);
+  // Bigger than it is now: the video starts again from its original, which the card puts back in the folder first.
+  await card(0.8);
+  assert.equal(f.engine.get(item.id).result.status, 'ready', f.engine.get(item.id).result.error);
+  assert.equal(f.engine.output(item.id), file);
+  await f.engine.restore(item.id);
+  assert.equal((await readFile(file)).equals(original), true, 'the original is back where it was');
+});
 test('a pipeline chosen for a file runs on that file where it is, not on a copy in the shelf', async t => {
   const f = await setup(t); if (!f) return;
   const file = path.join(f.dir, 'shot.png'), original = await sampleImage();

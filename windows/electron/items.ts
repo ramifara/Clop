@@ -33,8 +33,11 @@ const LOCAL_ERRORS = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY', 'EISDIR']);
 export interface ItemPlacement {
   /** Places a finished result; resolves with where it now is. `staged` is the shelf's copy of the original, to tell whether the file changed meanwhile. `manual` is a format the user chose on the result's card, for the settings of manual conversions. */
   place(output: MediaOutput, staged?: string, manual?: boolean): Promise<string>;
-  /** Puts the original back; resolves with where it now is, or undefined when the shelf's own copy is the original. */
-  restore(): Promise<string | undefined>;
+  /**
+   * Puts the original back; resolves with where it now is, or undefined when the shelf's own copy is the original. `resume` is a restore
+   * that a pipeline run on that file follows straight away: the placement goes on knowing the file as its result.
+   */
+  restore(resume?: boolean): Promise<string | undefined>;
   /** A pipeline rewrote the placed file, or replaced it with another in its folder (a conversion): restoring undoes that file as it is now. */
   follow?(file: string): void | Promise<void>;
 }
@@ -401,11 +404,11 @@ export class ItemEngine extends EventEmitter {
   private progress(r: ItemResult) {
     return (fraction: number) => { const value = Math.floor(fraction * 50) / 50; if (value > (r.progress ?? 0)) { r.progress = value; this.changed(); } };
   }
-  restore(id: string) { return this.schedule(this.kindOf(id), async () => {
+  restore(id: string, resume = false) { return this.schedule(this.kindOf(id), async () => {
     const e = this.get(id);
     if (e.changedOutside) throw new Error(`A pipeline changed ${path.basename(e.changedOutside)}, so Clop leaves it as it is. Its original is in the backups.`);
     // A pipeline's file outside the shelf is no longer the result once the original is back.
-    e.placedPath = e.placement ? await e.placement.restore() : undefined;
+    e.placedPath = e.placement ? await e.placement.restore(resume) : undefined;
     e.outputPath = e.originalPath;
     if (e.result.kind === 'audio') e.result.coverArt = await probe(e.originalPath).then(info => info.kind === 'audio' ? info.hasCoverArt : undefined, () => e.result.coverArt);
     Object.assign(e.result, { status: 'ready', width: e.result.originalWidth, height: e.result.originalHeight, outputBytes: e.result.originalBytes,

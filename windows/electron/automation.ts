@@ -35,20 +35,22 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
     // Marked, so coming back does not get it optimised.
     await mark(target);
   }
-  async function restore() {
+  /** `resume` is a restore that a new run on the file follows at once: the placement keeps the file as its result, so a later restore still finds it. */
+  async function restore(resume = false) {
     if (!placed) return undefined;
     const name = path.basename(placed);
     if (!await exists(placed)) throw new Error(`${name} was moved or deleted after Clop optimised it, so its original stays in the backups.`);
     // Judged by the result this placement left, not by the shared marker, which a later optimisation of an edited file refreshes.
     if (await edited(placed)) throw new Error(`${name} changed after Clop optimised it, so Clop left it as it is. Its original is in the backups.`);
     if (backup && !samePath(placed, file) && await exists(file)) throw new Error(`A new ${path.basename(file)} is where the original was, so Clop left both as they are. The original is in the backups.`);
-    let target = file;
+    let target = file, keeps = true;
     // Over the file, the backup goes back. A copy beside the file (`sameFolder`, `specificFolder`) gives back the user's file it
     // replaced, or else gets the untouched original, as macOS restores a templated copy.
     if (backup) { await copyTo(backup, file); await mark(file); if (!samePath(placed, file)) await vacate(placed); }
-    else if (replaced.has(key(placed))) await vacate(placed);
+    else if (replaced.has(key(placed))) { await vacate(placed); keeps = false; }
     else { target = placed; await copyTo(file, placed); await mark(placed); }
-    placed = undefined; stamp = undefined;
+    if (resume && keeps) { placed = target; stamp = await stat(target).then(({ size, mtimeMs }) => ({ size, mtimeMs }), () => undefined); }
+    else { placed = undefined; stamp = undefined; }
     return target;
   }
   /** Whether the result this placement left was changed since (by size or modification time), as a later save or another optimisation would. */
@@ -85,7 +87,7 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
       stamp = await stat(result.path).then(({ size, mtimeMs }) => ({ size, mtimeMs }), () => undefined);
       return result.path;
     },
-    restore,
+    restore: (resume?: boolean) => restore(resume),
     async follow(file: string) {
       if (!placed) return;
       placed = file;

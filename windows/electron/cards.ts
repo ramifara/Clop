@@ -44,7 +44,7 @@ export async function runPlan(host: CardHost, id: string, plan: Extract<Plan, { 
   const change = plan.type === 'steps' ? totalChange(plan.steps, entry.result.options) : undefined;
   if (change && !change.steps.length) return;
   // A video can't get its pixels back: going up from a smaller size starts again from the original.
-  if (change?.restoreFirst) await engine.restore(id);
+  if (change?.restoreFirst) await engine.restore(id, true);
   let ran = false;
   await engine.runPipeline(id, async input => {
     const file = input.optimised ?? await input.fresh();
