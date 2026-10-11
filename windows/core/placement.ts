@@ -13,7 +13,9 @@ export type FileBehaviour = 'temporary' | 'inPlace' | 'sameFolder' | 'specificFo
 export type FileType = 'image' | 'video' | 'audio' | 'pdf';
 export type OutputKind = 'optimised' | 'autoConvert' | 'manualConvert';
 /** A per-request override (`PlacementOverride` in Shared.swift). */
-export interface PlacementOverride { optimised?: FileBehaviour; autoConvert?: FileBehaviour; manualConvert?: FileBehaviour; sameFolderTemplate?: string; specificFolderTemplate?: string }
+export interface PlacementOverride { optimised?: FileBehaviour; autoConvert?: FileBehaviour; manualConvert?: FileBehaviour; sameFolderTemplate?: string; specificFolderTemplate?: string;
+  /** A folder the specific-folder template is relative to. Only the template is expanded; the folder is used as it is, whatever its name. */
+  specificFolderRoot?: string }
 export interface PlacementEnv {
   settings: ClopSettings;
   workdir: Workdir;
@@ -66,6 +68,21 @@ const stemOf = (file: string, env: PlacementEnv) => pathApi(env).parse(file).nam
 const withoutExtension = (file: string, env: PlacementEnv) => { const p = pathApi(env), { dir, name } = p.parse(file); return p.join(dir, name); };
 
 /**
+ * The specific-folder destination when the folder is chosen apart from the template: only the template is expanded, so a
+ * folder named `O'Brien` or `100%d` keeps its name, and the result must still land inside it.
+ */
+async function rootedDestination(env: PlacementEnv, template: string, root: string, original: string): Promise<string> {
+  const p = pathApi(env), platform = platformOf(env), inside = (file: string) => { const relative = p.relative(root, file); return relative !== '' && relative !== '..' && !relative.startsWith(`..${p.sep}`) && !p.isAbsolute(relative) ? relative : undefined; };
+  // Already at the templated place under the folder: leave it, so a template is never stacked.
+  const held = inside(original);
+  if (held && nameMatchesTemplate(withoutExtension(held, env), template, { platform })) return original;
+  const dest = expandPathTemplate(template, { ...context(env, original), relativeTo: root });
+  if (!inside(dest)) throw new Error(`The name template ${template} puts ${stemOf(original, env)} outside the chosen folder.`);
+  await mkdir(p.dirname(dest), { recursive: true });
+  return dest;
+}
+
+/**
  * Port of `destinationPath`: where `original`'s result goes, or undefined for `temporary`. Idempotent:
  * a path that already sits at the templated location is returned unchanged, so a template is never
  * stacked (`img-optimised.png` -> `img-optimised-optimised.png`). Creates the folder of a `specificFolder` result.
@@ -81,7 +98,8 @@ export async function destinationPath(env: PlacementEnv, type: FileType, kind: O
       return pathApi(env).join(pathApi(env).dirname(original), expandTemplate(template, context(env, original)));
     }
     case 'specificFolder': {
-      const template = templateOf(env, type, kind, 'specific', overrides);
+      const template = templateOf(env, type, kind, 'specific', overrides), root = overrides?.specificFolderRoot;
+      if (root !== undefined) return rootedDestination(env, template, root, original);
       const absolute = isAbsoluteTemplate(template, env);
       if (nameMatchesTemplate(withoutExtension(original, env), template, { allowPathPrefix: !absolute, platform })) return original;
       const dest = expandPathTemplate(template, context(env, original));

@@ -20,6 +20,8 @@ export interface TemplateContext {
   /** Path rules to apply. Defaults to the running platform; tests use it to cover Windows paths on any host. */
   platform?: NodeJS.Platform;
   home?: string;
+  /** The folder a relative result lands in, instead of the folder of `path`. Used as it is, never rewritten. */
+  relativeTo?: string;
 }
 
 const pathApi = (platform = process.platform) => platform === 'win32' ? path.win32 : path.posix;
@@ -73,7 +75,7 @@ export function expandTemplate(template: string, ctx: TemplateContext = {}, { sa
  * Port of the path form of `generateFilePath`: expands the tokens and the home prefix, normalises, and
  * makes literal components safe file names. Components that hold `%P` or `%F`, and a leading home prefix,
  * are real folders and stay as they are, so `%P/optimised/%f` never renames a source folder such as
- * `Dev & Stuff`. The extension of `ctx.path` goes on the end. A relative result lands next to `ctx.path`.
+ * `Dev & Stuff`. The extension of `ctx.path` goes on the end. A relative result lands next to `ctx.path`, or in `ctx.relativeTo`.
  * Touches no files.
  */
 export function expandPathTemplate(template: string, ctx: TemplateContext = {}): string {
@@ -96,7 +98,9 @@ export function expandPathTemplate(template: string, ctx: TemplateContext = {}):
   if (ctx.counter && template.includes('%i')) ctx.counter.value = start + 1;
   const ext = ctx.path ? p.parse(ctx.path).ext : '';
   const result = p.normalize(parts.join(p.sep) + ext);
-  return !p.isAbsolute(result) && ctx.path ? p.join(p.dirname(ctx.path), result) : result;
+  if (p.isAbsolute(result)) return result;
+  const base = ctx.relativeTo ?? (ctx.path ? p.dirname(ctx.path) : undefined);
+  return base ? p.join(base, result) : result;
 }
 
 /** Whether a path template starts at a fixed place (a root, `%P` or `%F`) rather than relative to the file. */

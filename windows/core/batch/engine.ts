@@ -58,7 +58,7 @@ const extension = (file: string) => path.extname(file).slice(1).toLowerCase();
 function overrides(output: BatchOutput): PlacementOverride {
   if (output.location === 'inPlace') return { optimised: 'inPlace', autoConvert: 'inPlace', manualConvert: 'inPlace' };
   if (output.location === 'sameFolder') return { optimised: 'sameFolder', autoConvert: 'sameFolder', manualConvert: 'sameFolder', sameFolderTemplate: output.template };
-  return { optimised: 'specificFolder', autoConvert: 'specificFolder', manualConvert: 'specificFolder', specificFolderTemplate: path.join(output.folder, output.template) };
+  return { optimised: 'specificFolder', autoConvert: 'specificFolder', manualConvert: 'specificFolder', specificFolderRoot: output.folder, specificFolderTemplate: output.template };
 }
 
 /** What a media job produced, before it is placed. */

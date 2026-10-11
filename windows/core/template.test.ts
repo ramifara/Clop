@@ -135,6 +135,13 @@ test('folders that came from %P, %F or the home prefix keep their names; literal
   assert.equal(expandPathTemplate('$HOME/Dev & Stuff/%f', { ...fixed, path: posix, platform: 'linux', home: "/home/o'neil" }), "/home/o'neil/Dev _ Stuff/shot.png");
 });
 
+test('a relative template lands in `relativeTo` as it is, whatever that folder is called', () => {
+  const win = { ...fixed, platform: 'win32' as const, path: windows };
+  for (const root of ["C:\\Users\\O'Brien\\Pics & Stuff", 'C:\\Photos\\100%d', 'D:\\out.', '\\\\srv\\share\\a#b']) {
+    assert.equal(expandPathTemplate('sub/%f-new', { ...win, relativeTo: root }), `${root}\\sub\\shot-new.png`, root);
+  }
+});
+
 test('literal text beside %P or %F is made safe while the folders stay as they are', () => {
   const ctx = { ...fixed, path: "/home/rami/Dev & Stuff/shot.png", platform: 'linux' as const };
   assert.equal(expandPathTemplate('%P-copy?/%f', ctx), "/home/rami/Dev & Stuff-copy_/shot.png");

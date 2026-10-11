@@ -121,6 +121,33 @@ test('results saved to a folder under a name template never collide, and reverti
   assert.deepEqual(await readdir(out), []);
 });
 
+test('the chosen folder is used as it is: only the name template is expanded', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { dir, files, env, params } = await setup(t);
+  const pic = await write(path.join(files, 'pic.jpg'), await jpeg(320, 240, 5));
+  for (const name of ["O'Brien", 'Pics & Stuff', '100%d', 'a#b', 'x%f']) {
+    const out = path.join(dir, name, 'inner');
+    const batch = await batchOf(env, [pic], params({ output: { location: 'folder', folder: out, template: 'sub/%f-new' } }));
+    await batch.run();
+    assert.deepEqual(statuses(batch), ['done'], name);
+    assert.equal(batch.items[0].result, path.join(out, 'sub', 'pic-new.jpg'), name);
+    assert.ok(await exists(path.join(out, 'sub', 'pic-new.jpg')), name);
+    assert.deepEqual(await readdir(path.join(dir, name)), ['inner'], `${name}: nothing beside the chosen folder`);
+  }
+});
+
+test('a template that expands to somewhere outside the chosen folder is refused', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { dir, files, env, params } = await setup(t);
+  const pic = await write(path.join(files, 'pic.jpg'), await jpeg(320, 240, 5)), out = path.join(dir, 'out');
+  // `~` is not caught when the template is checked, but it would expand to the home folder.
+  const batch = await batchOf(env, [pic], params({ output: { location: 'folder', folder: out, template: '~/%f' } }));
+  await batch.run();
+  assert.deepEqual(statuses(batch), ['failed']);
+  assert.match(batch.items[0].error!, /outside the chosen folder/);
+  assert.deepEqual(await readdir(files), ['pic.jpg']);
+});
+
 test('reverting leaves alone a result edited or deleted since, and still restores the rest', async t => {
   if (!needTools(t, 'jpegoptim', 'exiftool')) return;
   const { files, env, params } = await setup(t);
