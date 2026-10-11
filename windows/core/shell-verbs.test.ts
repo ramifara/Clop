@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { NSIS_PATHS, RUN_PIPELINE_FLAG, appliesTo, nsisInstall, nsisUninstall, regAdd, regDelete, regExe, regQuery, runPipelineFiles, verbPlan } from './shell-verbs';
+import { NSIS_PATHS, VERB_FLAGS, appliesTo, commandExe, explorerVerb, firstCommand, nsisInstall, nsisUninstall, regAdd, regDelete, regExe, regQuery, regQueryValue, verbPlan } from './shell-verbs';
 
-const paths = { clop: 'C:\\Users\\Ann Lee\\AppData\\Local\\Clop for Windows\\cli\\clop.exe', app: 'C:\\Program Files\\Clop for Windows\\Clop for Windows.exe' };
+const paths = { app: 'C:\\Program Files\\Clop for Windows\\Clop for Windows.exe' };
 const plan = verbPlan(paths);
 const commandOf = (root: string) => plan.values.find(value => value.key === `${root}\\command`)!.value;
 
@@ -14,16 +14,16 @@ test('the plan has the five verbs of the spec, each under the current user\'s fi
   assert.equal(new Set(plan.roots).size, plan.roots.length);
 });
 
-test('every command passes the file after --, so a file named like an option stays a file', () => {
-  for (const root of plan.roots) {
+test('every verb runs the app itself with its own flag and the file after --, so a file named like an option stays a file', () => {
+  const flags = Object.values(VERB_FLAGS);
+  assert.equal(new Set(flags).size, 5);
+  plan.roots.forEach((root, index) => {
     const command = commandOf(root);
-    assert.ok(command.endsWith(' -- "%1"'), command);
+    assert.equal(command, `"${paths.app}" ${flags[index]} -- "%1"`);
     assert.equal(command.split(' -- ').length, 2, command);
-    assert.ok(command.startsWith(`"${paths.clop}" --hidden `) || command.startsWith(`"${paths.app}" ${RUN_PIPELINE_FLAG} `), command);
-  }
-  assert.equal(commandOf(plan.roots[0]), `"${paths.clop}" --hidden optimise --gui --async -- "%1"`);
-  assert.equal(commandOf(plan.roots[1]), `"${paths.clop}" --hidden optimise --aggressive --gui --async -- "%1"`);
-  assert.equal(commandOf(plan.roots[4]), `"${paths.app}" --run-pipeline -- "%1"`);
+  });
+  // Neither clop.exe nor a background worker is involved: the one app, reached through its single-instance lock, does the work.
+  assert.ok(!plan.values.some(value => /clop\.exe|--async|--hidden/i.test(value.value)));
 });
 
 test('removing the integration deletes exactly the keys the plan wrote, and nothing else', () => {
@@ -43,8 +43,8 @@ test('each verb shows only for the file types its command handles', () => {
   assert.equal(appliesTo(['png', 'jpg']), 'System.FileExtension:=".png" OR System.FileExtension:=".jpg"');
 });
 
-test('the Send To shortcut starts clop.exe with the whole selection after --', () => {
-  assert.deepEqual(plan.sendTo, { file: 'Optimise with Clop.lnk', target: paths.clop, args: '--hidden optimise --gui --async --', icon: paths.app });
+test('the Send To shortcut starts the app with the whole selection after --', () => {
+  assert.deepEqual(plan.sendTo, { file: 'Optimise with Clop.lnk', target: paths.app, args: '--clop-optimise --', icon: paths.app });
 });
 
 test('reg.exe arguments are an array at the System32 path, values untouched', () => {
@@ -67,14 +67,23 @@ test('the installer script writes and removes exactly what the plan says', () =>
   assert.match(script, /!macro customInstall[^]*clopVerbsAdd/);
 });
 
-test('a launch with --run-pipeline names the full paths after --, and anything else is not that verb', () => {
+test('a launch names its verb before -- and the full paths after it, and anything else is not a verb', () => {
   const app = 'C:\\Apps\\Clop for Windows.exe';
-  assert.deepEqual(runPipelineFiles([app, '--run-pipeline', '--', 'C:\\Pictures\\a b.png']), ['C:\\Pictures\\a b.png']);
-  assert.deepEqual(runPipelineFiles([app, '--run-pipeline', '--', 'C:\\a.png', 'C:\\a.png', 'D:\\b.mp4']), ['C:\\a.png', 'D:\\b.mp4']);
+  assert.deepEqual(explorerVerb([app, '--clop-run-pipeline', '--', 'C:\\Pictures\\a b.png']), { verb: 'run-pipeline', files: ['C:\\Pictures\\a b.png'] });
+  assert.deepEqual(explorerVerb([app, '--clop-optimise-aggressive', '--', 'C:\\a.png', 'C:\\a.png', 'D:\\b.mp4']), { verb: 'aggressive', files: ['C:\\a.png', 'D:\\b.mp4'] });
+  for (const [verb, flag] of Object.entries(VERB_FLAGS)) assert.equal(explorerVerb([app, flag, '--', 'C:\\a.png'])?.verb, verb);
   // Without --, nothing after the flag is a file: a name like an option stays inert.
-  assert.deepEqual(runPipelineFiles([app, '--run-pipeline', 'C:\\a.png']), []);
-  assert.deepEqual(runPipelineFiles([app, '--run-pipeline', '--', 'relative.png', '--aggressive', '\\\\server\\share\\c.png']), ['\\\\server\\share\\c.png']);
-  assert.equal(runPipelineFiles([app, 'C:\\a.png']), undefined);
-  assert.equal(runPipelineFiles([app, '--', '--run-pipeline']), undefined, 'a file named like the flag is a file');
-  assert.equal(runPipelineFiles([app, '--', 'C:\\a.png', '--run-pipeline']), undefined);
+  assert.deepEqual(explorerVerb([app, '--clop-optimise', 'C:\\a.png']), { verb: 'optimise', files: [] });
+  assert.deepEqual(explorerVerb([app, '--clop-downscale', '--', 'relative.png', '--aggressive', '\\\\server\\share\\c.png']), { verb: 'downscale', files: ['\\\\server\\share\\c.png'] });
+  assert.equal(explorerVerb([app, 'C:\\a.png']), undefined);
+  assert.equal(explorerVerb([app, '--', '--clop-optimise']), undefined, 'a file named like the flag is a file');
+  assert.equal(explorerVerb([app, '--', 'C:\\a.png', '--clop-strip-exif']), undefined);
+});
+
+test('a reg query prints the command, which tells current entries from moved or foreign ones', () => {
+  const printed = `\r\nHKEY_CURRENT_USER\\Software\\Classes\\*\\shell\\Clop.Optimise\\command\r\n    (Default)    REG_SZ    ${firstCommand(paths)}\r\n\r\n`;
+  assert.equal(regQueryValue(printed), firstCommand(paths));
+  assert.equal(regQueryValue('ERROR: The system was unable to find the specified registry key or value.'), undefined);
+  assert.equal(commandExe(firstCommand(paths)), paths.app);
+  assert.equal(commandExe('not quoted'), undefined);
 });

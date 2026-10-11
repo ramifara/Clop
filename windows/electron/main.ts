@@ -44,8 +44,10 @@ import { mcpSettings } from './mcp';
 import { setupDebugDump, setupUpdates, setupWatchdog } from './support';
 import { FileCollector } from './file-collector';
 import { pipelineMenu } from './pipeline-menu';
-import { installPortableVerbs, installVerbs, portablePaths, removeVerbs, verbsInstalled } from './explorer';
-import { runPipelineFiles } from '../core/shell-verbs';
+import { installVerbs, portablePaths, removeVerbs, verbsStatus } from './explorer';
+import { explorerVerb, type VerbId } from '../core/shell-verbs';
+import { stripExifFile } from '../core/media/strip-copy';
+import { explorerRequest, skippedNote, stripAll, stripSummary, usableFiles } from './verbs';
 import { mirrorConsoleToFile } from './debug-log';
 import { newPipePath, type OptimisationRequest } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
@@ -107,9 +109,17 @@ const pickup = new ClipboardPickup(change => { if (!shortcutRunner.consumePauseN
 let clipboardWrites: Promise<void> = Promise.resolve();
 const bridge = new WindowsBridge();
 let pipe: PipeServer | undefined, withdrawPipe: (() => void) | undefined, cliInstalled = false, askingMCP = false;
-let updates: ReturnType<typeof setupUpdates>, saveDump: ReturnType<typeof setupDebugDump>, stopUpdates: (() => void) | undefined, explorerInstalled = false;
-/** The files of Explorer's "Run pipeline..." verb: one launch arrives per selected file, so they are gathered before the menu asks which pipeline. While the app is still starting they wait. */
-const verbFiles: FileCollector = new FileCollector(files => { if (!engine) verbFiles.add(files); else void choosePipeline(files).catch(error => inform(message(error))); });
+let service: ClopService | undefined, updates: ReturnType<typeof setupUpdates>, saveDump: ReturnType<typeof setupDebugDump>, stopUpdates: (() => void) | undefined, explorerInstalled = false;
+/** The files of Explorer's right-click verbs: one launch arrives per selected file, so each verb's files are gathered before the app acts. While the app is still starting they wait. */
+const verbCollectors = new Map<VerbId, FileCollector>();
+function collectVerb(verb: VerbId, files: string[]) {
+  let collector = verbCollectors.get(verb);
+  if (!collector) {
+    collector = new FileCollector(all => { if (!service) collector!.add(all); else void runVerb(verb, all).catch(error => inform(message(error))); });
+    verbCollectors.set(verb, collector);
+  }
+  collector.add(files);
+}
 const devUrl = process.env.CLOP_DEV_URL;
 const fingerprint = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 /** Files are recognised by path, size and modification time: hashing a large video's bytes on every copy would take too long. */
@@ -585,11 +595,11 @@ async function optimiseWithCard(file: string, kind: MediaKind, req: Optimisation
 async function serveCLI(userData: string) {
   const files = shellEffects();
   // The same effects as pipelines run from the app, per request: an agent without the permission for script steps cannot open a program by path.
-  const service = new ClopService({
+  service = new ClopService({
     store: { get: () => store.get(), update: async change => { const wasEnabled = settings.mcpEnabled, reply = await store.update(change); await settingsChanged(reply.settings, wasEnabled); return reply; } },
     workdir, marker, effects: options => pipelineEffects(options), copyFiles: list => files.copyFiles(list), home: app.getPath('home'), withCard: optimiseWithCard,
   });
-  pipe = await startPipeServer(newPipePath(), (request, emit) => { console.log(`CLI request: ${request.kind}`); return service.handle(request, emit); });
+  pipe = await startPipeServer(newPipePath(), (request, emit) => { console.log(`CLI request: ${request.kind}`); return service!.handle(request, emit); });
   withdrawPipe = await publishPipe(userData, pipe);
 }
 /** `clop://settings/…` opens Settings on a tab and row and `clop://mcp/start|stop` flips the MCP switch; start asks first. */
@@ -617,29 +627,42 @@ async function confirmScripts() {
 }
 function toggleCLI() {
   const appDir = path.dirname(process.execPath);
-  // The Explorer entries run the copy of clop.exe that removing the tool deletes, so they go with it.
-  (cliInstalled ? removePortableCLI(process.resourcesPath, appDir).then(() => removeExplorerEntries()) : installPortableCLI(process.resourcesPath, appDir))
+  (cliInstalled ? removePortableCLI(process.resourcesPath, appDir) : installPortableCLI(process.resourcesPath, appDir))
     .then(() => { cliInstalled = !cliInstalled; updateTray(); void mcp.writeCard().catch(() => {}); inform(cliInstalled ? 'Open a new terminal to use the clop command.' : 'The clop command is removed.'); })
     .catch(error => inform(message(error)));
 }
-async function removeExplorerEntries() {
-  if (!explorerInstalled) return;
-  await removeVerbs(portablePaths());
-  explorerInstalled = false;
-}
-/** The portable app's switch for Explorer's right-click entries (the installer adds its own): they need clop.exe in its fixed folder, so adding them installs the command-line tool too. */
+/** The portable app's switch for Explorer's right-click entries (the installer adds its own). They run the exe the user started, so the app has to stay where it is. */
 async function toggleExplorer() {
-  if (explorerInstalled) { await removeExplorerEntries(); updateTray(); inform('The Explorer menu entries are removed.'); return; }
-  await installPortableVerbs(process.resourcesPath, path.dirname(process.execPath));
-  explorerInstalled = true; cliInstalled = true; updateTray(); void mcp.writeCard().catch(() => {});
-  inform('Right-click a file in Explorer (under Show more options on Windows 11) to use Clop. The clop command is installed too.');
+  if (explorerInstalled) { await removeVerbs(portablePaths()); explorerInstalled = false; updateTray(); inform('The Explorer menu entries are removed.'); return; }
+  await installVerbs(portablePaths());
+  explorerInstalled = true; updateTray();
+  inform('Right-click a file in Explorer (under Show more options on Windows 11) to use Clop. Keep the portable app where it is.');
 }
-/** "Run pipeline..." from Explorer: asks which saved pipeline with a menu at the pointer, then runs it on the files. */
+/** What each Explorer verb does once its launches are gathered. All of it happens in this one app: nothing else is started. */
+async function runVerb(verb: VerbId, files: string[]) {
+  if (verb === 'run-pipeline') return choosePipeline(files);
+  const { use, skipped } = usableFiles(verb, files);
+  if (!use.length) { inform(skippedNote(skipped)); return; }
+  if (verb === 'strip-exif') { inform(stripSummary(await stripAll(use, stripExifFile), skipped)); return; }
+  const failures: string[] = [];
+  await service!.optimise(explorerRequest(verb, use, randomUUID()), reply => { if (reply.kind === 'error') failures.push(`${path.basename(reply.error.forURL)}: ${reply.error.error}`); });
+  const notes = [...failures.slice(0, 3), ...(failures.length > 3 ? [`${failures.length - 3} more failed.`] : []), ...(skipped ? [skippedNote(skipped)] : [])];
+  if (notes.length) inform(notes.join('\n'));
+}
+/** "Run pipeline..." from Explorer: asks which saved pipeline with a menu at the pointer, then runs it on the files that pipeline works on. */
 async function choosePipeline(files: string[]) {
-  const supported = files.filter(file => mediaKind(file)).slice(0, 20);
+  const supported = files.filter(file => mediaKind(file));
   if (!supported.length) { inform('Clop cannot run a pipeline on those files.'); return; }
   const menu = pipelineMenu(allPipelineChoices(settings), supported.map(mediaKind), supported.length, id => {
-    importPaths(supported, 'drop', { extra: file => { const kind = mediaKind(file) ?? 'image'; return sourceAutomation(kind, 'dropZone', 'drop', undefined, [chosenPipeline(settings, kind, id)]); } }).catch(error => inform(message(error)));
+    const pipeline = allPipelineChoices(settings).find(choice => choice.id === id);
+    const usable = supported.filter(file => !pipeline?.fileType || mediaKind(file) === pipeline.fileType);
+    if (usable.length < supported.length) inform(`${pipeline?.name ?? 'That pipeline'} works on ${pipeline?.fileType} files, so ${supported.length - usable.length} other file${supported.length - usable.length === 1 ? ' was' : 's were'} left out.`);
+    void (async () => {
+      // importPaths takes up to 20 files at a time; a larger selection goes in turns.
+      for (let at = 0; at < usable.length; at += 20) {
+        await importPaths(usable.slice(at, at + 20), 'drop', { extra: file => { const kind = mediaKind(file) ?? 'image'; return sourceAutomation(kind, 'dropZone', 'drop', undefined, [chosenPipeline(settings, kind, id)]); } });
+      }
+    })().catch(error => inform(message(error)));
   });
   if (!menu.length) { inform('No saved pipeline works on those files. Add one in the pipeline editor.'); return; }
   const built = Menu.buildFromTemplate(menu);
@@ -993,9 +1016,9 @@ ipcMain.on('clop:drag', (event, id: string) => {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', (_event, argv) => {
-    // Explorer's "Run pipeline..." verb: one launch per selected file, answered once the selection is complete.
-    const picked = runPipelineFiles(argv);
-    if (picked) { verbFiles.add(picked); return; }
+    // Explorer's right-click verbs: one launch per selected file, answered once the selection is complete.
+    const picked = explorerVerb(argv);
+    if (picked) { collectVerb(picked.verb, picked.files); return; }
     const links = clopURLs(argv);
     if (links.length) { if (engine) for (const link of links) void openClopURL(link).catch(error => inform(message(error))); return; }
     // Without the tray icon there is no menu to open, so another launch opens Settings.
@@ -1120,17 +1143,22 @@ else {
     }
     if (isPortable() && (cliInstalled = await portableCLIInstalled())) { updateTray(); void refreshPortableCLI(process.resourcesPath, path.dirname(process.execPath)).catch(error => inform(message(error))); }
     for (const link of clopURLs(process.argv.slice(1))) void openClopURL(link).catch(error => inform(message(error)));
-    const picked = runPipelineFiles(process.argv.slice(1));
-    if (picked) verbFiles.add(picked);
+    const picked = explorerVerb(process.argv.slice(1));
+    if (picked) collectVerb(picked.verb, picked.files);
     else {
       const files = process.argv.slice(1).filter(arg => path.isAbsolute(arg) && mediaKind(arg));
       if (files.length) await importFiles(files, 'file');
     }
-    // The portable app may have been moved since the entries were added: they are written again, pointing at where it is now.
-    if (isPortable() && (explorerInstalled = await verbsInstalled(portablePaths()))) { updateTray(); void installVerbs(portablePaths()).catch(error => console.warn(`Could not refresh the Explorer menu entries: ${message(error)}`)); }
+    // The portable app may have been moved since the entries were added: they are written again, but only then, and never over the installer's.
+    if (isPortable()) {
+      const status = await verbsStatus(portablePaths());
+      explorerInstalled = status !== 'none';
+      if (status === 'moved') void installVerbs(portablePaths()).catch(error => console.warn(`Could not refresh the Explorer menu entries: ${message(error)}`));
+      if (explorerInstalled) updateTray();
+    }
     if (app.isPackaged) stopUpdates = updates.start();
   }).catch(error => { dialog.showErrorBox('Clop could not start', message(error)); app.quit(); });
-  app.on('before-quit', () => { quitting = true; stopUpdates?.(); verbFiles.cancel(); withdrawPipe?.(); void pipe?.close(); engine?.abort(); batch?.host.stop(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
+  app.on('before-quit', () => { quitting = true; stopUpdates?.(); for (const collector of verbCollectors.values()) collector.cancel(); withdrawPipe?.(); void pipe?.close(); engine?.abort(); batch?.host.stop(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });
   app.on('activate', () => { if (engine) showLatest(); });
 }

@@ -3,8 +3,10 @@ import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } from './media/de
 
 // Explorer integration (spec step 39): the right-click verbs for files and the Send To shortcut, as plain data. The installer
 // (`native/installer.nsh`, kept equal to this by a test) and the portable app's `reg.exe` calls both write this plan, and removing
-// the integration removes exactly the keys it names. Only the current user's hive is touched, and no verb runs anything but
-// `clop.exe` (or the app itself, for the one that needs its window) with the file after `--`, so a file named like an option stays a file.
+// the integration removes exactly the keys it names. Only the current user's hive is touched. Every verb launches the app itself
+// with its own flag and the files after `--`, so a file named like an option stays a file, and no shell is involved. Explorer starts one
+// launch per selected file; they all reach the one running app (Electron's single-instance lock), which gathers them into one selection.
+// Without a running app the first launch becomes the app.
 
 const ROOT = 'Software\\Classes\\*\\shell';
 const SEND_TO_NAME = 'Optimise with Clop.lnk';
@@ -12,37 +14,39 @@ const PDF = ['pdf'];
 const extensions = (...lists: string[][]) => lists.flat();
 
 export interface VerbPaths {
-  /** `clop.exe`: the command-line launcher beside the app (or the portable app's copy of it). */
-  clop: string;
-  /** The app's own exe, for the icon and for the verb that opens a window. */
+  /** The app's own exe: what every verb runs, and the icon. For the portable app, the exe the user started. */
   app: string;
 }
-/** The argument the app reads as "choose a pipeline for the files after `--`". */
-export const RUN_PIPELINE_FLAG = '--run-pipeline';
-interface Verb { id: string; label: string; types: string[]; command: (paths: VerbPaths) => string }
-/** `clop.exe` hides its console window with `--hidden`; the file follows `--` so nothing in its name can be read as an option. */
-const launcher = (...args: string[]) => ({ clop }: VerbPaths) => `"${clop}" --hidden ${args.join(' ')} -- "%1"`;
+export type VerbId = 'optimise' | 'aggressive' | 'downscale' | 'strip-exif' | 'run-pipeline';
+/** The argument the app reads for each verb. */
+export const VERB_FLAGS: Record<VerbId, string> = {
+  optimise: '--clop-optimise', aggressive: '--clop-optimise-aggressive', downscale: '--clop-downscale', 'strip-exif': '--clop-strip-exif', 'run-pipeline': '--clop-run-pipeline',
+};
+interface Verb { id: string; verb: VerbId; label: string; types: string[] }
 
 // Labels stay ASCII ("Run pipeline..."): the NSIS installer script is not read as UTF-8.
-// Strip EXIF works on images and videos (`clop strip-exif`); downscale on images, videos and audio; the rest on every supported type.
+// Strip EXIF works on images and videos; downscale on images, videos and audio; the rest on every supported type.
+const ALL = extensions(IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS, PDF);
 const VERBS: Verb[] = [
-  { id: 'Optimise', label: 'Optimise with Clop', types: extensions(IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS, PDF), command: launcher('optimise', '--gui', '--async') },
-  { id: 'OptimiseAggressive', label: 'Optimise (aggressive)', types: extensions(IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS, PDF), command: launcher('optimise', '--aggressive', '--gui', '--async') },
-  { id: 'Downscale', label: 'Downscale', types: extensions(IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS), command: launcher('downscale', '--gui', '--async') },
-  { id: 'StripExif', label: 'Strip EXIF', types: extensions(IMAGE_EXTENSIONS, VIDEO_EXTENSIONS), command: launcher('strip-exif') },
-  // The app asks which pipeline, so this one starts (or reaches) the app. Every launch of a multi-file selection reaches the one instance.
-  { id: 'RunPipeline', label: 'Run pipeline...', types: extensions(IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS, PDF), command: ({ app }) => `"${app}" ${RUN_PIPELINE_FLAG} -- "%1"` },
+  { id: 'Optimise', verb: 'optimise', label: 'Optimise with Clop', types: ALL },
+  { id: 'OptimiseAggressive', verb: 'aggressive', label: 'Optimise (aggressive)', types: ALL },
+  { id: 'Downscale', verb: 'downscale', label: 'Downscale', types: extensions(IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS) },
+  { id: 'StripExif', verb: 'strip-exif', label: 'Strip EXIF', types: extensions(IMAGE_EXTENSIONS, VIDEO_EXTENSIONS) },
+  { id: 'RunPipeline', verb: 'run-pipeline', label: 'Run pipeline...', types: ALL },
 ];
+const command = (app: string, verb: VerbId) => `"${app}" ${VERB_FLAGS[verb]} -- "%1"`;
+
 /**
- * The files an app launch with `--run-pipeline` names: the paths after `--`, all of them (Explorer starts one launch per selected file),
- * or undefined when the launch is not that verb. Only full paths count, so a stray word is never taken for a file.
+ * The verb an app launch asks for and the files it names: the paths after `--`. Explorer starts one launch per selected file, so a launch
+ * names one file; the app gathers them. Undefined when the launch is not a verb. Only an argument before the first `--` is a flag (a file
+ * named like one is just a file) and only full paths count, so a stray word is never taken for a file.
  */
-export function runPipelineFiles(argv: readonly string[]): string[] | undefined {
-  // Only an argument before the first `--` is an option; after it, a file named like the flag is just a file.
+export function explorerVerb(argv: readonly string[]): { verb: VerbId; files: string[] } | undefined {
   const dashes = argv.indexOf('--'), options = dashes < 0 ? argv : argv.slice(0, dashes);
-  if (!options.includes(RUN_PIPELINE_FLAG)) return undefined;
+  const verb = (Object.keys(VERB_FLAGS) as VerbId[]).find(id => options.includes(VERB_FLAGS[id]));
+  if (!verb) return undefined;
   const files = dashes < 0 ? [] : argv.slice(dashes + 1).filter(file => path.win32.isAbsolute(file) || path.posix.isAbsolute(file));
-  return [...new Set(files)];
+  return { verb, files: [...new Set(files)] };
 }
 
 /** The Explorer filter for the verb: only the file types Clop handles show it. */
@@ -72,10 +76,10 @@ export function verbPlan(paths: VerbPaths): VerbPlan {
       { key, name: '', value: verb.label },
       { key, name: 'Icon', value: `${paths.app},0` },
       { key, name: 'AppliesTo', value: appliesTo(verb.types) },
-      { key: `${key}\\command`, name: '', value: verb.command(paths) },
+      { key: `${key}\\command`, name: '', value: command(paths.app, verb.verb) },
     );
   }
-  return { values, roots, sendTo: { file: SEND_TO_NAME, target: paths.clop, args: '--hidden optimise --gui --async --', icon: paths.app } };
+  return { values, roots, sendTo: { file: SEND_TO_NAME, target: paths.app, args: `${VERB_FLAGS.optimise} --`, icon: paths.app } };
 }
 
 // reg.exe, run with an argument array (no shell) at its absolute path. The calls only build arguments; running them is `electron/explorer.ts`.
@@ -88,8 +92,8 @@ export const regDelete = (key: string) => ['delete', hkcu(key), '/f'];
 export const regQuery = (key: string) => ['query', hkcu(`${key}\\command`), '/ve'];
 
 // The same plan as NSIS statements, between the markers in `native/installer.nsh`; a test keeps the two equal.
-/** Where the installer puts the two programs. */
-export const NSIS_PATHS: VerbPaths = { clop: '$INSTDIR\\cli\\clop.exe', app: '$INSTDIR\\Clop for Windows.exe' };
+/** Where the installer puts the app. */
+export const NSIS_PATHS: VerbPaths = { app: '$INSTDIR\\Clop for Windows.exe' };
 const nsis = (text: string) => {
   if (text.includes('"') && text.includes("'")) throw new Error(`Cannot quote for NSIS: ${text}`);
   return text.includes('"') ? `'${text}'` : `"${text}"`;
@@ -99,3 +103,10 @@ export function nsisInstall(plan: VerbPlan): string[] {
   return [...plan.values.map(({ key, name, value }) => `WriteRegStr HKCU ${nsis(key)} ${nsis(name)} ${nsis(value)}`), `CreateShortCut ${nsis(`$SENDTO\\${file}`)} ${nsis(target)} ${nsis(args)} ${nsis(icon)} 0`];
 }
 export const nsisUninstall = (plan: VerbPlan): string[] => [...plan.roots.map(key => `DeleteRegKey HKCU ${nsis(key)}`), `Delete ${nsis(`$SENDTO\\${plan.sendTo.file}`)}`];
+
+/** The value `reg query <key> /ve` printed (the text after REG_SZ), or undefined when there is none. */
+export const regQueryValue = (output: string) => /\bREG_SZ[ \t]+(.*?)\s*$/m.exec(output)?.[1];
+/** The first verb's command for `paths`: what a query of its key must print when the entries are current. */
+export const firstCommand = (paths: VerbPaths) => command(paths.app, VERBS[0].verb);
+/** The program a verb command runs (its quoted first token). */
+export const commandExe = (value: string) => /^"([^"]+)"/.exec(value)?.[1];

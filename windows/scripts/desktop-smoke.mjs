@@ -233,6 +233,18 @@ try {
   assert.equal(converted.format, 'webp', 'The attached pipeline should convert the copied image to WebP');
   const pipelineCopy = await until(async () => { const [result] = (await externalClipboard.request({ type: 'read' })).paths; return result?.endsWith('.webp') && result; }, 'The clipboard did not get the pipeline\'s WebP');
   assert.equal((await sharp(pipelineCopy).metadata()).format, 'webp');
+  // Explorer's right-click verbs (spec step 39): Explorer starts the app once per selected file. Every launch reaches the running app,
+  // which gathers them and optimises them in place; the files may be named like options, and no other process does the work.
+  const verbFiles = [];
+  for (const name of ['--clop-downscale first.png', 'second verb.png']) {
+    const file = path.join(profile, name);
+    await sharp({ create: { width: 900, height: 600, channels: 3, background: '#3a7bd5' } }).composite([{ input: Buffer.from('<svg width="900" height="600"><circle cx="450" cy="300" r="250" fill="#f5a623"/></svg>') }]).png({ compressionLevel: 0 }).toFile(file);
+    verbFiles.push([file, (await stat(file)).size]);
+  }
+  for (const [file] of verbFiles) spawn(executable, [`--user-data-dir=${profile}`, '--clop-optimise', '--', file], { stdio: 'ignore' }).unref();
+  for (const [file, before] of verbFiles) await until(async () => (await stat(file)).size < before, `The Explorer verb did not optimise ${path.basename(file)}`, 60000);
+  assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'An Explorer verb must not show an error');
+  console.log('Explorer verb launches reached the running app and optimised both files.');
   console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, copied video, PDF and audio files, an ignored app, a video and an image optimised in place in a watched folder, and a clipboard pipeline converting to WebP.');
 } finally {
   console.log('Stopping packaged app and native test helper.');

@@ -8,8 +8,8 @@ import type { CropSizeGroup } from '../core/data/cropSizes';
 import { copyTo, exists, moveTo, samePath } from '../core/fileops';
 import { factorText } from '../core/ipc/service';
 import { markOptimised } from '../core/marker';
-import { COLOUR_TAGS } from '../core/media/exif';
 import { toPNG } from '../core/media/image-codecs';
+import { stripExifFile } from '../core/media/strip-copy';
 import { cropPDF, extendPDF, uncropPDF } from '../core/media/pdf';
 import { run } from '../core/run';
 import { expandPathTemplate, expandTemplate, type Counter } from '../core/template';
@@ -148,17 +148,14 @@ const stripExif: ClopCommand = {
 async function strip(ctx: Context, file: string): Promise<boolean> {
   if (!await exists(file)) { ctx.io.err(`${ERROR_X()} ${underline(file)} does not exist\n`); return false; }
   if (path.extname(file).toLowerCase() === '.pdf') { ctx.io.err(`${EXCLAMATION()} ${underline(file)} is a PDF and \`strip-exif\` does not work on this type of file\n`); return false; }
-  const temp = await mkdtemp(path.join(os.tmpdir(), 'clop-exif-')), copy = path.join(temp, path.basename(file));
   try {
-    await run('exiftool', ['-charset', 'filename=utf8', '-XResolution=72', '-YResolution=72', '-all=', '-tagsFromFile', '@', '-XResolution', '-YResolution', '-Orientation', ...COLOUR_TAGS, '-o', copy, file]);
-    if (!await exists(copy)) throw new Error('exiftool wrote nothing');
-    await copyTo(copy, file);
+    await stripExifFile(file);
     ctx.io.out(`${dim(`${CHECKMARK()} ${underline(file)} done`)}\n`);
     return true;
   } catch (error) {
     ctx.io.err(`${ERROR_X()} ${underline(file)} failed\n${(error as Error).message}\n`);
     return false;
-  } finally { await rm(temp, { recursive: true, force: true }); }
+  }
 }
 
 /** `groupListing`. */

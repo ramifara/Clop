@@ -2,8 +2,7 @@ import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { run } from '../core/run';
 import { powershell } from '../core/shell-effects';
-import { regAdd, regDelete, regExe, regQuery, verbPlan, type SendToShortcut, type VerbPaths } from '../core/shell-verbs';
-import { installPortableCLI, portableCLIDir } from './cli-install';
+import { commandExe, firstCommand, regAdd, regDelete, regExe, regQuery, regQueryValue, verbPlan, type SendToShortcut, type VerbPaths } from '../core/shell-verbs';
 
 // Explorer's right-click verbs and the Send To shortcut for the portable app (spec step 39): the installer writes them itself, with the
 // same plan (`core/shell-verbs.ts`). Windows only: everywhere else the calls refuse, so nothing reaches the registry from a test run.
@@ -11,8 +10,8 @@ import { installPortableCLI, portableCLIDir } from './cli-install';
 /** What the integration needs from the system; the default runs `reg.exe` and PowerShell, tests give their own. */
 export interface ExplorerHost {
   platform: NodeJS.Platform;
-  /** Runs reg.exe with these arguments and gives its exit code. */
-  reg(args: string[]): Promise<number>;
+  /** Runs reg.exe with these arguments and gives its exit code and output. */
+  reg(args: string[]): Promise<{ code: number; stdout: string }>;
   /** Makes (or replaces) the shortcut at `file`. */
   shortcut(file: string, link: SendToShortcut): Promise<void>;
   remove(file: string): Promise<void>;
@@ -25,7 +24,7 @@ const SHORTCUT = "$link = (New-Object -ComObject WScript.Shell).CreateShortcut($
 export const systemHost: ExplorerHost = {
   platform: process.platform,
   // The absolute System32 path and an argument array: no shell, and a `reg.exe` earlier on PATH is never run.
-  reg: args => run(regExe(), args, { timeoutMs: 30_000 }).then(result => result.code, error => (typeof error?.exitCode === 'number' ? error.exitCode : Promise.reject(error))),
+  reg: args => run(regExe(), args, { timeoutMs: 30_000 }).then(result => ({ code: result.code, stdout: result.stdout.toString('utf8') }), error => (typeof error?.exitCode === 'number' ? { code: error.exitCode as number, stdout: '' } : Promise.reject(error))),
   shortcut: async (file, { target, args, icon }) => {
     // Values travel in the environment, so no quoting can change what the script runs.
     await run(powershell(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(`$ErrorActionPreference = 'Stop'\n${SHORTCUT}`, 'utf16le').toString('base64')],
@@ -37,10 +36,18 @@ export const systemHost: ExplorerHost = {
 
 const needWindows = (host: ExplorerHost) => { if (host.platform !== 'win32') throw new Error('The Explorer menu entries need Windows.'); };
 
-/** Whether the first verb is registered, which is how the tray knows to offer "Remove". */
-export async function verbsInstalled(paths: VerbPaths, host: ExplorerHost = systemHost) {
-  if (host.platform !== 'win32') return false;
-  return await host.reg(regQuery(verbPlan(paths).roots[0])).catch(() => 1) === 0;
+/**
+ * How the registered entries stand for `paths`: `current` when the first verb runs this very app, `moved` when it runs an exe of the same
+ * file name somewhere else (the portable app was moved), `none` otherwise, including entries another copy of Clop (the installer's) wrote.
+ */
+export async function verbsStatus(paths: VerbPaths, host: ExplorerHost = systemHost): Promise<'current' | 'moved' | 'none'> {
+  if (host.platform !== 'win32') return 'none';
+  const { code, stdout } = await host.reg(regQuery(verbPlan(paths).roots[0])).catch(() => ({ code: 1, stdout: '' }));
+  const value = code === 0 ? regQueryValue(stdout) : undefined;
+  if (value === undefined) return 'none';
+  if (value === firstCommand(paths)) return 'current';
+  const exe = commandExe(value);
+  return exe && path.win32.basename(exe).toLowerCase() === path.win32.basename(paths.app).toLowerCase() ? 'moved' : 'none';
 }
 
 /** Writes every verb and the Send To shortcut, after clearing any earlier ones. A failure part-way removes what was written. */
@@ -50,7 +57,7 @@ export async function installVerbs(paths: VerbPaths, host: ExplorerHost = system
   await removeVerbs(paths, host);
   try {
     for (const value of plan.values) {
-      const code = await host.reg(regAdd(value));
+      const { code } = await host.reg(regAdd(value));
       if (code !== 0) throw new Error(`reg.exe could not write ${value.key} (exit ${code}).`);
     }
     await host.shortcut(path.join(host.sendToDir(), plan.sendTo.file), plan.sendTo);
@@ -68,12 +75,5 @@ export async function removeVerbs(paths: VerbPaths, host: ExplorerHost = systemH
   await host.remove(path.join(host.sendToDir(), plan.sendTo.file));
 }
 
-/** The portable app's paths: its own copy of clop.exe (see `installPortableCLI`) and the exe the user started, which is what a later launch must reach. */
-export const portablePaths = (): VerbPaths => ({ clop: path.join(portableCLIDir(), 'clop.exe'), app: process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath });
-
-/** Adds the entries for the portable app, which first puts its copy of clop.exe in place (and records where the app is). */
-export async function installPortableVerbs(resources: string, appDir: string, host: ExplorerHost = systemHost) {
-  needWindows(host);
-  await installPortableCLI(resources, appDir);
-  await installVerbs(portablePaths(), host);
-}
+/** The portable app's paths: the exe the user started, which is what a later launch must reach (the unpacked copy in a temporary folder goes away). */
+export const portablePaths = (): VerbPaths => ({ app: process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath });
