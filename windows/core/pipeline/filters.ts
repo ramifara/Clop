@@ -31,7 +31,7 @@ const escapeLiteral = (text: string) => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\
 
 /**
  * An ICU pattern (NSRegularExpression, which macOS pipelines use) as a JavaScript RegExp. Leading inline flags (`(?i)`,
- * `(?s)`, `(?m)`), possessive quantifiers (read as greedy), `\Q…\E` quoting and the `\A` and `\z` anchors are translated.
+ * `(?s)`, `(?m)`), `\Q…\E` quoting and the `\A` and `\z` anchors are translated.
  * Anything else JavaScript cannot read throws an error that says so, instead of matching something else.
  */
 export function icuRegex(pattern: string, flags = ''): RegExp {
@@ -79,9 +79,9 @@ export function icuRegex(pattern: string, flags = ''): RegExp {
     const quantifier = '*+?'.includes(c) && !afterGroupOpen;
     groupOpened = c === '(';
     out += c;
-    // A `+` after a quantifier makes it possessive in ICU. JavaScript has none; greedy finds the same matches for the patterns
-    // filenames need, but can backtrack where possessive would not, so a pathological pattern can be slower.
-    if ((quantifier || (c === '}' && /\{\d+(,\d*)?\}$/.test(out))) && next === '+') i++;
+    // A `+` after a quantifier makes it possessive in ICU. JavaScript has none, and greedy matching can backtrack where possessive
+    // does not (`^a++a$` rejects `aa`), so a filter would pass files macOS excludes.
+    if ((quantifier || (c === '}' && /\{\d+(,\d*)?\}$/.test(out))) && next === '+') unreadable('a possessive quantifier such as a++');
   }
   try { return new RegExp(out, flags + (/\\[pP]\{/.test(out) ? 'u' : '')); } catch (error) {
     return unreadable(`syntax JavaScript rejects (${(error as Error).message})`);
