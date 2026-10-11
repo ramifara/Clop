@@ -41,7 +41,8 @@ export function registryDesktop(output: string, env: NodeJS.ProcessEnv): string 
  */
 export async function desktopFolder(home: string, platform: NodeJS.Platform = process.platform, query = () => run(regExe(), ['query', SHELL_FOLDERS, '/v', 'Desktop'], { timeoutMs: 5000 }).then(result => result.stdout.toString('utf8'))): Promise<string> {
   const fallback = path.join(home, 'Desktop');
-  if (platform !== 'win32') return fallback;
+  // Explorer's folders belong to the signed-in user, so another home (a test, a profile given on purpose) keeps its own Desktop.
+  if (platform !== 'win32' || path.resolve(home).toLowerCase() !== path.resolve(os.homedir()).toLowerCase()) return fallback;
   return registryDesktop(await query().catch(() => ''), process.env) ?? fallback;
 }
 
