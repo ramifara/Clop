@@ -111,3 +111,16 @@ test('a row nothing reads yet says so, and a working one does not', () => {
   assert.doesNotMatch(html('stripMetadata'), /Not used by Clop/);
   assert.doesNotMatch(render(<EntryRow entry={SETTING_ENTRIES.find(row => row.keys[0] === 'followCursorScreen')!} flash={false} note={false}/>), /Not used by Clop/);
 });
+
+test('every row nothing reads yet shows the note, whatever its control and label, and the shortcut tab is covered', () => {
+  const pending = SETTING_ENTRIES.filter(entry => entry.ui?.pending);
+  assert.ok(pending.length > 30);
+  for (const entry of pending) assert.match(render(<EntryRow entry={entry} flash={false}/>), /Not used by Clop for Windows yet/, entry.id);
+  // The shortcut rows are a whole section each, with no subtitle: the note still draws.
+  for (const key of ['keyComboModifiers', 'enabledKeys', 'quickResizeKeys']) {
+    const entry = SETTING_ENTRIES.find(row => row.keys[0] === key)!;
+    assert.equal(entry.title, entry.section);
+    assert.equal(entry.subtitle, '');
+    assert.match(render(<EntryRow entry={entry} flash={false}/>), /class="pending"[^>]*>Not used by Clop for Windows yet/);
+  }
+});
