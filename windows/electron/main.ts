@@ -63,7 +63,7 @@ import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocatio
 import { expandHome } from '../core/settings/paths';
 import { menuTemplate } from './card-menu';
 import { coverArtCard, eachResult, editorLabel, editorProgram, makesNewCard, mediaFacts, openWithDialog, pageCard, readyIds, runPlan, savePages, startProgram, type CardCreation, type CardHost } from './cards';
-import { CompactMode, cardsThatFit } from './compact';
+import { CompactMode, cardsThatFit, extraHeight } from './compact';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // The crop and compare windows load the session's originals and results through this scheme, with byte ranges for video.
@@ -171,12 +171,13 @@ function syncFloating() {
   const target = dropActive || settings.keepDropZoneVisible;
   const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
   const items = visible();
-  cardFit = cardsThatFit(area.height, target);
-  const compact = compactMode.update(items.map(item => ({ id: item.id, running: item.status === 'processing' })));
-  const count = Math.min(cardFit, items.length);
   // Room for the tiles stays once they were shown, until the drag ends: a tile under the pointer must not lose its window when Ctrl is let go.
   const tiles = presetsLatched || presetsRevealed() ? gridHeight(cellCount(presets())) + 8 : 0;
-  const height = (compact ? compactHeight(items.length) : count * 166 + Math.max(0, count - 1) * 4 + (count > 1 ? 28 : 0)) + (target ? 160 : 0) + tiles + (notice ? 85 : 0) + (settings.finishedOnboarding ? 0 : 220) + 40;
+  const extra = extraHeight({ tiles, notice: !!notice, welcome: !settings.finishedOnboarding });
+  cardFit = cardsThatFit(area.height, target, 170, 60 + extra);
+  const compact = compactMode.update(items.map(item => ({ id: item.id, running: item.status === 'processing' })));
+  const count = Math.min(cardFit, items.length);
+  const height = (compact ? compactHeight(items.length) : count * 166 + Math.max(0, count - 1) * 4 + (count > 1 ? 28 : 0)) + (target ? 160 : 0) + extra + 40;
   floating.setSize(compact ? 320 : 236, Math.min(height, area.height));
   positionFloating();
   if (items.length || target || notice || importsRunning || !settings.finishedOnboarding) showFloating(); else floating.hide();
