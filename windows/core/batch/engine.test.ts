@@ -1,4 +1,4 @@
-import { test, type TestContext } from 'node:test';
+import { mock, test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
@@ -213,4 +213,100 @@ test('a file that cannot be optimised fails with its reason while the rest finis
   assert.equal(await readFile(bad, 'utf8'), 'not really a png', 'a failed file is left as it was');
   assert.deepEqual(await batch.revert(), []);
   assert.deepEqual(statuses(batch), ['failed', 'reverted']);
+});
+
+/** A manifest that cannot be written: its path is a folder, so the atomic rename onto it fails. */
+const breakManifest = (batch: Batch) => mkdir(path.join(batch.backup.dir, 'manifest.json'), { recursive: true });
+
+test('a failing manifest write puts the original back and leaves nothing placed', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { files, env, params } = await setup(t);
+  const a = await write(path.join(files, 'a.jpg'), await jpeg(320, 240, 1)), b = await write(path.join(files, 'b.jpg'), await jpeg(320, 240, 2));
+  const before = await Promise.all([a, b].map(async file => [await digest(file), (await stat(file)).mtimeMs] as const));
+  const batch = await batchOf(env, [a, b], params());
+  await breakManifest(batch);
+  await batch.run();
+  assert.deepEqual(statuses(batch), ['failed', 'failed']);
+  assert.deepEqual(await Promise.all([a, b].map(async file => [await digest(file), (await stat(file)).mtimeMs] as const)), before, 'both originals are exactly as they were');
+  assert.deepEqual((await readdir(files)).sort(), ['a.jpg', 'b.jpg'], 'no stray files beside them');
+  assert.deepEqual((await readdir(batch.backup.dir)).sort(), ['manifest.json'], 'no stray copies in the backup folder');
+  assert.deepEqual(batch.items.map(item => item.result), [undefined, undefined]);
+});
+
+test('a failing manifest write gives back a file of the user\'s that sat where a result goes, and the converted original', async t => {
+  if (!needTools(t, 'jpegoptim', 'pngquant', 'exiftool')) return;
+  const { files, env, params } = await setup(t);
+  const shot = await write(path.join(files, 'shot.png'), await png(400, 300, 3)), mine = await write(path.join(files, 'shot.jpeg'), Buffer.from('my own jpeg'));
+  const p = params(); p.image = { ...p.image, convert: 'jpeg' };
+  const batch = new Batch((await scanBatch([shot])).files, p, env);
+  // The first save (the user's file) works; the second (the converted original) fails.
+  let saves = 0;
+  const save = batch.backup['save' as keyof typeof batch.backup] as () => Promise<void>;
+  mock.method(batch.backup as unknown as { save: () => Promise<void> }, 'save', function (this: unknown) { return ++saves === 2 ? Promise.reject(new Error('disk full')) : save.call(this); });
+  await batch.run();
+  assert.deepEqual(statuses(batch), ['failed']);
+  assert.match(batch.items[0].error!, /disk full/);
+  assert.equal(await readFile(mine, 'utf8'), 'my own jpeg', 'the user\'s file is back');
+  assert.ok(await exists(shot), 'the original is back');
+  assert.deepEqual((await readdir(files)).sort(), ['shot.jpeg', 'shot.png']);
+});
+
+test('a failure after the original was taken restores it, and leaves a new result file out', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { dir, files, env, params } = await setup(t);
+  const a = await write(path.join(files, 'a.jpg'), await jpeg(320, 240, 1)), out = path.join(dir, 'out');
+  const original = await digest(a);
+  for (const output of [{ location: 'inPlace' }, { location: 'folder', folder: out, template: '%f-new' }] as const) {
+    const batch = await batchOf(env, [a], params({ output }));
+    mock.method(batch.backup, 'recordResult', () => Promise.reject(new Error('manifest gone')));
+    await batch.run();
+    assert.deepEqual(statuses(batch), ['failed'], output.location);
+    assert.equal(await digest(a), original, `${output.location}: the original is back`);
+    assert.deepEqual(await readdir(out).catch(() => []), [], `${output.location}: no result is left behind`);
+  }
+});
+
+test('a file that changed while the batch ran is left as it is', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { files, env, params } = await setup(t);
+  const a = await write(path.join(files, 'a.jpg'), await jpeg(320, 240, 1)), b = await write(path.join(files, 'b.jpg'), await jpeg(320, 240, 2));
+  const batch = await batchOf(env, [a, b], params());
+  const keep = batch.backup.keep.bind(batch.backup);
+  // The user saves over a.jpg after the batch read it and before the batch takes its place.
+  mock.method(batch.backup, 'keep', async (file: string, options?: Parameters<typeof keep>[1]) => { if (file === a) await write(a, Buffer.from('saved by the user'), new Date(2025, 5, 6)); return keep(file, options); });
+  await batch.run();
+  assert.deepEqual(statuses(batch), ['failed', 'done']);
+  assert.match(batch.items[0].error!, /a\.jpg changed while the batch ran/);
+  assert.equal(await readFile(a, 'utf8'), 'saved by the user');
+  assert.deepEqual((await readdir(files)).sort(), ['a.jpg', 'b.jpg']);
+});
+
+test('cancelling while a result is being placed finishes the placement, so the file is never half way', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { files, env, params } = await setup(t);
+  const a = await write(path.join(files, 'a.jpg'), await jpeg(640, 480, 1));
+  const original = await digest(a);
+  const batch = await batchOf(env, [a], params());
+  const keep = batch.backup.keep.bind(batch.backup);
+  mock.method(batch.backup, 'keep', async (file: string, options?: Parameters<typeof keep>[1]) => { batch.cancel(); return keep(file, options); });
+  await batch.run();
+  assert.equal(batch.phase, 'cancelled');
+  assert.deepEqual(statuses(batch), ['done']);
+  assert.notEqual(await digest(a), original, 'the result is in place');
+  assert.deepEqual(await batch.revert(), []);
+  assert.equal(await digest(a), original, 'and it reverts');
+});
+
+test('an in-place result replaces the original without ever leaving its path empty', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { files, env, params } = await setup(t);
+  const a = await write(path.join(files, 'a.jpg'), await jpeg(640, 480, 1));
+  const batch = await batchOf(env, [a], params());
+  const seen: boolean[] = [];
+  const keep = batch.backup.keep.bind(batch.backup);
+  mock.method(batch.backup, 'keep', async (file: string, options?: Parameters<typeof keep>[1]) => { const entry = await keep(file, options); seen.push(await exists(file)); return entry; });
+  await batch.run();
+  assert.deepEqual(statuses(batch), ['done']);
+  assert.deepEqual(seen, [true], 'the original is still there once its backup is taken');
+  assert.equal(batch.backup.result(a)?.originalRemoved, false);
 });

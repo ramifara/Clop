@@ -33,16 +33,40 @@ export class BatchBackup {
   }
   private key(file: string) { const resolved = path.resolve(file); return this.platform === 'win32' ? resolved.toLowerCase() : resolved; }
 
-  /** Moves `file` into the batch's folder before something takes its place, recording what it was. Returns the entry. */
-  async keep(file: string): Promise<BackupEntry> {
-    const info = await stat(file);
+  /**
+   * Takes `file` into the batch's folder before something takes its place, recording what it was. By default the file is moved
+   * (it is about to go); with `copy` it stays where it is, so a result can replace it atomically with no moment when the path is
+   * empty. `before` is the size and time the caller saw the file with: what was taken must match them, or the file changed while
+   * it was taken and it stays as it was. When anything fails, including the manifest write, the file is back where it was.
+   */
+  async keep(file: string, { copy = false, before }: { copy?: boolean; before?: { size: number; mtimeMs: number } } = {}): Promise<BackupEntry> {
+    const seen = before ?? await stat(file);
     await mkdir(this.dir, { recursive: true });
-    const backup = path.join(this.dir, `${randomUUID()}${path.extname(file)}`);
-    await moveTo(file, backup, { force: false });
-    const entry = { path: path.resolve(file), backup, size: info.size, mtimeMs: info.mtimeMs };
-    this.entries.set(this.key(file), entry);
-    await this.save();
+    const backup = path.join(this.dir, `${randomUUID()}${path.extname(file)}`), key = this.key(file), previous = this.entries.get(key);
+    if (copy) await copyTo(file, backup); else await moveTo(file, backup, { force: false });
+    const entry = { path: path.resolve(file), backup, size: seen.size, mtimeMs: seen.mtimeMs };
+    try {
+      // A copy across volumes is stamped with whole milliseconds, hence the tolerance.
+      const now = await stat(copy ? file : backup);
+      if (now.size !== seen.size || Math.abs(now.mtimeMs - seen.mtimeMs) >= 1) throw new Error(`${path.basename(file)} changed while the batch ran, so Clop left it as it is.`);
+      this.entries.set(key, entry);
+      await this.save();
+    } catch (error) {
+      if (previous) this.entries.set(key, previous); else this.entries.delete(key);
+      if (copy) await rm(backup, { force: true }).catch(() => {});
+      else await moveTo(backup, file).catch(() => { throw new Error(`${path.basename(file)} could not be put back after a failed backup. It is in ${this.dir}.`); });
+      throw error;
+    }
     return entry;
+  }
+
+  /** Forgets and deletes the copy of `file` made by `keep`, once what it was kept for was undone. */
+  async discard(file: string) {
+    const entry = this.entries.get(this.key(file));
+    if (!entry) return;
+    this.entries.delete(this.key(file));
+    await rm(entry.backup, { force: true }).catch(() => {});
+    await this.save().catch(() => {});
   }
 
   /** What was at `file` before Clop moved it aside, if its copy is still there. */
@@ -67,7 +91,7 @@ export class BatchBackup {
 
   /** Removes the batch's folder and everything in it. */
   async delete() {
-    await this.saving;
+    await this.saving.catch(() => {});
     await rm(this.dir, { recursive: true, force: true, maxRetries: 3 });
     this.entries.clear(); this.results.clear();
   }

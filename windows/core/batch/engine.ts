@@ -229,7 +229,7 @@ export class Batch extends EventEmitter {
   /**
    * Port of `placeResult`: puts `produced` where the batch's output says, by the placement rules and name templates. An
    * original that is written over, or that a converted result replaces in place, moves into the batch backup first, as does
-   * a file of the user's already at the destination. The original must not have changed since the job read it.
+   * a file of the user's already at the destination. The original must not have changed since the job read it (`before`).
    */
   private async place(item: BatchItem, produced: string, before: { size: number; mtimeMs: number }): Promise<string> {
     const { env } = this, original = item.path, counter = env.counter.value;
@@ -237,23 +237,27 @@ export class Batch extends EventEmitter {
     if (env.counter.value !== counter) env.saved?.(env.counter.value);
     const dest = this.claim(plan.dest ?? original, original), over = samePath(dest, original, env.platform);
     const removes = over || this.params.output.location === 'inPlace';
-    if (removes) {
-      const now = await stat(original);
-      if (now.size !== before.size || now.mtimeMs !== before.mtimeMs) throw new Error(`${item.name} changed while the batch ran, so Clop left it as it is.`);
-    }
-    const moved: { from: string; to: string }[] = [];
+    // Whatever was taken aside or created goes back if anything below fails, the manifest write included, so a failed file is exactly as it was.
+    const undo: (() => Promise<void>)[] = [];
     try {
-      if (!over && await exists(dest)) moved.push({ from: dest, to: (await this.backup.keep(dest)).backup });
-      if (removes) moved.push({ from: original, to: (await this.backup.keep(original)).backup });
+      if (!over) {
+        // A file of the user's at the destination is copied, not moved, so the result replaces it atomically.
+        if (await exists(dest)) { const kept = await this.backup.keep(dest, { copy: true }); undo.push(async () => { await copyTo(kept.backup, dest); await this.backup.discard(dest); }); }
+        else undo.push(() => rm(dest, { force: true }));
+      }
+      if (removes) {
+        // An original the result replaces in its own path is copied, so the path is never empty; one that goes under another name is moved.
+        const kept = await this.backup.keep(original, { copy: over, before });
+        undo.push(async () => { await copyTo(kept.backup, original); await this.backup.discard(original); });
+      }
       await copyTo(produced, dest);
+      await env.marker.markOptimised(dest).catch(() => {});
+      const info = await stat(dest);
+      await this.backup.recordResult({ original, path: dest, size: info.size, mtimeMs: info.mtimeMs, originalRemoved: removes && !over });
     } catch (error) {
-      // Nothing was placed, so whatever moved aside goes back.
-      for (const { from, to } of moved.reverse()) await copyTo(to, from).catch(() => {});
+      for (const step of undo.reverse()) await step().catch(() => {});
       throw error;
     }
-    await env.marker.markOptimised(dest).catch(() => {});
-    const info = await stat(dest);
-    await this.backup.recordResult({ original, path: dest, size: info.size, mtimeMs: info.mtimeMs, originalRemoved: removes && !over });
     return dest;
   }
 
