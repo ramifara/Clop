@@ -1,13 +1,14 @@
 import type { ClopSettings } from '../core/settings/schema';
 
-export type FloatingTiming = Pick<ClopSettings, 'autoHideFloatingResults' | 'autoHideFloatingResultsAfter' | 'autoHideClipboardResultAfter'>;
+export type FloatingTiming = Pick<ClopSettings, 'enableFloatingResults' | 'autoHideFloatingResults' | 'autoHideFloatingResultsAfter' | 'autoHideClipboardResultAfter'>;
 
 /**
  * Milliseconds before a result hides, or undefined when it stays (`hideClipboardAfter` and `hideFilesAfter` in OptimisationUtils.swift).
- * A clipboard result takes `autoHideClipboardResultAfter`, with -1 meaning the file delay; 0 means never.
+ * A clipboard result takes `autoHideClipboardResultAfter`, with -1 meaning the file delay; 0 means never. With the results switched
+ * off (`enableFloatingResults`) nothing is on screen to hide, so results wait on the shelf with no timer until it is switched on.
  */
 export function hideDelay(settings: FloatingTiming, source: string) {
-  if (!settings.autoHideFloatingResults) return;
+  if (!settings.enableFloatingResults || !settings.autoHideFloatingResults) return;
   const seconds = source === 'clipboard' && settings.autoHideClipboardResultAfter !== -1 ? settings.autoHideClipboardResultAfter : settings.autoHideFloatingResultsAfter;
   return seconds > 0 ? seconds * 1000 : undefined;
 }

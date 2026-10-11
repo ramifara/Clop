@@ -227,11 +227,17 @@ function hideResults(ids: string[]) {
   }
   syncFloating(); broadcast();
 }
+/** Starts the hide timer of every shown result that has none, as results switched back on (`enableFloatingResults`) need. */
+function rescheduleHides() {
+  for (const item of visible()) if (item.status === 'ready' && !hideTimers.has(item.id)) scheduleHide(item.id);
+}
 function scheduleHide(id: string) {
   const existing = hideTimers.get(id); if (existing) clearTimeout(existing);
   // The compact list clears every result together instead (CompactMode).
   if (compactMode.compact) return;
   const check = () => {
+    // Switched off meanwhile: the result waits on the shelf, and `rescheduleHides` times it again once the results are back.
+    if (!settings.enableFloatingResults) { hideTimers.delete(id); return; }
     if (hovered || dragging) { hideTimers.set(id, setTimeout(check, 1000)); return; }
     hideResults([id]);
   };
@@ -820,7 +826,7 @@ async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
   if (settings.mcpEnabled !== wasEnabled && app.isPackaged) void mcp.writeCard().catch(error => console.warn(`Could not write the MCP server card: ${message(error)}`));
   if (!settings.enableClipboardOptimiser || paused()) pickup.cancel();
   floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop);
-  syncCursorFollower();
+  syncCursorFollower(); rescheduleHides();
   syncFloating();
   if (process.platform === 'win32') syncLoginItem(app, settings.launchAtLogin, loginExecutable());
   applyWindowSettings();
@@ -1180,7 +1186,7 @@ else {
       if (changed.includes('pauseAutomaticOptimisations')) shortcutRunner.pauseChanged();
       if (changed.some(key => ['keyComboModifiers', 'enabledKeys', 'quickResizeKeys', 'allowClopToAppearInScreenshots'].includes(key))) applyWindowSettings();
       // A change made outside the app (the settings file, the CLI) shows or hides the tray icon and updates its menu and icon too.
-      if (changed.some(key => ['enableFloatingResults', 'followCursorScreen'].includes(key))) { syncCursorFollower(); syncFloating(); broadcast(); }
+      if (changed.some(key => ['enableFloatingResults', 'followCursorScreen'].includes(key))) { syncCursorFollower(); rescheduleHides(); syncFloating(); broadcast(); }
       if (changed.some(key => ['showMenubarIcon', 'pauseAutomaticOptimisations', 'enableClipboardOptimiser', 'keepDropZoneVisible'].includes(key))) updateTray();
       // Pipelines, attachments and preset zones show in the editor and, as tiles, on the drop target.
       if (changed.some(key => (EDITOR_SETTING_KEYS as readonly string[]).includes(key))) { syncFloating(); broadcast(); for (const window of [editorWindow, editorLoading?.window]) if (window && !window.isDestroyed()) window.webContents.send('clop:editor-changed'); }

@@ -38,3 +38,9 @@ test('with onlyShowDropZoneOnOption a dragged-over drop target needs Alt held; w
   assert.equal(shown({ onlyWithAlt: true, dragging: false }), true, 'the tray\'s Show latest results is no drag');
   assert.equal(shown({ expecting: false, alt: true }), false);
 });
+
+test('results hide on no timer while the floating results are switched off', () => {
+  assert.equal(hideDelay(timing({ enableFloatingResults: false }), 'clipboard'), undefined);
+  assert.equal(hideDelay(timing({ enableFloatingResults: false }), 'drop'), undefined);
+  assert.equal(hideDelay(timing({ enableFloatingResults: true }), 'drop'), 30_000);
+});
