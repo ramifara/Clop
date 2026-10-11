@@ -3,13 +3,15 @@ import { settingsSchema, type ClopSettings, type CompressionQuality, type Settin
 import type { ImageOptions } from '../src/types';
 import { parseCropSize } from './crop';
 export const modes = ['balanced', 'aggressive', 'lossless'] as const;
-export const formats = ['auto', 'png', 'jpeg', 'webp', 'avif', 'gif'] as const;
+export const formats = ['auto', 'png', 'jpeg', 'webp', 'avif', 'gif', 'heic', 'jxl'] as const;
 export function parseOptions(value: unknown): ImageOptions {
   if (!value || typeof value !== 'object') throw new Error('Choose image settings first.');
   const o = value as ImageOptions;
   if (!modes.includes(o.mode) || !formats.includes(o.format) || !Number.isFinite(o.scale) || o.scale < 0.1 || o.scale > 1) throw new Error('Use a scale between 10% and 100%.');
   if (o.maxEdge !== undefined && (!Number.isInteger(o.maxEdge) || o.maxEdge < 1 || o.maxEdge > 16000)) throw new Error('Use a longest edge between 1 and 16000 pixels.');
-  return { mode: o.mode, format: o.format, scale: o.scale, ...(o.maxEdge ? { maxEdge: o.maxEdge } : {}), ...(o.crop ? { crop: parseCropSize(o.crop) } : {}) };
+  const c = o.compression;
+  if (c !== undefined && (!c || typeof c !== 'object' || !['adaptive', 'custom'].includes(c.tier) || !Number.isInteger(c.factor) || c.factor < 5 || c.factor > 100)) throw new Error('Use a compression factor between 5 and 100.');
+  return { mode: o.mode, format: o.format, scale: o.scale, ...(o.maxEdge ? { maxEdge: o.maxEdge } : {}), ...(o.crop ? { crop: parseCropSize(o.crop) } : {}), ...(c ? { compression: { tier: c.tier, factor: c.factor } } : {}) };
 }
 /** The engine mode for a compression setting: aggressive from factor 50 as in `imageIsAggressive` (Shared.swift), lossless for the Windows-only tier. */
 export function imageMode({ tier, factor }: CompressionQuality): ImageOptions['mode'] {

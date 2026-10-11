@@ -9,9 +9,13 @@ import type { SettingMeta } from '../core/settings/controls';
 import type { MediaName } from '../core/settings/entries';
 import type { SettingKey } from '../core/settings/schema';
 import type { SettingsTab } from '../core/settings/tabs';
-export type OutputFormat = 'auto' | 'png' | 'jpeg' | 'webp' | 'avif' | 'gif';
+export type OutputFormat = 'auto' | 'png' | 'jpeg' | 'webp' | 'avif' | 'gif' | 'heic' | 'jxl';
 /** `crop` is the crop window's crop size, applied to the original before the scale and longest edge (images and videos). */
-export interface ImageOptions { mode: 'balanced' | 'aggressive' | 'lossless'; scale: number; maxEdge?: number; format: OutputFormat; crop?: CropSize }
+export interface ImageOptions {
+  mode: 'balanced' | 'aggressive' | 'lossless'; scale: number; maxEdge?: number; format: OutputFormat; crop?: CropSize;
+  /** A compression picked from the card's menu (adaptive, or a factor of 5–100), which wins over `mode`. */
+  compression?: { tier: 'adaptive' | 'custom'; factor: number };
+}
 /**
  * A result card's item. Video, PDF and audio items have no pixel size of their own (0 for PDF and audio), keep their
  * original's preview and report `durationMs` or `pages`; `options` only matters for images. `progress` runs 0 to 1 while processing, when known.
