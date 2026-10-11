@@ -10,7 +10,7 @@ import { defaultPaths } from './settings/paths';
 
 const DAY = 86400000;
 const STREAM = 'clop.optimisation.status';
-/** The file's size and modification time (whole milliseconds) when it was marked, so the hint can tell a renamed file from an edited one. */
+/** The file's size and modification time when it was marked, so the hint can tell a renamed file from an edited one. */
 const SIZE_STREAM = 'clop.optimisation.size', MTIME_STREAM = 'clop.optimisation.mtime';
 interface Entry { size: number; mtimeMs: number; at: number }
 export interface MarkerOptions {
@@ -109,7 +109,8 @@ export class OptimisedMarker {
     if (await this.hint(file) !== true) return false;
     try {
       const info = await stat(file);
-      return Number(await readFile(`${file}:${SIZE_STREAM}`, 'utf8')) === info.size && Number(await readFile(`${file}:${MTIME_STREAM}`, 'utf8')) === Math.floor(info.mtimeMs);
+      // Putting the time back after the stream writes can be off by a millisecond.
+      return Number(await readFile(`${file}:${SIZE_STREAM}`, 'utf8')) === info.size && Math.abs(Number(await readFile(`${file}:${MTIME_STREAM}`, 'utf8')) - info.mtimeMs) < 2;
     } catch { return false; }
   }
 
@@ -117,7 +118,7 @@ export class OptimisedMarker {
     if (this.platform !== 'win32') return;
     // NTFS counts a stream write as a write to the file, so its times are put back: marking must not look like an edit.
     const before = await stat(file);
-    try { await writeFile(`${file}:${STREAM}`, 'true'); await writeFile(`${file}:${SIZE_STREAM}`, String(before.size)); await writeFile(`${file}:${MTIME_STREAM}`, String(Math.floor(before.mtimeMs))); } catch {}
+    try { await writeFile(`${file}:${STREAM}`, 'true'); await writeFile(`${file}:${SIZE_STREAM}`, String(before.size)); await writeFile(`${file}:${MTIME_STREAM}`, String(before.mtimeMs)); } catch {}
     await utimes(file, before.atime, before.mtime).catch(() => {});
   }
 
