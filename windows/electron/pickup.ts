@@ -1,5 +1,8 @@
-/** `paths` is the clipboard's file list, `image` whether it holds image data or image files, `bitmap` image data alone, `text` text. */
-export type ClipboardChange = { sequence: number; paths: string[]; image?: boolean; bitmap?: boolean; text?: boolean; process?: number; app?: string };
+/**
+ * `paths` is the clipboard's file list, `image` whether it holds image data or image files, `bitmap` image data alone, `text` text.
+ * `process` and `app` name the app in front; `owner` is the exe path of the app that copied (the clipboard owner), `aumid` its ID when it is packaged.
+ */
+export type ClipboardChange = { sequence: number; paths: string[]; image?: boolean; bitmap?: boolean; text?: boolean; process?: number; app?: string; owner?: string; aumid?: string };
 // Editors known to rewrite the clipboard after every stroke while they are in front.
 const autoCopyEditors = new Set(['snippingtool', 'screenclippinghost', 'screensketch']);
 type Timers = { set: (callback: () => void, delay: number) => unknown; clear: (timer: unknown) => void; now: () => number };

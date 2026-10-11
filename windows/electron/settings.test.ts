@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultSettings, migrateLegacy } from '../core/settings/schema';
+import { defaultSettings, migrateLegacy, parseSettings } from '../core/settings/schema';
 import { RENDERER_SETTINGS, imageCompression, imageDefaults, imageMode, parseOptions, rendererSettings } from './settings';
 test('new images use the compression and format settings', () => {
   assert.deepEqual(imageDefaults(defaultSettings()), { mode: 'balanced', format: 'auto', scale: 1 });
@@ -31,4 +31,9 @@ test('the renderer may only change the settings its window writes', () => {
   for (const key of ['editorAppImage', 'workdir', 'mcpEnabled', 'mcpAllowScriptSteps', 'pipelinesToRunOnImage', 'imageDirs', '__proto__', 'unknown']) assert.throws(() => rendererSettings(JSON.parse(`{"${key}": 1}`)), /cannot be changed from this window/, key);
   assert.throws(() => rendererSettings({ keepDropZoneVisible: true, workdir: 'C:\\' }), /workdir cannot be changed/);
   for (const bad of [null, 'x', [], 1]) assert.throws(() => rendererSettings(bad));
+});
+test('the ignored-apps list from the settings window is kept only as a list of strings', () => {
+  const current = { ...defaultSettings(), clipboardIgnoredAppBundleIds: ['C:\\Apps\\keep.exe'] };
+  assert.deepEqual(parseSettings(rendererSettings({ clipboardIgnoredAppBundleIds: ['a.exe', 'A.exe', 'Contoso.Notes_abc!App'] }), current).clipboardIgnoredAppBundleIds, ['a.exe', 'A.exe', 'Contoso.Notes_abc!App']);
+  for (const bad of ['a.exe', [1], [{}], [null]]) assert.deepEqual(parseSettings(rendererSettings({ clipboardIgnoredAppBundleIds: bad }), current).clipboardIgnoredAppBundleIds, ['C:\\Apps\\keep.exe'], JSON.stringify(bad));
 });

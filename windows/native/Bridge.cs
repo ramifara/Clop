@@ -31,6 +31,11 @@ namespace ClopWindows {
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
+    [DllImport("user32.dll")] static extern IntPtr GetClipboardOwner();
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint process);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder name, ref uint size);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern int GetApplicationUserModelId(IntPtr process, ref uint length, StringBuilder id);
     delegate IntPtr MouseCallback(int code, IntPtr message, IntPtr data);
     [StructLayout(LayoutKind.Sequential)] struct MouseData { public Point Point; public uint Mouse, Flags, Time; public UIntPtr Extra; }
     [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int type, MouseCallback callback, IntPtr module, uint thread);
@@ -69,6 +74,8 @@ namespace ClopWindows {
       ".mp3", ".m4a", ".aac", ".wav", ".aif", ".aiff", ".flac", ".ogg", ".opus", ".pdf" };
     const int MaxFiles = 64;
     static void Emit(object value) { Console.WriteLine(Json.Serialize(value)); Console.Out.Flush(); }
+    // Console.Out is synchronised, so another thread can write whole lines too; it brings its own serializer.
+    static void EmitFrom(JavaScriptSerializer json, object value) { Console.WriteLine(json.Serialize(value)); Console.Out.Flush(); }
     static void DragDebug(string message) { if (Environment.GetEnvironmentVariable("CLOP_DEBUG_DRAG") == "1") Diagnostics.Enqueue(message); }
     public static void Run() {
       SetProcessDpiAwarenessContext(new IntPtr(-4));
@@ -120,7 +127,8 @@ namespace ClopWindows {
             bool bitmap = HasBitmap(contents);
             bool image = bitmap || paths.Exists(file => Extensions.Contains(Path.GetExtension(file)));
             bool text = contents != null && contents.GetDataPresent(DataFormats.UnicodeText);
-            Emit(new { type = "clipboard", sequence = next, paths = paths.ToArray(), image, bitmap, text, process = ForegroundProcess, app = ForegroundApp });
+            string owner, aumid; ClipboardSource(out owner, out aumid);
+            Emit(new { type = "clipboard", sequence = next, paths = paths.ToArray(), image, bitmap, text, process = ForegroundProcess, app = ForegroundApp, owner, aumid });
           } catch { /* A different app may temporarily hold the clipboard. Retry on its next change. */ }
         }
         DetectImageDrag();
@@ -146,6 +154,82 @@ namespace ClopWindows {
         }
         return process;
       } catch { return 0; }
+    }
+    // The app that put the clipboard contents there, for the ignored apps: the clipboard owner's process, or the app in
+    // front when the clipboard has no owner. Packaged apps also report their AUMID.
+    static void ClipboardSource(out string path, out string aumid) {
+      var window = GetClipboardOwner();
+      if (window == IntPtr.Zero) window = GetForegroundWindow();
+      string name;
+      ProcessIdentity(AppProcess(window, out name), out path, out aumid);
+    }
+    static void ProcessIdentity(uint process, out string path, out string aumid) {
+      path = ""; aumid = "";
+      if (process == 0) return;
+      // PROCESS_QUERY_LIMITED_INFORMATION also opens elevated and protected processes.
+      var handle = OpenProcess(0x1000, false, process);
+      if (handle == IntPtr.Zero) return;
+      try {
+        var name = new StringBuilder(32768); uint size = (uint)name.Capacity;
+        if (QueryFullProcessImageName(handle, 0, name, ref size)) path = name.ToString(0, (int)size);
+        var id = new StringBuilder(256); uint length = (uint)id.Capacity;
+        try { if (GetApplicationUserModelId(handle, ref length, id) == 0) aumid = id.ToString(); } catch (EntryPointNotFoundException) { }
+      } finally { CloseHandle(handle); }
+    }
+    // For the ignored-apps picker: apps running with a visible window, then Start Menu shortcuts to programs and packaged
+    // Start Menu apps. A packaged app is listed by its AUMID, which stays the same when it updates; others by exe path.
+    static List<Dictionary<string, object>> Apps() {
+      var apps = new List<Dictionary<string, object>>();
+      var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+      foreach (var process in Process.GetProcesses()) {
+        try {
+          if (process.MainWindowHandle == IntPtr.Zero || String.IsNullOrEmpty(process.MainWindowTitle)) continue;
+          string name, path, aumid;
+          ProcessIdentity(AppProcess(process.MainWindowHandle, out name), out path, out aumid);
+          if (path == "") continue;
+          string description = null;
+          try { description = FileVersionInfo.GetVersionInfo(path).FileDescription; } catch { }
+          AddApp(apps, seen, String.IsNullOrEmpty(description) ? Path.GetFileNameWithoutExtension(path) : description, aumid != "" ? aumid : path, true);
+        } catch { } finally { process.Dispose(); }
+      }
+      object scripting = null, shell = null;
+      try {
+        scripting = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
+        dynamic links = scripting;
+        foreach (var root in new[] { Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu) }) {
+          try {
+            foreach (var link in Directory.EnumerateFiles(root, "*.lnk", SearchOption.AllDirectories)) {
+              object shortcut = null;
+              try {
+                shortcut = links.CreateShortcut(link);
+                string target = Convert.ToString(((dynamic)shortcut).TargetPath);
+                if (target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(target)) AddApp(apps, seen, Path.GetFileNameWithoutExtension(link), target, false);
+              } catch { }
+              finally { if (shortcut != null && Marshal.IsComObject(shortcut)) Marshal.ReleaseComObject(shortcut); }
+            }
+          } catch { /* A folder the user cannot read ends that part of the list. */ }
+        }
+        shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
+        object folder = ((dynamic)shell).NameSpace("shell:AppsFolder");
+        if (folder != null) {
+          try {
+            object items = ((dynamic)folder).Items();
+            try {
+              foreach (dynamic item in (dynamic)items) {
+                object entry = item;
+                try { string id = Convert.ToString(item.Path); if (id.Contains("!")) AddApp(apps, seen, Convert.ToString(item.Name), id, false); } catch { }
+                finally { if (entry != null && Marshal.IsComObject(entry)) Marshal.ReleaseComObject(entry); }
+              }
+            } finally { if (items != null && Marshal.IsComObject(items)) Marshal.ReleaseComObject(items); }
+          } finally { if (Marshal.IsComObject(folder)) Marshal.ReleaseComObject(folder); }
+        }
+      } catch { }
+      finally { if (scripting != null) Marshal.ReleaseComObject(scripting); if (shell != null) Marshal.ReleaseComObject(shell); }
+      return apps;
+    }
+    static void AddApp(List<Dictionary<string, object>> apps, HashSet<string> seen, string name, string path, bool running) {
+      if (apps.Count >= 2000 || String.IsNullOrEmpty(name) || !seen.Add(path)) return;
+      apps.Add(new Dictionary<string, object> { { "name", name }, { "path", path }, { "running", running } });
     }
     static List<string> FileList() {
       var paths = new List<string>();
@@ -180,7 +264,38 @@ namespace ClopWindows {
           var contents = Clipboard.GetDataObject();
           bool owned = contents != null && Convert.ToString(contents.GetData("ClopWindows.Owner")) == ClipboardOwner;
           bool text = contents != null && contents.GetDataPresent(DataFormats.UnicodeText);
-          Emit(new { type = "reply", id, ok = true, sequence = GetClipboardSequenceNumber(), paths = FileList().ToArray(), bitmap = HasBitmap(contents), text, owned, transient = Excluded(contents) }); return;
+          string owner, aumid; ClipboardSource(out owner, out aumid);
+          Emit(new { type = "reply", id, ok = true, sequence = GetClipboardSequenceNumber(), paths = FileList().ToArray(), bitmap = HasBitmap(contents), text, owned, transient = Excluded(contents), owner, aumid }); return;
+        }
+        if (type == "apps") {
+          // Walking processes and the Start Menu takes a while. This thread pumps the mouse hook, which Windows drops when it
+          // stalls, so the list is built on a thread of its own, STA for the shell's COM objects.
+          string request = id;
+          var worker = new Thread(() => {
+            var json = new JavaScriptSerializer();
+            try { EmitFrom(json, new { type = "reply", id = request, ok = true, apps = Apps() }); }
+            catch (Exception error) { EmitFrom(json, new { type = "reply", id = request, ok = false, error = error.Message }); }
+          });
+          worker.IsBackground = true; worker.SetApartmentState(ApartmentState.STA); worker.Start();
+          return;
+        }
+        if (type == "attributes") {
+          // Cloud placeholders (OneDrive files-on-demand): recall on data access, recall on open, offline. Reading attributes does
+          // not download them, but a network or sleeping drive can make it slow, so it runs off the mouse hook's thread too.
+          string request = id;
+          var paths = new List<string>();
+          foreach (object item in (System.Collections.IEnumerable)command["paths"]) paths.Add(Convert.ToString(item));
+          var worker = new Thread(() => {
+            var cloud = new List<bool>();
+            foreach (var file in paths) {
+              bool placeholder = false;
+              try { placeholder = ((int)File.GetAttributes(file) & 0x441000) != 0; } catch { }
+              cloud.Add(placeholder);
+            }
+            EmitFrom(new JavaScriptSerializer(), new { type = "reply", id = request, ok = true, cloud });
+          });
+          worker.IsBackground = true; worker.Start();
+          return;
         }
         if (type == "copy") {
           if (command.ContainsKey("expectedSequence") && Convert.ToUInt32(command["expectedSequence"]) != GetClipboardSequenceNumber()) {
