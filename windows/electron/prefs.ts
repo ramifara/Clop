@@ -44,7 +44,8 @@ const MAX_FOLDERS = 100, MAX_IGNORED = 500, MAX_TEMPLATE = 1024, MAX_PATH = 32_7
 /** The example file each template previews, and what a conversion makes of it. */
 const SAMPLES = { image: ['Screenshot.png', 'jpeg'], video: ['Recording.mov', 'mp4'], audio: ['Voice memo.wav', 'm4a'], pdf: ['Invoice.pdf', 'pdf'] } as const;
 const TEMPLATE_KEY = /^(converted)?[Ss](ame|pecific)FolderNameTemplate(Image|Video|Audio|PDF)$/;
-export const TEMPLATE_KEYS = ['customNameTemplateForClipboardImages', ...(['Image', 'Video', 'Audio', 'PDF'] as const).flatMap(kind => [`sameFolderNameTemplate${kind}`, `specificFolderNameTemplate${kind}`, `convertedSameFolderNameTemplate${kind}`, `convertedSpecificFolderNameTemplate${kind}`])] as SettingKey[];
+/** Only images, videos and audio have converted-file templates; a PDF is never converted to another type. */
+export const TEMPLATE_KEYS = ['customNameTemplateForClipboardImages', ...(['Image', 'Video', 'Audio', 'PDF'] as const).flatMap(kind => [`sameFolderNameTemplate${kind}`, `specificFolderNameTemplate${kind}`, ...(kind === 'PDF' ? [] : [`convertedSameFolderNameTemplate${kind}`, `convertedSpecificFolderNameTemplate${kind}`])])] as SettingKey[];
 
 /** The format lists the Settings window toggles one extension of, each with the list that loses an extension the first gains (`SettingsView.swift` removes it from the other when a chip goes on). */
 const FORMAT_LISTS = {

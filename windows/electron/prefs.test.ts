@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
-import { defaultSettings, parseSettings, type ClopSettings } from '../core/settings/schema';
+import { defaultSettings, parseSettings, settingsSchema, type ClopSettings } from '../core/settings/schema';
 import { TEMPLATE_KEYS, createPrefs, LINKS, type PrefsHost } from './prefs';
 
 let root: string, home: string, folderA: string, folderB: string, file: string, exe: string;
@@ -166,7 +166,9 @@ test('template previews run the real template on an example file without moving 
 
 test('template previews are only for template settings and reasonable lengths', async () => {
   const h = harness();
-  assert.equal(TEMPLATE_KEYS.length, 17);
+  assert.equal(TEMPLATE_KEYS.length, 15);
+  // Every key is a real setting: the schema has no converted PDF templates.
+  for (const key of TEMPLATE_KEYS) assert.ok(key in settingsSchema, key);
   for (const key of ['workdir', 'editorAppImage', '__proto__', 7]) await assert.rejects(h.prefs({ action: 'template', key, template: '%f' }), /name template setting/, String(key));
   await assert.rejects(h.prefs({ action: 'template', key: 'sameFolderNameTemplateImage', template: 'x'.repeat(2000) }), /template up to/);
   await assert.rejects(h.prefs({ action: 'template', key: 'sameFolderNameTemplateImage', template: 5 }), /template up to/);
