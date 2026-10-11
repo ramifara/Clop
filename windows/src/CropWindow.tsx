@@ -2,9 +2,9 @@ import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import { DEFAULT_CROP_ASPECT_RATIOS, DEFAULT_CROP_SIZES, type CropSizeGroup } from '../core/data/cropSizes';
 import { DEVICE_SIZE_GROUPS } from '../core/data/deviceSizes';
 import { PAPER_SIZE_GROUPS } from '../core/data/paperSizes';
-import { computedSize, even } from '../core/media/crop-size';
+import { computedSize } from '../core/media/crop-size';
 import { api, errorText } from './api';
-import { area, centeredMaxRect, extendedCanvas, fractionalAspect, FULL, HANDLES, handlePoint, marquee, moved, orientationOf, oriented, resized, sameRect, selectionSize, sizedRect, targetSize, toBox, toRect, type Box, type Handle, type Size } from './crop-geometry';
+import { area, centeredMaxRect, evenSide, extendedCanvas, fractionalAspect, FULL, HANDLES, handlePoint, marquee, moved, orientationOf, oriented, resized, sameRect, selectionSize, sizedRect, targetSize, toBox, toRect, type Box, type Handle, type Size } from './crop-geometry';
 import type { CropOrientation, CropRect, CropRequest, CropSize, CropSource } from './types';
 import './views.css';
 
@@ -126,7 +126,7 @@ export function CropWindow({ id }: { id: string }) {
       return void run({ type: 'pdf-rect', rect });
     }
     // The region goes along even when it is the whole frame, so a plain downscale also starts from the original and reopens as it was.
-    void run({ type: 'size', size: { width: even(output.width), height: even(output.height), name: presetName ?? '', longEdge: false, smartCrop: false, cropRect: rect } });
+    void run({ type: 'size', size: { width: evenSide(output.width), height: evenSide(output.height), name: presetName ?? '', longEdge: false, smartCrop: false, cropRect: rect } });
   }
   async function saveSizes(next: CropSize[]) { try { setSaved(await api.saveCropSizes(next)); } catch (error) { setError(errorText(error)); } }
   useEffect(() => {

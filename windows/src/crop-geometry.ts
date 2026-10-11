@@ -1,4 +1,4 @@
-import { clampRect, cropGeometry, extendToAspectRatio } from '../core/media/crop-size';
+import { clampRect, cropGeometry, even, extendToAspectRatio } from '../core/media/crop-size';
 import type { CropOrientation, CropRect, CropSize } from './types';
 
 // The crop window's selection model, ported from CropSelectionOverlay and CropView in CropWindow.swift.
@@ -116,3 +116,8 @@ export function keptSize(crop: CropSize | undefined, width: number, height: numb
   if (!crop) return { width, height };
   try { const kept = cropGeometry(crop, width, height); return { width: kept.width, height: kept.height }; } catch { return { width, height }; }
 }
+
+/** The most pixels a side can have, Clop's longest written edge (WebP's limit). */
+export const MAX_SIDE = 16383;
+/** `even` for a side to write: odd sizes round up to the next even one, except at the limit, where that would pass it and the previous even one is used. */
+export const evenSide = (value: number) => Math.min(even(value), MAX_SIDE - 1);

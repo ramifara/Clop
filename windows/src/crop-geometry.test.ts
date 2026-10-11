@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { centeredMaxRect, extendedCanvas, FULL, handlePoint, keptSize, marquee, moved, oriented, resized, sizedRect, targetSize, toBox, toRect, type Box } from './crop-geometry';
+import { centeredMaxRect, extendedCanvas, FULL, evenSide, handlePoint, keptSize, marquee, moved, oriented, resized, sizedRect, targetSize, toBox, toRect, type Box } from './crop-geometry';
 
 const view = { width: 400, height: 200 };
 const close = (actual: Record<string, number>, expected: Record<string, number>) => {
@@ -72,4 +72,9 @@ test('a cropped result is downscaled from the area its crop keeps', () => {
   assert.deepEqual(keptSize({ width: 200, height: 200, name: '', longEdge: false, smartCrop: false }, 400, 200), { width: 200, height: 200 });
   assert.deepEqual(keptSize({ width: 300, height: 300, name: '', longEdge: false, smartCrop: false, cropRect: { x: 0, y: 0, width: .5, height: 1 } }, 400, 200), { width: 200, height: 200 });
   assert.deepEqual(keptSize({ width: 0, height: 0, name: '', longEdge: false, smartCrop: false }, 400, 200), { width: 400, height: 200 });
+});
+
+test('rounds a side to an even size without passing the limit', () => {
+  assert.deepEqual([evenSide(201), evenSide(200), evenSide(199.6), evenSide(1)], [202, 200, 200, 2]);
+  assert.deepEqual([evenSide(16382), evenSide(16383), evenSide(16384), evenSide(20000)], [16382, 16382, 16382, 16382]);
 });
