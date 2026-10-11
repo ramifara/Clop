@@ -11,7 +11,8 @@ await build({ entryPoints: ['cli/index.ts'], bundle: true, platform: 'node', for
 // clop.exe launches it with the installed Electron. The .NET Framework's compiler is part of every Windows install.
 if (process.platform === 'win32') {
   const csc = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
-  execFileSync(csc, ['/nologo', '/target:exe', '/optimize+', '/langversion:5', '/out:dist-electron/clop.exe', 'native/clop.cs'], { stdio: 'inherit' });
+  // csc reads a leading or embedded '/' as an option switch, so both paths are given in Windows form.
+  execFileSync(csc, ['/nologo', '/target:exe', '/optimize+', '/langversion:5', `/out:${path.resolve('dist-electron', 'clop.exe')}`, path.resolve('native', 'clop.cs')], { stdio: 'inherit' });
 }
 await build({ entryPoints: ['electron/preload.ts'], bundle: true, platform: 'node', format: 'cjs', target: 'node22', external: ['electron'], outfile: 'dist-electron/preload.cjs' });
 await mkdir('assets', { recursive: true });
