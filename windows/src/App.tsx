@@ -114,7 +114,8 @@ function PresetGrid({ presets, run, onPin }: { presets: PresetTiles; run: Run; o
     onDrop={event => {
       const index = under(event), tile = index === undefined ? undefined : presets.tiles[index];
       event.preventDefault(); event.stopPropagation(); setHover(undefined); onPin(false);
-      if (!tile) return;
+      // A drop on the "Add preset" tile or an empty cell runs nothing; it opens the preset zones, as the tile does on a click.
+      if (!tile) { if (index !== undefined) void run(() => api.window('presets')); return; }
       const files = Array.from(event.dataTransfer.files);
       if (files.length) void run(() => api.runPreset(tile.id, files), `Running ${tile.name}`); else void run(async () => { throw new Error('Drop files on a preset zone.'); });
     }}>
