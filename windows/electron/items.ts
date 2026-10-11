@@ -231,7 +231,8 @@ export class ItemEngine extends EventEmitter {
         r.notes = outcome.warnings.length ? outcome.warnings : undefined;
       }
       let output: MediaOutput, width = r.originalWidth, height = r.originalHeight;
-      if (edit) output = await edit(e.outputPath, outputDir, name, signal);
+      // An edit starts from the current result, which a pipeline may have replaced with a file of its own.
+      if (edit) output = await edit(e.placedPath ?? e.outputPath, outputDir, name, signal);
       else if (r.kind === 'image') {
         // A crop comes first, and the scale and longest edge then apply to what it keeps.
         const geometry = options.crop && cropGeometry(options.crop, r.originalWidth, r.originalHeight);
@@ -266,7 +267,7 @@ export class ItemEngine extends EventEmitter {
         : (r.kind === 'video' && options.crop) || (r.kind === 'pdf' && edit) ? await mediaThumbnail(r.kind, output.path, { durationMs: output.durationMs ?? r.durationMs, signal }) : r.originalPreview;
       // With pipelines still to run, the result is not ready yet: copying or dragging it now would hand out the file before them.
       const following = automation && !automation.skipOptimisation;
-      Object.assign(r, { status: following ? 'processing' : 'ready', options, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes, preview,
+      Object.assign(r, { status: following ? 'processing' : 'ready', options, revision: e.revision, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes, preview,
         durationMs: output.durationMs ?? r.durationMs, pages: output.pages ?? r.pages, progress: undefined, unchanged: !!output.unchanged, restored: false });
       if (following) {
         const outcome = await automation.run(this.pipelineRun(e, e.placedPath ?? (output.unchanged ? undefined : output.path), signal));
@@ -320,6 +321,7 @@ export class ItemEngine extends EventEmitter {
       const kind = await detectKind(outcome.file, { signal }).catch(() => undefined) ?? r.kind;
       e.placedPath = outcome.file;
       e.revision++;
+      r.revision = e.revision;
       if (kind !== r.kind) await this.rebase(e, outcome.file, kind, signal);
       Object.assign(r, { format: path.extname(outcome.file).slice(1).toLowerCase() || r.format, outputBytes: info.size, unchanged: false, restored: false });
       if (kind === 'image') {

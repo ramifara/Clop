@@ -75,7 +75,7 @@ const rotation = (page: PDFPage) => ((page.getRotation().angle % 360) + 360) % 3
 const same = (a: { x: number; y: number; width: number; height: number }, b: typeof a) => (['x', 'y', 'width', 'height'] as const).every(key => Math.abs(a[key] - b[key]) < 0.01);
 
 /** The parts of a result the crop and compare windows read. */
-export interface ViewEntry { result: ItemResult; originalPath: string; outputPath: string; directory: string; inputFormat: string }
+export interface ViewEntry { result: ItemResult; originalPath: string; outputPath: string; placedPath?: string; revision?: number; directory: string; inputFormat: string }
 
 /**
  * The crop window's picture. Images and videos are cropped from their original, so the original (or one of its frames) is shown.
@@ -96,14 +96,16 @@ export async function cropSource(entry: ViewEntry, view: { page: number; time: n
       return { item, preview: files.url(preview), width: item.originalWidth, height: item.originalHeight };
     }
     case 'pdf': {
-      const doc = await loadPDF(entry.outputPath), pages = doc.getPages(), number = Math.min(view.page, pages.length), page = pages[number - 1];
+      // The current result: a pipeline's file when one replaced the optimised one.
+      const current = entry.placedPath ?? entry.outputPath;
+      const doc = await loadPDF(current), pages = doc.getPages(), number = Math.min(view.page, pages.length), page = pages[number - 1];
       const media = page.getMediaBox(), box = page.getCropBox(), turned = rotation(page) % 180 !== 0;
       const [width, height] = turned ? [media.height, media.width] : [media.width, media.height];
       const inMedia = { x: (box.x - media.x) / media.width, y: (media.y + media.height - box.y - box.height) / media.height, width: box.width / media.width, height: box.height / media.height };
       const initialRect = clampRect(rotateCropRect(inMedia, 360 - rotation(page)));
       const cropped = pages.some(p => !same(p.getCropBox(), p.getMediaBox()));
       const scale = Math.min(4, 2200 / Math.max(width, height));
-      const preview = await pdfPagePreview(entry.outputPath, viewFile(entry.directory, entry.outputPath, `crop-page${number}.png`), number, scale, { wholePage: true, signal });
+      const preview = await pdfPagePreview(current, viewFile(entry.directory, current, `crop-r${entry.revision ?? 0}-page${number}.png`), number, scale, { wholePage: true, signal });
       return { item, preview: files.url(preview), width, height, page: number, pages: pages.length, ...(isFullFrame(initialRect) ? {} : { initialRect }), ...(cropped ? { uncropped: { width, height } } : {}) };
     }
   }

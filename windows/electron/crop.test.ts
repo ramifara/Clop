@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -160,6 +160,27 @@ test('crops, extends and uncrops a PDF\'s pages on the current result, showing e
   assert.equal(result.status, 'ready', result.error);
   for (const page of await boxes(engine.output(id))) assert.deepEqual(round(page.crop), { x: 0, y: 108, width: 144, height: 144 });
   assert.throws(() => engine.crop(id, { type: 'size', size: size(10, 10) }), /paper size/);
+});
+
+test('crop and compare work on the file a pipeline left, which is outside the session, and a window can tell each revision', async t => {
+  const f = await fixture(t, 'gs'); if (!f) return;
+  const { engine, files, dir } = f;
+  const id = await engine.importBuffer(Buffer.from(await photoPDF({ pages: 2 })), 'scan.pdf', 'drop', balanced);
+  const first = engine.get(id).result.revision!;
+  const piped = path.join(dir, 'piped.pdf');
+  await writeFile(piped, await photoPDF({ pages: 3 }));
+  await engine.runPipeline(id, async () => ({ file: piped, started: piped, anyRan: true, warnings: [] }));
+  const afterPipeline = engine.get(id).result, piping = afterPipeline.revision!;
+  assert.equal(afterPipeline.status, 'ready', afterPipeline.error);
+  assert.ok(piping > first, 'a pipeline result is a new revision');
+  assert.equal((await cropSource(engine.get(id), { page: 3, time: 0 }, files)).pages, 3, 'the crop window shows the pipeline\'s file');
+  const compare = await compareSources(engine.get(id), { page: 3 }, files);
+  assert.equal(compare.pages, 3);
+  assert.ok((await fetchFile(files, compare.result.url)).length > 0);
+  await engine.crop(id, { type: 'pdf-aspect', aspectRatio: 1, orientation: 'adaptive', extend: false });
+  assert.equal(engine.get(id).result.status, 'ready', engine.get(id).result.error);
+  assert.equal((await boxes(engine.output(id))).length, 3, 'the crop started from the pipeline\'s file, not the optimised one');
+  assert.ok(engine.get(id).result.revision! > piping, 'so does a crop');
 });
 
 test('compares originals and results the window can load, and refuses to crop audio', async t => {
