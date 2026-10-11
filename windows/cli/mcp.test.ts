@@ -12,7 +12,7 @@ import { needTools } from '../core/testing';
 import { DECLINED_PREFIX, INSTRUCTIONS, SMALLER_OPTIONS_TEXT } from './mcp-copy';
 import { connect, folder, removeFolder } from './mcp.fixtures';
 import { TOOLS } from './mcp-table';
-import { annotate, inTurn, speedSteps, withFrames, writesSettings } from './mcp-tools';
+import { annotate, controlLauncher, inTurn, speedSteps, withFrames, writesSettings } from './mcp-tools';
 
 // A hung server must fail one test, not run out the CI job.
 const TIMEOUT = 120_000;
@@ -258,4 +258,11 @@ test('start and stop open only the app Clop itself runs, never a program a card 
   assert.equal(await ran('real'), 'clop://mcp/stop');
   assert.equal(await ran('evil'), undefined, 'the card cannot make Clop start a program');
   assert.equal(await ran('tool'), undefined);
+});
+
+test('without the app the server card names, a clop:// link opens through cmd.exe by its System32 path, never ComSpec', () => {
+  const [command, args, verbatim] = controlLauncher(undefined, 'clop://mcp/start', 'win32', { SystemRoot: 'C:\\Windows', ComSpec: 'C:\\Users\\me\\Downloads\\cmd.exe' });
+  assert.equal(command, 'C:\\Windows\\System32\\cmd.exe');
+  assert.deepEqual([args, verbatim], [['/d', '/s', '/c', 'start "" "clop://mcp/start"'], true]);
+  assert.deepEqual(controlLauncher('C:\\Program Files\\Clop\\Clop.exe', 'clop://mcp/stop', 'win32'), ['C:\\Program Files\\Clop\\Clop.exe', ['clop://mcp/stop'], false]);
 });

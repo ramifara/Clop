@@ -227,6 +227,16 @@ function cardApp(call: Call): string | undefined {
   return known.some(file => samePath(app, file)) ? app : undefined;
 }
 
+/**
+ * What opens a `clop://` link: the app the card names, else Windows' `start` through cmd.exe by its System32 path, never
+ * whatever `ComSpec` names.
+ */
+export function controlLauncher(app: string | undefined, url: string, platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): [string | undefined, string[], boolean] {
+  if (app) return [app, [url], false];
+  if (platform !== 'win32') return [undefined, [], false];
+  return [path.win32.join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'cmd.exe'), ['/d', '/s', '/c', `start "" "${url}"`], true];
+}
+
 /** Hands `clop://mcp/<action>` to the app the card names, launching it when it is not running. */
 async function openControlURL(call: Call, action: 'start' | 'stop') {
   const url = `clop://mcp/${action}`;
@@ -235,8 +245,7 @@ async function openControlURL(call: Call, action: 'start' | 'stop') {
   // The CLI runs inside the app's Electron as Node; the app itself must not.
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const [command, args, verbatim] = app ? [app, [url], false]
-    : process.platform === 'win32' ? [process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `start "" "${url}"`], true] : [undefined, [], false];
+  const [command, args, verbatim] = controlLauncher(app, url);
   if (!command) throw new ClopMCPError(`Could not open ${url}: Clop's server card names no app.`);
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { detached: true, stdio: 'ignore', env, windowsHide: true, windowsVerbatimArguments: verbatim });
