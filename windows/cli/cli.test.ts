@@ -207,6 +207,24 @@ test('strip-exif removes GPS but keeps the orientation', async t => {
   assert.equal(await c.clop('strip-exif', 'missing.jpg'), 1);
 });
 
+test('strip-exif on a folder runs exiftool through the image queue, never on every file at once', async t => {
+  if (process.platform === 'win32') { t.skip('the stand-in exiftool is a shell script'); return; }
+  const c = await cli(t);
+  // A stand-in exiftool that notes when each run starts and ends, and writes the copy it is asked for.
+  const tools = c.file('tools'), log = c.file('runs.log');
+  await mkdir(tools);
+  await writeFile(path.join(tools, 'exiftool'), `#!/bin/sh\nout=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; last="$a"; done\necho start >> '${log}'; sleep 0.2; cp "$last" "$out"; echo end >> '${log}'\n`, { mode: 0o755 });
+  const previous = process.env.CLOP_TOOLS_DIR;
+  process.env.CLOP_TOOLS_DIR = tools;
+  t.after(() => { if (previous === undefined) delete process.env.CLOP_TOOLS_DIR; else process.env.CLOP_TOOLS_DIR = previous; });
+  await mkdir(c.file('photos'));
+  for (let i = 0; i < 6; i++) await writeFile(c.file(`photos/${i}.jpg`), `photo ${i}`);
+  assert.equal(await c.clop('strip-exif', 'photos'), 0, c.err());
+  let running = 0, most = 0;
+  for (const line of (await readFile(log, 'utf8')).trim().split('\n')) { running += line === 'start' ? 1 : -1; most = Math.max(most, running); }
+  assert.equal(most, 2, 'two at a time, the image queue\'s limit');
+});
+
 test('the legacy convert writes next to the original and refuses to overwrite without --force', async t => {
   const c = await cli(t);
   await graphic(120, 80).png().toFile(c.file('icon.png'));

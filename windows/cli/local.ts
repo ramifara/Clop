@@ -8,10 +8,11 @@ import type { CropSizeGroup } from '../core/data/cropSizes';
 import { exists, moveTo, samePath } from '../core/fileops';
 import { factorText } from '../core/ipc/service';
 import { markOptimised, OptimisedMarker } from '../core/marker';
+import { VIDEO_EXTENSIONS } from '../core/media/detect';
 import { toPNG } from '../core/media/image-codecs';
 import { stripExifFile, type StripKeep } from '../core/media/strip-copy';
 import { cropPDF, extendPDF, uncropPDF } from '../core/media/pdf';
-import { run } from '../core/run';
+import { queue, run } from '../core/run';
 import { expandPathTemplate, expandTemplate, type Counter } from '../core/template';
 import { ExitCode, ValidationError } from './args';
 import { openWorkdir } from './backend';
@@ -78,10 +79,10 @@ The extension of the conversion format is automatically added.`, 'o'),
     const output = normalizeOutput(str(v, 'output'), ctx.cwd, ctx.home)?.replaceAll('%q', quality);
     let converted = 0;
     await withCounter(ctx, async counter => {
-      await Promise.all(files.map(async file => {
+      await Promise.all(files.map(file => queue('image')(async () => {
         try { if (await convert(ctx, file, format, Number(quality), output, on(v, 'force'), counter)) converted++; }
         catch (error) { ctx.io.err(`${ERROR_X()} ${underline(shellString(file))} ${ARROW()} ${(error as Error).message}\n`); }
-      }));
+      })));
     });
     // Non-zero only when every file failed, so callers do not retry work that partly succeeded.
     if (!converted && files.length) throw new ExitCode(1);
@@ -135,7 +136,8 @@ const stripExif: ClopCommand = {
     const files = first?.isDirectory() ? await folderFiles(given[0], on(v, 'recursive'), chosenTypes(list(v, 'types'), list(v, 'excludeTypes'))) : given;
     // Originals go to the work folder's backups, as for every write over a file, and stripped files are marked as Clop's.
     const keep = { workdir: await openWorkdir((await readSettings(ctx)).workdir, ctx.options), marker: new OptimisedMarker(path.join(ctx.options.userData, 'optimised.json')) };
-    const results = await Promise.all(files.map(file => strip(ctx, file, keep)));
+    // Through the per-type queues, as every tool run is: a folder of thousands of photos must not start thousands of exiftools at once.
+    const results = await Promise.all(files.map(file => queue(VIDEO_EXTENSIONS.includes(path.extname(file).slice(1).toLowerCase()) ? 'video' : 'image')(() => strip(ctx, file, keep))));
     if (files.length && !results.some(Boolean)) throw new ExitCode(1);
   },
 };
