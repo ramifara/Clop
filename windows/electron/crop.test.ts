@@ -11,7 +11,7 @@ import { boxes, photoPDF, round } from '../core/media/pdf.fixtures';
 import type { CropSize } from '../core/settings/schema';
 import { ItemEngine } from './items';
 import { MediaFiles } from './media-files';
-import { applyCrop, cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
+import { applyCrop, cropSource, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
 import { compareSources, parseCompareView } from './compare';
 
 const balanced = { mode: 'balanced', format: 'auto', scale: 1 } as const;
@@ -217,3 +217,12 @@ function bmpFile(rgb: Buffer, width: number, height: number) {
   }
   return Buffer.concat([header, pixels]);
 }
+
+test('a crop or compare window is sent its own result and no other', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine } = f;
+  const a = await engine.importBuffer(await halves(), 'a.png', 'drop', balanced), b = await engine.importBuffer(await halves(), 'b.png', 'drop', balanced);
+  assert.deepEqual(viewItems(engine.list(), `crop:${a}`).map(item => item.id), [a]);
+  assert.deepEqual(viewItems(engine.list(), `compare:${b}`).map(item => item.id), [b]);
+  assert.deepEqual(viewItems(engine.list(), 'crop:gone'), []);
+});

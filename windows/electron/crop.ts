@@ -118,3 +118,6 @@ export async function applyCrop(engine: ItemEngine, id: string, request: CropReq
   const result = engine.has(id) ? engine.get(id).result : undefined;
   if (result?.status === 'error') throw new Error(result.error ?? 'Could not crop this file.');
 }
+
+/** The window key `crop:<id>` or `compare:<id>` names a result; its window is sent that one and no other. */
+export const viewItems = (items: ItemResult[], key: string) => items.filter(item => item.id === key.slice(key.indexOf(':') + 1));

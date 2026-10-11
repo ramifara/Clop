@@ -54,7 +54,7 @@ import { newPipePath, type OptimisationRequest } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
 import { shellEffects } from '../core/shell-effects';
 import { MEDIA_SCHEME, MediaFiles } from './media-files';
-import { applyCrop, cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
+import { applyCrop, cropSource, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
 import { compareSources, parseCompareView } from './compare';
 import { setupBatch } from './batch-window';
 import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
@@ -147,8 +147,8 @@ const state = (): AppState => ({ items: visible(), settings, native: true, platf
 function broadcast() {
   refreshTrayIcon();
   for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
-  // The crop and compare windows follow their result even after its card hid, so they get every result.
-  if (views.size) { const all = { ...state(), items: engine.list() }; for (const window of views.values()) if (!window.isDestroyed()) window.webContents.send('clop:state', all); }
+  // The crop and compare windows follow their result even after its card hid, so they get it whether or not it shows; no other.
+  if (views.size) { const all = engine.list(); for (const [key, window] of views) if (!window.isDestroyed()) window.webContents.send('clop:state', { ...state(), items: viewItems(all, key) }); }
 }
 function inform(text: string) { notice = text; syncFloating(); broadcast(); }
 function positionFloating() {
