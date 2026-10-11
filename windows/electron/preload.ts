@@ -20,5 +20,14 @@ const api: ClopApi = {
   cropSource: (id, view) => invoke('crop-source', id, view), crop: (id, request) => invoke('crop', id, request),
   cropSizes: () => invoke('crop-sizes'), saveCropSizes: sizes => invoke('save-crop-sizes', sizes),
   compareSources: (id, view) => invoke('compare-sources', id, view),
+  runPreset: (zoneId, files) => invoke('run-preset', zoneId, files.map(file => webUtils.getPathForFile(file)).filter(Boolean)),
+  editor: {
+    state: () => ipcRenderer.invoke('clop:editor', 'state'), command: command => ipcRenderer.invoke('clop:editor', 'command', command),
+    subscribe: callback => {
+      const changed = () => callback('changed'), tab = (_event: unknown, name: string) => { if (name === 'zones') callback('zones'); };
+      ipcRenderer.on('clop:editor-changed', changed); ipcRenderer.on('clop:editor-tab', tab);
+      return () => { ipcRenderer.removeListener('clop:editor-changed', changed); ipcRenderer.removeListener('clop:editor-tab', tab); };
+    },
+  },
 };
 contextBridge.exposeInMainWorld('clop', api);

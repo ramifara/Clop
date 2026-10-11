@@ -90,6 +90,10 @@ namespace ClopWindows {
     static string ForegroundApp = "";
     static readonly string ClipboardOwner = Guid.NewGuid().ToString("N");
     static bool Announced, Eligible, DetectDrag = true;
+    // Ctrl (bit 1) and Alt (bit 2) as last reported during a drag, or -1 before the first report. Read on their own timer: the
+    // mouse hook only queues presses, and the key state is never asked from inside it.
+    static int Modifiers = -1;
+    static System.Windows.Forms.Timer ModifierTimer;
     static int Generation;
     static Point Start;
     static string[] DragPaths = new string[0];
@@ -164,7 +168,10 @@ namespace ClopWindows {
       // client bounds and queues coordinates; COM work stays outside the input callback.
       var mouseHook = SetWindowsHookEx(14, MouseEvents, GetModuleHandle(null), 0);
       var hook = SetWinEventHook(0x000F, 0x000F, IntPtr.Zero, DragEvents, 0, 0, 2);
-      timer.Start(); Emit(new { type = "ready", sequence = Sequence }); Application.Run(); timer.Dispose();
+      // While a drag is announced, Ctrl and Alt reveal the app's preset zones: a faster tick than the main one keeps the tiles close to the key.
+      ModifierTimer = new System.Windows.Forms.Timer { Interval = 40 };
+      ModifierTimer.Tick += (sender, args) => ReportModifiers();
+      timer.Start(); Emit(new { type = "ready", sequence = Sequence }); Application.Run(); timer.Dispose(); ModifierTimer.Dispose();
       if (hook != IntPtr.Zero) UnhookWinEvent(hook);
       if (mouseHook != IntPtr.Zero) UnhookWindowsHookEx(mouseHook);
     }
@@ -389,9 +396,16 @@ namespace ClopWindows {
       }
       return CallNextHookEx(IntPtr.Zero, code, message, data);
     }
+    static void ReportModifiers() {
+      int now = ((GetAsyncKeyState(0x11) & 0x8000) != 0 ? 1 : 0) | ((GetAsyncKeyState(0x12) & 0x8000) != 0 ? 2 : 0);
+      if (now == Modifiers) return;
+      Modifiers = now;
+      Emit(new { type = "drag-modifiers", ctrl = (now & 1) != 0, alt = (now & 2) != 0 });
+    }
     static void FinishDrag() {
       Generation++;
       Eligible = false; DragPaths = new string[0];
+      Modifiers = -1; if (ModifierTimer != null) ModifierTimer.Stop();
       if (Announced) { Announced = false; Emit(new { type = "drag-end" }); }
     }
     static void DetectImageDrag() {
@@ -417,6 +431,7 @@ namespace ClopWindows {
       int threshold = Math.Max(12, Math.Max(SystemInformation.DragSize.Width, SystemInformation.DragSize.Height));
       if (!Announced && (Math.Abs(cursor.X - Start.X) > threshold || Math.Abs(cursor.Y - Start.Y) > threshold)) {
         Announced = true; Emit(new { type = "drag-start", paths = DragPaths });
+        ReportModifiers(); ModifierTimer.Start();
       }
     }
     static void OnDragEvent(IntPtr hook, uint eventType, IntPtr window, int objectId, int childId, uint thread, uint time) {
