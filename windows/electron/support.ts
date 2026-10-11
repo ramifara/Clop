@@ -17,13 +17,15 @@ export interface UpdatesHost {
   portable: boolean;
   releases(): Promise<void>;
   inform(text: string): void;
+  /** Resolves once no placement is under way, so the installer does not close Clop in the middle of one. */
+  settle(): Promise<void>;
 }
 
 /** The update check and its dialogs. `check` is the tray's and the Settings window's button; `start` begins the daily check. */
 export function setupUpdates(host: UpdatesHost) {
   const updates = new Updates({
     env: () => ({ packaged: app.isPackaged, platform: process.platform, enabled: host.settings().checkForUpdates, beta: host.settings().betaUpdates }),
-    load: loadAutoUpdater, version: app.getVersion(), log: text => console.warn(text),
+    load: loadAutoUpdater, version: app.getVersion(), log: text => console.warn(text), settle: host.settle,
   });
   let offered: string | undefined, open: { version: string; done: Promise<void> } | undefined;
   /** The offer dialog for `version`. A second ask for the same version while it is open (the daily check and a button) shares it. */

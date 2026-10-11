@@ -214,3 +214,24 @@ test('a link anywhere on the working directory path is refused and never swept',
   assert.equal(await workdir.cleanup(DAY, later(30)), 0);
   assert.equal(await exists(path.join(real, 'work', 'temp', 'victim.png')), true);
 });
+
+test('repair puts back an original a placement left away from its path, from its backup, and drops every note', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-repair-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const workdir = await new Workdir(path.join(dir, 'work')).ensure();
+  const gone = path.join(dir, 'video.mp4'), present = path.join(dir, 'kept.png');
+  await writeFile(gone, 'the only copy'); await writeFile(present, 'still here');
+  const backup = (await workdir.backup(gone, { move: true }))!, other = (await workdir.backup(present))!;
+  await workdir.journal(gone, backup);
+  await workdir.journal(present, other);
+  // A note may only name a backup inside the backups folder.
+  const outside = path.join(dir, 'elsewhere.bin');
+  await writeFile(outside, 'not a backup');
+  await workdir.journal(path.join(dir, 'planted.txt'), outside);
+  assert.deepEqual(await workdir.repair(), [gone]);
+  assert.equal(await readFile(gone, 'utf8'), 'the only copy');
+  assert.equal(await readFile(backup, 'utf8'), 'the only copy', 'the backup stays');
+  assert.equal(await readFile(present, 'utf8'), 'still here');
+  assert.equal(await exists(path.join(dir, 'planted.txt')), false);
+  assert.deepEqual(await readdir(path.join(workdir.root, 'placing')), []);
+});

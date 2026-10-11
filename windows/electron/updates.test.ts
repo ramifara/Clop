@@ -89,6 +89,19 @@ test('checks that overlap share one request', async () => {
   assert.equal(calls.check, 2);
 });
 
+test('installing waits for the placements under way before the installer closes Clop', async () => {
+  const { calls, driver } = setup();
+  let release!: () => void;
+  const updates = new Updates({ env: () => allowed, load: async () => driver, version: '0.2.0', log: () => {}, settle: () => new Promise<void>(resolve => { release = resolve; }) });
+  await updates.check();
+  const installing = updates.install();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(calls.install, 0, 'not while a placement runs');
+  release();
+  await installing;
+  assert.equal(calls.install, 1);
+});
+
 test('installing needs a found version, then downloads it and restarts into it', async () => {
   const { updates, calls } = setup();
   await assert.rejects(updates.install(), /Check for updates first/);

@@ -1,13 +1,15 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { lstat, mkdir, readdir, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { copyTo, exists, moveTo, samePath } from './fileops';
 import { expandHome } from './settings/paths';
 
 /** Dropped into the working directory so a later start knows the folder was made for Clop. */
 const MARKER = '.clop-workdir';
-const LAYOUT = new Set(['backups', 'batch-backups', 'temp', MARKER]);
+/** Notes of originals that are away from their path while a result takes their place (`journal`). */
+const PLACING = 'placing';
+const LAYOUT = new Set(['backups', 'batch-backups', 'temp', PLACING, MARKER]);
 
 /** The first symlink or junction among `dir` and its ancestors. */
 async function linkAmong(dir: string): Promise<string | undefined> {
@@ -126,6 +128,37 @@ export class Workdir {
     await (move ? moveTo : copyTo)(original, target, { force });
     this.latest.set(path.resolve(original), target);
     return target;
+  }
+
+  /**
+   * Notes that `original` is about to be away from its path, kept at `backup`, until the returned function removes the note.
+   * A start after a crash or a forced shutdown finds the note and puts the original back (`repair`).
+   */
+  async journal(original: string, backup: string): Promise<() => Promise<void>> {
+    const dir = path.join(this.root, PLACING), note = path.join(dir, `${randomUUID()}.json`);
+    await mkdir(dir, { recursive: true });
+    await writeFile(note, JSON.stringify({ original: path.resolve(original), backup: path.resolve(backup) }));
+    return () => rm(note, { force: true });
+  }
+
+  /**
+   * Finishes what a placement that never ended left: an original that is not at its path is copied back from its backup (which
+   * stays in the backups), and every note is removed. Returns the files put back.
+   */
+  async repair(): Promise<string[]> {
+    const dir = path.join(this.root, PLACING), restored: string[] = [];
+    for (const name of await readdir(dir).catch(() => [] as string[])) {
+      const note = path.join(dir, name);
+      try {
+        const { original, backup } = JSON.parse(await readFile(note, 'utf8')) as { original?: unknown; backup?: unknown };
+        if (typeof original === 'string' && typeof backup === 'string' && within(this.backups, backup) && !await exists(original) && await exists(backup)) {
+          await copyTo(backup, original);
+          restored.push(original);
+        }
+      } catch { /* A note that cannot be read or acted on is dropped; its backup stays in the backups. */ }
+      await rm(note, { force: true });
+    }
+    return restored;
   }
 
   /** Puts `backup` back at `original`, byte for byte, then deletes it. */

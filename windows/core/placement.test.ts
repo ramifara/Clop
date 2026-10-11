@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { exists, samePath } from './fileops';
 import { OptimisedMarker } from './marker';
-import { destinationPath, effectiveBehaviour, executePlacement, isTemplatedCopy, placeOutput, planPlacement, type FileBehaviour, type PlacementEnv, type PlacementOverride } from './placement';
+import { destinationPath, effectiveBehaviour, executePlacement, isTemplatedCopy, placementsSettled, placeOutput, placing, planPlacement, type FileBehaviour, type PlacementEnv, type PlacementOverride } from './placement';
 import { defaultSettings, type ClopSettings } from './settings/schema';
 import { Workdir } from './workdir';
 
@@ -87,6 +87,37 @@ test('inPlace when the optimiser already rewrote the original reports the backup
   assert.equal(placed.originalRemoved, false);
   assert.deepEqual(await readFile(placed.backup!), bytes);
   assert.equal(await readFile(original, 'utf8'), 'rewritten in place');
+});
+
+test('a placement that moves the original aside leaves a note while it runs, which the next start uses to put the original back', async t => {
+  const { env, original, bytes, source, workdir } = await setup(t, behaviour('inPlace'));
+  const notes: string[] = [];
+  // As if the process died before the placement finished: the note is never removed.
+  const dying = Object.assign(Object.create(workdir) as Workdir, { journal: async (file: string, backup: string) => { notes.push(file); await workdir.journal(file, backup); return async () => {}; } });
+  const webp = path.join(workdir.temp, 'result.webp');
+  await writeFile(webp, 'webp bytes');
+  const placed = await placeOutput({ ...env, workdir: dying }, { produced: webp, original, type: 'image' });
+  assert.deepEqual(notes, [original]);
+  // The converted file never made it.
+  await rm(placed.path);
+  assert.deepEqual(await readdir(source), []);
+  assert.deepEqual(await workdir.repair(), [original]);
+  assert.deepEqual(await readFile(original), bytes);
+  assert.deepEqual(await workdir.repair(), [], 'the note is gone');
+});
+
+test('a placement that finishes leaves no note, and quitting can wait for the placements under way', async t => {
+  const { env, original, workdir } = await setup(t, behaviour('inPlace'));
+  const webp = path.join(workdir.temp, 'result.webp');
+  await writeFile(webp, 'webp bytes');
+  const running = executePlacement(env, await planPlacement(env, { produced: webp, original, type: 'image' }), webp, original);
+  assert.equal(placing(), true);
+  let settled = false;
+  const waiting = placementsSettled().then(() => { settled = true; });
+  await running; await waiting;
+  assert.equal(settled, true);
+  assert.equal(placing(), false);
+  assert.deepEqual(await readdir(path.join(workdir.root, 'placing')), []);
 });
 
 test('inPlace undoes the backup move when the copy fails', async t => {

@@ -43,6 +43,8 @@ export interface UpdatesOptions {
   /** The running version, to tell "up to date" from "available". */
   version: string;
   log(text: string): void;
+  /** Resolves once nothing that must not be cut short is under way (a placement that moved an original aside), so the installer does not close Clop in the middle of it. */
+  settle?(): Promise<void>;
 }
 
 const DAY = 24 * 60 * 60 * 1000, FIRST_CHECK = 30_000;
@@ -89,6 +91,7 @@ export class Updates {
     if (!gate.ok) throw new Error(gate.message);
     const driver = await this.configured();
     await driver.downloadUpdate();
+    await this.options.settle?.();
     driver.quitAndInstall(false, true);
   }
 

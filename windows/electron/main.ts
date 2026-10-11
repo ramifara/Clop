@@ -10,6 +10,7 @@ import { imageDefaults, rendererSettings } from './settings';
 import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { SettingsStore } from '../core/settings/store';
 import { Workdir } from '../core/workdir';
+import { placementsSettled, placing } from '../core/placement';
 import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ignoredApp, withIgnored } from './apps';
@@ -95,7 +96,7 @@ let marker: OptimisedMarker, folders: FolderResults, watchers: FolderWatcher[] =
 let home = '', sessionDir = '';
 /** Folders of the work directory's temp folder that hold pipeline results cards show; kept from the cleaner for the session. */
 const keptRoots = new Set<string>();
-let batch: ReturnType<typeof setupBatch> | undefined, batchSettled = false;
+let batch: ReturnType<typeof setupBatch> | undefined, batchSettled = false, placementsDone = false;
 /** Results from watched folders in `dirsHideFloatingResult`; they never show as floating results. */
 const quiet = new Set<string>();
 /** Results that hid or were dismissed, latest last, for "Bring back last result". */
@@ -325,6 +326,8 @@ async function createWindows() {
   main = new BrowserWindow({ width: 920, height: 660, minWidth: 720, minHeight: 480, show: false, backgroundColor: '#f3f1ef', title: 'Clop settings', autoHideMenuBar: true, webPreferences: windowPreferences });
   floating = new BrowserWindow({ width: 236, height: 206, frame: false, resizable: false, transparent: true, show: false, skipTaskbar: true, alwaysOnTop: settings.floatingResultsAlwaysOnTop, backgroundColor: '#00000000', webPreferences: windowPreferences });
   configure(main); configure(floating);
+  // Windows asks before it signs out or shuts down: while a result is taking an original's place, Clop asks it to wait. A forced end is repaired at the next start.
+  main.on('query-session-end', event => { if (placing()) event.preventDefault(); });
   protectFromCapture(floating, settings.allowClopToAppearInScreenshots);
   await load(main, { preferences: '1' }); await load(floating, { floating: '1' });
   positionFloating();
@@ -1066,7 +1069,7 @@ else {
     if (!settingsError) settings = await store.update(current => ({ patch: seedBuiltinPipelines(current.savedPipelines, current.builtinPipelinesSeededVersion), result: undefined })).then(reply => reply.settings, error => { settingsError = error; return settings; });
     mirrorConsoleToFile(path.join(userData, 'logs', 'clop.log'), () => settings.persistDebugLogs);
     const paths = { home: app.getPath('home'), desktop: app.getPath('desktop'), userData };
-    updates = setupUpdates({ settings: () => settings, portable: isPortable(), releases: () => shell.openExternal(LINKS.releases), inform });
+    updates = setupUpdates({ settings: () => settings, portable: isPortable(), releases: () => shell.openExternal(LINKS.releases), inform, settle: placementsSettled });
     saveDump = setupDebugDump({ settings: () => settings, userData, workdir: () => workdir?.root ?? settings.workdir, portable: isPortable() });
     prefs = createPrefs({
       settings: () => settings, defaults: () => defaultSettings(paths), set: async partial => { await updateSettings(partial); }, update: change => changeSettings(change), home: paths.home,
@@ -1087,6 +1090,8 @@ else {
       workdirProblem = `Clop cannot use the working directory ${settings.workdir}: ${message(error)} Using the default folder instead.`;
       return open(path.join(userData, 'work'));
     });
+    // A placement the last run never finished (a crash, a forced shutdown) gets its original back before anything else touches the folders.
+    void workdir.repair().then(files => { if (files.length) inform(`Clop put back ${files.length === 1 ? path.basename(files[0]) : `${files.length} files`} that it was replacing when it last stopped. ${files.length === 1 ? 'It is' : 'They are'} where ${files.length === 1 ? 'it was' : 'they were'}, as before.`); }, error => console.warn(`Could not check for unfinished placements: ${message(error)}`));
     // The running session's files stay until the next start, however short the cleanup interval is.
     const session = sessionDir = path.join(workdir.temp, `session-${Date.now()}`);
     workdir.protect(session);
@@ -1193,6 +1198,8 @@ else {
     // A running batch is stopped, and quitting waits (briefly) for its files to settle: one being placed has moved its original aside.
     const settling = batch?.host.stop();
     if (settling && !batchSettled) { event.preventDefault(); void Promise.race([settling, new Promise(resolve => setTimeout(resolve, 15_000))]).finally(() => { batchSettled = true; app.quit(); }); }
+    // So does a placement under way (a result taking an original's place), for up to two minutes; a start after a forced end repairs one.
+    else if (placing() && !placementsDone) { event.preventDefault(); void Promise.race([placementsSettled(), new Promise(resolve => setTimeout(resolve, 120_000))]).finally(() => { placementsDone = true; app.quit(); }); }
     if (quitting) return;
     quitting = true; stopUpdates?.(); for (const collector of verbCollectors.values()) collector.cancel(); withdrawPipe?.(); void pipe?.close(); engine?.abort(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });

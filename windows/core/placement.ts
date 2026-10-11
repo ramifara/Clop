@@ -144,6 +144,15 @@ export async function planPlacement(env: PlacementEnv, args: { produced: string;
   return { behaviour, dest };
 }
 
+/** Placements under way in this process. Quitting or updating waits for them: one may have moved an original aside. */
+const inFlight = new Set<Promise<unknown>>();
+/** Whether a placement is under way. */
+export const placing = () => inFlight.size > 0;
+/** Resolves once every placement under way now, and any started meanwhile, has finished, whether or not it worked. */
+export async function placementsSettled(): Promise<void> {
+  while (inFlight.size) await Promise.allSettled([...inFlight]);
+}
+
 /**
  * Port of `executePlacement`: the file I/O. For `inPlace` the original goes into `workdir.backups` first (restore it
  * with `workdir.restore`), then `produced` is copied to the destination. The copy is atomic, so an interrupted placement never
@@ -151,10 +160,21 @@ export async function planPlacement(env: PlacementEnv, args: { produced: string;
  * original, so that path is never empty (and a failed placement leaves the original as it was); a result under another name
  * moves the original away, as a conversion leaves no file under the old name. The placed file is marked optimised.
  */
-export async function executePlacement(env: PlacementEnv, plan: PlacementPlan, produced: string, original: string): Promise<PlacedOutput> {
+export function executePlacement(env: PlacementEnv, plan: PlacementPlan, produced: string, original: string): Promise<PlacedOutput> {
+  const work = place(env, plan, produced, original);
+  inFlight.add(work);
+  void work.finally(() => inFlight.delete(work)).catch(() => {});
+  return work;
+}
+
+/**
+ * While an original is away from its path, a note in the working directory names it and its backup, so a start after a crash
+ * or a forced shutdown puts it back (`Workdir.repair`).
+ */
+async function place(env: PlacementEnv, plan: PlacementPlan, produced: string, original: string): Promise<PlacedOutput> {
   if (!plan.dest) return { path: produced, originalRemoved: false };
   const { dest } = plan, { workdir } = env;
-  let backup: string | undefined, originalRemoved = false, moved = false, replaced: string | undefined;
+  let backup: string | undefined, originalRemoved = false, moved = false, replaced: string | undefined, away: (() => Promise<void>) | undefined;
   // A different file already at the destination (a template collision, or `shot.webp` beside `shot.png`) would be lost to the copy, so keep it first.
   const same = (a: string, b: string) => samePath(a, b, platformOf(env));
   if (!same(dest, original) && !same(dest, produced) && await exists(dest)) {
@@ -169,7 +189,8 @@ export async function executePlacement(env: PlacementEnv, plan: PlacementPlan, p
     } else {
       // Overwriting without a backup would lose the only copy, so a failed backup fails the placement.
       moved = !same(dest, original);
-      backup = await workdir.backup(original, { move: moved, force: true }).catch(error => { throw new Error(`Could not back up ${original} before replacing it: ${error instanceof Error ? error.message : error}`); });
+      if (moved) away = await workdir.journal(original, await workdir.backupPath(original));
+      backup = await workdir.backup(original, { move: moved, force: true }).catch(async error => { await away?.(); throw new Error(`Could not back up ${original} before replacing it: ${error instanceof Error ? error.message : error}`); });
       originalRemoved = backup !== undefined;
     }
   }
@@ -177,14 +198,16 @@ export async function executePlacement(env: PlacementEnv, plan: PlacementPlan, p
     try { await copyTo(produced, dest); } catch (error) {
       // Windows will not rename over a read-only file or one that is held open; then the original moves out of the way, as it always did.
       if (moved || !backup || !['EPERM', 'EACCES', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      away = await workdir.journal(original, backup);
       await moveTo(original, backup);
       moved = true;
       await copyTo(produced, dest);
     }
   } catch (error) {
-    if (moved && backup) await moveTo(backup, original).catch(() => {});
+    // A note stays when the original could not be put back, so the next start tries again.
+    if (moved && backup && !await moveTo(backup, original).then(() => true, () => false)) away = undefined;
     throw error;
-  }
+  } finally { await away?.(); }
   await (env.marker ?? defaultMarker()).markOptimised(dest).catch(() => {});
   return { path: dest, backup, originalRemoved, replaced };
 }
