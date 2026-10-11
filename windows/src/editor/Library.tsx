@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { stepsToJsonc, parseJsoncSteps } from '../../core/pipeline/jsonc';
 import { canFormat, formatSteps, parsePipelineText } from '../../core/pipeline/parser';
 import { FILE_TYPES, type ClopFileType } from '../../core/pipeline/model';
@@ -11,6 +11,9 @@ export const TYPE_NAMES: Record<ClopFileType, string> = { image: 'Image', video:
 const NEW = 'new';
 
 interface Draft { id?: string; name: string; fileType?: ClopFileType; icon: string; details: string; skipOptimisation: boolean; hideResult: boolean; view: 'text' | 'json'; text: string }
+/** The JSON being fixed for an unreadable entry: what it held and its revision when opened, and what the user has typed since. */
+interface FixDraft { key: string; raw: string; revision: string; json: string }
+const fixOf = (entry: UnreadableView): FixDraft => ({ key: entry.key, raw: entry.raw, revision: entry.revision, json: entry.raw });
 const blank = (): Draft => ({ name: '', icon: 'wand.and.sparkles', details: '', skipOptimisation: false, hideResult: false, view: 'text', text: '' });
 function draftOf(pipeline: PipelineView): Draft {
   const view = pipeline.exact ? 'text' : 'json';
@@ -31,8 +34,9 @@ function usedBy(state: EditorState, id: string): string[] {
 export function Library({ state, send }: { state: EditorState; send: Send }) {
   const [selected, setSelected] = useState<string>(), [draft, setDraft] = useState<Draft>(blank), [saved, setSaved] = useState(() => JSON.stringify(blank())), [filter, setFilter] = useState(''), [note, setNote] = useState(''), [confirming, setConfirming] = useState(false);
   const [serverProblems, setServerProblems] = useState<Problem[]>([]);
+  const [fix, setFix] = useState<FixDraft>();
   const entry = state.library.find(candidate => candidate.key === selected);
-  const dirty = JSON.stringify(draft) !== saved;
+  const dirty = JSON.stringify(draft) !== saved || (fix !== undefined && fix.json !== fix.raw);
   const problems = useMemo(() => [...problemsIn(draft), ...serverProblems], [draft, serverProblems]);
   const shown = useMemo(() => state.library.filter(candidate => !filter.trim() || (candidate.readable ? candidate.name : candidate.id ?? 'unreadable').toLowerCase().includes(filter.trim().toLowerCase())), [state.library, filter]);
 
@@ -41,6 +45,7 @@ export function Library({ state, send }: { state: EditorState; send: Send }) {
     const found = state.library.find(candidate => candidate.key === next);
     const base = from ?? (found?.readable ? draftOf(found) : blank());
     setSelected(next); setDraft(base); setSaved(JSON.stringify(base)); setNote(''); setServerProblems([]); setConfirming(false);
+    setFix(found && !found.readable ? fixOf(found) : undefined);
   }
   const edit = (patch: Partial<Draft>) => { setDraft({ ...draft, ...patch }); setServerProblems([]); setNote(''); };
 
@@ -90,7 +95,7 @@ export function Library({ state, send }: { state: EditorState; send: Send }) {
     </aside>
     <section className="library-pane">
       {!selected && <div className="placeholder"><h2>Pipelines</h2><p>A pipeline is a list of steps, such as <code>downscale(factor: 0.5) -&gt; convert(to: webp)</code>. Pick one to edit it, or press New. Attach pipelines to the clipboard, the drop zone or a watched folder in the Attached tab.</p></div>}
-      {entry && !entry.readable && <UnreadableEditor entry={entry} send={send} onDone={() => setSelected(undefined)}/>}
+      {entry && !entry.readable && fix?.key === entry.key && <UnreadableEditor key={entry.key} entry={entry} fix={fix} setFix={setFix} send={send} onDone={() => { setFix(undefined); setSelected(undefined); }}/>}
       {editing && <>
         <header className="pane-head">
           <label className="icon-pick" title="Icon"><span className="glyph big" aria-hidden="true">{glyph(draft.icon)}</span>
@@ -124,16 +129,24 @@ export function Library({ state, send }: { state: EditorState; send: Send }) {
   </div>;
 }
 
-/** An entry this version cannot read: its JSON can be fixed here, or it can be removed. It is kept as it is until then. */
-function UnreadableEditor({ entry, send, onDone }: { entry: UnreadableView; send: Send; onDone: () => void }) {
-  const [json, setJson] = useState(entry.raw), [problems, setProblems] = useState<Problem[]>([]);
+/**
+ * An entry this version cannot read: its JSON can be fixed here, or it can be removed. It is kept as it is until then. The
+ * typed JSON belongs to this one entry (the editor is keyed by it) and counts as unsaved changes. If the entry changes
+ * elsewhere meanwhile, untouched JSON follows it; typed JSON stays and is flagged until the user reloads or overwrites.
+ */
+function UnreadableEditor({ entry, fix, setFix, send, onDone }: { entry: UnreadableView; fix: FixDraft; setFix: (fix: FixDraft) => void; send: Send; onDone: () => void }) {
+  const [problems, setProblems] = useState<Problem[]>([]);
+  const stale = entry.revision !== fix.revision, typed = fix.json !== fix.raw;
+  useEffect(() => { if (stale && !typed) setFix(fixOf(entry)); }, [stale, typed, entry, setFix]);
+  const conflict = stale && typed;
   return <>
     <header className="pane-head"><span className="glyph big" aria-hidden="true">⚠</span><strong>{entry.id ?? 'Unreadable pipeline'}</strong><span className="badge warn">Unreadable</span></header>
     <p className="explain">Clop cannot read this pipeline: {entry.reason} It is kept exactly as it is, so it still works on the Mac it came from. Fix its JSON below to use it here, or delete it.</p>
-    <StepTextEditor value={json} onChange={value => { setJson(value); setProblems([]); }} mode="json" problems={problems} label="Pipeline JSON"/>
+    {conflict && <p className="conflict" role="alert">This pipeline was changed elsewhere while you edited it. <button type="button" onClick={() => setFix(fixOf(entry))}>Load the current JSON</button> <button type="button" onClick={() => setFix({ ...fix, raw: entry.raw, revision: entry.revision })}>Keep mine</button></p>}
+    <StepTextEditor value={fix.json} onChange={value => { setFix({ ...fix, json: value }); setProblems([]); }} mode="json" problems={problems} label="Pipeline JSON"/>
     <footer className="pane-foot">
-      <button type="button" className="primary" onClick={() => void send({ type: 'pipeline-fix', key: entry.key, base: entry.revision, json }).then(reply => { if (reply?.issues) setProblems(reply.issues); else if (reply) onDone(); })}>Use this JSON</button>
-      <button type="button" className="danger" onClick={() => void send({ type: 'pipeline-delete', key: entry.key, base: entry.revision }).then(reply => { if (reply && !reply.issues) onDone(); })}>Delete</button>
+      <button type="button" className="primary" disabled={conflict} onClick={() => void send({ type: 'pipeline-fix', key: entry.key, base: fix.revision, json: fix.json }).then(reply => { if (reply?.issues) setProblems(reply.issues); else if (reply) onDone(); })}>Use this JSON</button>
+      <button type="button" className="danger" onClick={() => void send({ type: 'pipeline-delete', key: entry.key, base: fix.revision }).then(reply => { if (reply && !reply.issues) onDone(); })}>Delete</button>
     </footer>
   </>;
 }

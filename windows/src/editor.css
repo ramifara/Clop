@@ -114,3 +114,5 @@ body:has(.editor) { color: #302d32; font-size: 12px; }
 .zone-add { border-top: 1px solid #dcd6d3; padding-top: 14px; }
 .zone-fields { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .zone-fields input { width: 170px; }
+.conflict { margin: 0; padding: 8px 12px; background: #f9ecd2; color: #6b4a0a; border: 1px solid #e6cf9c; border-radius: 6px; }
+.conflict button { margin-left: 6px; }
