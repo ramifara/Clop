@@ -35,8 +35,8 @@ export interface ItemPlacement {
   place(output: MediaOutput, staged?: string, manual?: boolean): Promise<string>;
   /** Puts the original back; resolves with where it now is, or undefined when the shelf's own copy is the original. */
   restore(): Promise<string | undefined>;
-  /** A pipeline replaced the placed file with another in its folder (a conversion): restoring undoes that file now. */
-  follow?(file: string): void;
+  /** A pipeline rewrote the placed file, or replaced it with another in its folder (a conversion): restoring undoes that file as it is now. */
+  follow?(file: string): void | Promise<void>;
 }
 /**
  * What the attached pipelines did to a file (`runPipelines` in core/pipeline/triggers.ts). `started` is the file they started
@@ -328,8 +328,9 @@ export class ItemEngine extends EventEmitter {
     const info = outcome.anyRan ? await stat(outcome.file).catch(() => undefined) : undefined;
     if (info?.isFile()) {
       const kind = await detectKind(outcome.file, { signal }).catch(() => undefined) ?? r.kind;
-      // A conversion in place leaves the file under another name; the placement follows it so restoring still finds the result.
-      if (e.placedPath && e.placement?.follow && !samePath(e.placedPath, outcome.file) && samePath(path.dirname(e.placedPath), path.dirname(outcome.file)) && !await exists(e.placedPath)) e.placement.follow(outcome.file);
+      // A conversion in place leaves the file under another name, and other steps rewrite it where it is; the placement follows either, so
+      // restoring still finds the result and knows it as Clop's.
+      if (e.placedPath && e.placement?.follow && samePath(path.dirname(e.placedPath), path.dirname(outcome.file)) && (samePath(e.placedPath, outcome.file) || !await exists(e.placedPath))) await e.placement.follow(outcome.file);
       e.placedPath = outcome.file;
       e.revision++;
       r.revision = e.revision;

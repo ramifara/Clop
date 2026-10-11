@@ -20,8 +20,8 @@ export type FolderEnv = PlacementEnv & { marker: OptimisedMarker };
  * a request's own placement (the command line's `--behaviour` and templates).
  */
 export function folderPlacement(file: string, kind: MediaKind, env: () => FolderEnv, saved?: (counter: number) => void, overrides?: PlacementOverride): ItemPlacement {
-  /** The first backup: the file as it was before Clop wrote over it. */
-  let backup: string | undefined, placed: string | undefined;
+  /** The first backup: the file as it was before Clop wrote over it. `stamp` is the size and modification time of the result as Clop left it. */
+  let backup: string | undefined, placed: string | undefined, stamp: { size: number; mtimeMs: number } | undefined;
   /** Backups of the user's own files that results took the place of, by where they were. */
   const replaced = new Map<string, string>();
   const key = (target: string) => { const resolved = path.resolve(target); return process.platform === 'win32' ? resolved.toLowerCase() : resolved; };
@@ -39,7 +39,8 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
     if (!placed) return undefined;
     const name = path.basename(placed);
     if (!await exists(placed)) throw new Error(`${name} was moved or deleted after Clop optimised it, so its original stays in the backups.`);
-    if (!await env().marker.isOptimised(placed)) throw new Error(`${name} changed after Clop optimised it, so Clop left it as it is. Its original is in the backups.`);
+    // Judged by the result this placement left, not by the shared marker, which a later optimisation of an edited file refreshes.
+    if (await edited(placed)) throw new Error(`${name} changed after Clop optimised it, so Clop left it as it is. Its original is in the backups.`);
     if (backup && !samePath(placed, file) && await exists(file)) throw new Error(`A new ${path.basename(file)} is where the original was, so Clop left both as they are. The original is in the backups.`);
     let target = file;
     // Over the file, the backup goes back. A copy beside the file (`sameFolder`, `specificFolder`) gives back the user's file it
@@ -47,8 +48,13 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
     if (backup) { await copyTo(backup, file); await mark(file); if (!samePath(placed, file)) await vacate(placed); }
     else if (replaced.has(key(placed))) await vacate(placed);
     else { target = placed; await copyTo(file, placed); await mark(placed); }
-    placed = undefined;
+    placed = undefined; stamp = undefined;
     return target;
+  }
+  /** Whether the result this placement left was changed since (by size or modification time), as a later save or another optimisation would. */
+  async function edited(file: string) {
+    const now = await stat(file).catch(() => undefined);
+    return !stamp || !now || now.size !== stamp.size || Math.abs(now.mtimeMs - stamp.mtimeMs) >= 2;
   }
   return {
     async place(output: MediaOutput, staged?: string, manual = false) {
@@ -56,6 +62,8 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
       if (!placed && staged && await changedSince(file, staged)) throw new Error(`${path.basename(file)} changed since Clop read it, so Clop left it as it is.`);
       // A result that is not smaller is the original itself.
       if (output.unchanged) { if (placed) return (await restore())!; await mark(file); return file; }
+      // A card action places again over its earlier result; one the user changed since is theirs now, and stays.
+      if (placed && await exists(placed) && await edited(placed)) throw new Error(`${path.basename(placed)} changed after Clop optimised it, so Clop left it as it is.`);
       const e = env(), before = e.counter.value;
       // A result in another format is a conversion, placed by the settings for converted files: the card's format menu by the manual ones.
       const converted = placedExtension(output.path, file) !== path.extname(file);
@@ -72,10 +80,15 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
       // The setting moved results off the file since: it holds Clop's earlier result, so the original goes back and the copy sits beside it.
       else if (placed && samePath(placed, file) && !samePath(result.path, file) && backup) { await copyTo(backup, file); await mark(file); backup = undefined; }
       placed = result.path;
+      stamp = await stat(result.path).then(({ size, mtimeMs }) => ({ size, mtimeMs }), () => undefined);
       return result.path;
     },
     restore,
-    follow(file: string) { if (placed) placed = file; },
+    async follow(file: string) {
+      if (!placed) return;
+      placed = file;
+      stamp = await stat(file).then(({ size, mtimeMs }) => ({ size, mtimeMs }), () => undefined);
+    },
   };
 }
 

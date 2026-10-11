@@ -9,6 +9,7 @@ import { needTools } from '../core/testing';
 import { exists } from '../core/fileops';
 import { Workdir } from '../core/workdir';
 import { clip } from '../core/media/video.fixtures';
+import { graphic } from '../core/media/image.fixtures';
 import { tone } from '../core/media/audio.fixtures';
 import { parseInvocation, planFor } from '../core/cards/actions';
 import { FakeEffects } from '../core/pipeline/executor.fixtures';
@@ -219,6 +220,22 @@ test('reverting leaves alone results the user edited, moved or deleted, and stil
   assert.deepEqual(await readFile(path.join(f.dir, 'edited.png')), edited, 'the edit stays');
   assert.equal(await stat(path.join(f.dir, 'moved.png')).then(() => true, () => false), false, 'a moved file is not recreated');
   assert.deepEqual(await readFile(path.join(f.dir, 'kept.png')), original);
+});
+test('an older card leaves alone a file the user edited and Clop optimised again since, both for Restore and for a card action', async t => {
+  const f = await setup(t); if (!f) return;
+  const file = path.join(f.dir, 'shot.png'), original = await sampleImage();
+  await writeFile(file, original);
+  await f.folders.optimise(file, 'image', f.dir);
+  const [older] = f.engine.list();
+  // The user saves an edit, and the watcher's next optimisation marks the file again.
+  const edit = await graphic(300, 200).png().toBuffer();
+  await writeFile(file, edit);
+  await f.marker.markOptimised(file);
+  await assert.rejects(f.engine.restore(older.id), /shot\.png changed after Clop optimised it, so Clop left it as it is/);
+  assert.ok(edit.equals(await readFile(file)), 'the edit stays');
+  await f.engine.apply(older.id, { ...balanced, scale: 0.5 });
+  assert.match(f.engine.get(older.id).result.error ?? '', /shot\.png changed after Clop optimised it/);
+  assert.ok(edit.equals(await readFile(file)), 'a card action does not write over the edit either');
 });
 test('watching and optimising together optimise each file exactly once, in place, beside it or converted', async t => {
   const f = await setup(t, { minImageSizeKB: 0, maxImageFileCount: 10, optimisedFileProtectionMs: 300 }); if (!f) return;
