@@ -19,10 +19,13 @@ after(() => rm(root, { recursive: true, force: true }));
 /** A host that keeps settings in memory, answers pickers from `picks` and records what the main process was asked to do. */
 function harness(platform: NodeJS.Platform = process.platform, apps = [{ name: 'Figma', path: 'C:\\Apps\\Figma.exe', running: true }]) {
   let settings = defaultSettings({ home, desktop: path.join(home, 'Desktop'), userData: path.join(home, 'AppData') });
+  // Writes take turns and take a moment, as the settings store's do, so a click that read the settings before the last one landed shows.
+  let queue: Promise<unknown> = Promise.resolve();
+  const turn = (write: () => void) => { const job = queue.then(() => new Promise<void>(done => setTimeout(done, 5))).then(write); queue = job.catch(() => {}); return job; };
   const picks: string[] = [], opened: unknown[] = [], links: string[] = [], checks: (string | undefined)[] = [];
   const host: PrefsHost = {
     settings: () => settings, defaults: () => defaultSettings({ home, desktop: path.join(home, 'Desktop'), userData: path.join(home, 'AppData') }),
-    set: async partial => { settings = parseSettings(partial, settings); }, chooseFolder: async () => picks.shift(), chooseProgram: async () => picks.shift(),
+    set: partial => turn(() => { settings = parseSettings(partial, settings); }), update: change => turn(() => { settings = parseSettings(change(settings), settings); }), chooseFolder: async () => picks.shift(), chooseProgram: async () => picks.shift(),
     apps: async () => apps, openEditor: tab => { opened.push(tab); }, openExternal: async url => { links.push(url); }, version: () => ({ name: '1.2.3', platform: 'win32' }), checkUpdates: async () => checks.shift(), saveDebugDump: async () => path.join(root, 'debug', 'clop-debug-dump-1.zip'), home, platform,
   };
   return { host, prefs: createPrefs(host), picks, opened, links, checks, get: () => settings as ClopSettings };
@@ -71,6 +74,31 @@ test('watched folders are added from the picker, once, and removed with their qu
   await h.prefs({ action: 'folder', kind: 'pdf', op: 'remove', folder: folderB });
   assert.deepEqual(h.get().pdfDirs, []);
   assert.deepEqual(h.get().dirsHideFloatingResult, []);
+});
+
+test('two removals clicked before the first is saved both stick, and so do two silenced folders and two ignored apps', async () => {
+  const h = harness();
+  h.picks.push(folderB, folderA);
+  await h.prefs({ action: 'folder', kind: 'image', op: 'add' });
+  await h.prefs({ action: 'folder', kind: 'image', op: 'add' });
+  assert.deepEqual(h.get().imageDirs.slice(-2), [folderB, '~/Pictures']);
+  await Promise.all([
+    h.prefs({ action: 'quiet', folder: folderB, quiet: true }),
+    h.prefs({ action: 'quiet', folder: folderA, quiet: true }),
+  ]);
+  assert.deepEqual([...h.get().dirsHideFloatingResult].sort(), [folderB, '~/Pictures'].sort());
+  await Promise.all([
+    h.prefs({ action: 'folder', kind: 'image', op: 'remove', folder: folderB }),
+    h.prefs({ action: 'folder', kind: 'image', op: 'remove', folder: folderA }),
+  ]);
+  assert.ok(!h.get().imageDirs.includes(folderB) && !h.get().imageDirs.includes('~/Pictures'));
+  assert.deepEqual(h.get().dirsHideFloatingResult, [], 'the quiet entries of both go with them');
+  await Promise.all([h.prefs({ action: 'ignore', op: 'add', entry: 'C:\\Apps\\Figma.exe' }), h.prefs({ action: 'ignore', op: 'choose' })]);
+  h.picks.push(exe);
+  await h.prefs({ action: 'ignore', op: 'choose' });
+  assert.equal(h.get().clipboardIgnoredAppBundleIds.length, 2);
+  await Promise.all([h.prefs({ action: 'ignore', op: 'remove', entry: 'C:\\Apps\\Figma.exe' }), h.prefs({ action: 'ignore', op: 'remove', entry: exe })]);
+  assert.deepEqual(h.get().clipboardIgnoredAppBundleIds, []);
 });
 
 test('only folders in the list can be removed or silenced, and kinds and flags are checked', async () => {

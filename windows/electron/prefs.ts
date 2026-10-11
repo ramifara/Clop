@@ -14,6 +14,11 @@ export interface PrefsHost {
   settings(): ClopSettings;
   defaults(): ClopSettings;
   set(partial: Partial<ClopSettings>): Promise<unknown>;
+  /**
+   * A change that depends on the stored value (one entry of a list): `change` gets the settings as they are when its turn comes,
+   * after every change before it, and returns the values to replace. It throws to refuse. Two clicks in a row never undo each other.
+   */
+  update(change: (current: ClopSettings) => Partial<ClopSettings>): Promise<unknown>;
   /** Shows the picker and gives the chosen path, or undefined when it was cancelled. */
   chooseFolder(title: string, defaultPath?: string): Promise<string | undefined>;
   chooseProgram(title: string): Promise<string | undefined>;
@@ -84,31 +89,40 @@ export function createPrefs(host: PrefsHost) {
   }
 
   async function folder(kind: MediaName, op: unknown, given: unknown): Promise<PrefsReply> {
-    const key = DIRS[oneOf(kind, KINDS, 'a file type')], current = host.settings()[key];
+    const key = DIRS[oneOf(kind, KINDS, 'a file type')];
+    const tooMany = (current: readonly string[]) => { if (current.length >= MAX_FOLDERS) throw new Error(`Clop watches up to ${MAX_FOLDERS} folders for each file type.`); };
     if (oneOf(op, ['add', 'remove'], 'what to do with the folder') === 'add') {
-      if (current.length >= MAX_FOLDERS) throw new Error(`Clop watches up to ${MAX_FOLDERS} folders for each file type.`);
+      tooMany(host.settings()[key]);
       const chosen = await directory(await host.chooseFolder(`Choose a folder to watch for new ${kind === 'pdf' ? 'PDFs' : `${kind} files`}`), 'A watched folder');
       if (!chosen) return {};
-      if (current.some(dir => same(resolve(dir), resolve(chosen)))) throw new Error(`${chosen} is already watched.`);
-      await host.set({ [key]: [...current, portable(chosen)] });
+      await host.update(settings => {
+        const current = settings[key];
+        tooMany(current);
+        if (current.some(dir => same(resolve(dir), resolve(chosen)))) throw new Error(`${chosen} is already watched.`);
+        return { [key]: [...current, portable(chosen)] };
+      });
       return {};
     }
     const target = resolve(text(given, 'a folder to stop watching'));
-    if (!current.some(dir => same(resolve(dir), target))) throw new Error('That folder is not in the list.');
-    const remaining = current.filter(dir => !same(resolve(dir), target));
-    // A folder left in no list takes its quiet setting with it.
-    const stillWatched = KINDS.some(other => other !== kind && host.settings()[DIRS[other]].some(dir => same(resolve(dir), target)));
-    await host.set({ [key]: remaining, ...(stillWatched ? {} : { dirsHideFloatingResult: host.settings().dirsHideFloatingResult.filter(dir => !same(resolve(dir), target)) }) });
+    await host.update(settings => {
+      const current = settings[key];
+      if (!current.some(dir => same(resolve(dir), target))) throw new Error('That folder is not in the list.');
+      // A folder left in no list takes its quiet setting with it.
+      const stillWatched = KINDS.some(other => other !== kind && settings[DIRS[other]].some(dir => same(resolve(dir), target)));
+      return { [key]: current.filter(dir => !same(resolve(dir), target)), ...(stillWatched ? {} : { dirsHideFloatingResult: settings.dirsHideFloatingResult.filter(dir => !same(resolve(dir), target)) }) };
+    });
     return {};
   }
 
   async function quiet(given: unknown, hide: unknown): Promise<PrefsReply> {
     if (typeof hide !== 'boolean') throw new Error('Choose whether results from this folder show.');
-    const target = resolve(text(given, 'a watched folder')), s = host.settings();
-    const stored = KINDS.flatMap(kind => s[DIRS[kind]]).find(dir => same(resolve(dir), target));
-    if (!stored) throw new Error('That folder is not watched.');
-    const others = s.dirsHideFloatingResult.filter(dir => !same(resolve(dir), target));
-    await host.set({ dirsHideFloatingResult: hide ? [...others, stored] : others });
+    const target = resolve(text(given, 'a watched folder'));
+    await host.update(s => {
+      const stored = KINDS.flatMap(kind => s[DIRS[kind]]).find(dir => same(resolve(dir), target));
+      if (!stored) throw new Error('That folder is not watched.');
+      const others = s.dirsHideFloatingResult.filter(dir => !same(resolve(dir), target));
+      return { dirsHideFloatingResult: hide ? [...others, stored] : others };
+    });
     return {};
   }
 
@@ -121,20 +135,28 @@ export function createPrefs(host: PrefsHost) {
   }
 
   async function ignore(op: unknown, given: unknown): Promise<PrefsReply> {
-    const current = host.settings().clipboardIgnoredAppBundleIds, has = (list: readonly string[], entry: string) => list.some(other => other.toLowerCase() === entry.toLowerCase());
+    const has = (list: readonly string[], entry: string) => list.some(other => other.toLowerCase() === entry.toLowerCase());
     const action = oneOf(op, ['add', 'remove', 'choose'], 'what to do with the ignored apps');
     if (action === 'remove') {
       const entry = text(given, 'an app to stop ignoring');
-      if (!has(current, entry)) throw new Error('That app is not in the list.');
-      await host.set({ clipboardIgnoredAppBundleIds: current.filter(other => other.toLowerCase() !== entry.toLowerCase()) });
+      await host.update(settings => {
+        if (!has(settings.clipboardIgnoredAppBundleIds, entry)) throw new Error('That app is not in the list.');
+        return { clipboardIgnoredAppBundleIds: settings.clipboardIgnoredAppBundleIds.filter(other => other.toLowerCase() !== entry.toLowerCase()) };
+      });
       return {};
     }
-    if (current.length >= MAX_IGNORED) throw new Error(`Clop ignores up to ${MAX_IGNORED} apps.`);
+    const tooMany = (current: readonly string[]) => { if (current.length >= MAX_IGNORED) throw new Error(`Clop ignores up to ${MAX_IGNORED} apps.`); };
+    tooMany(host.settings().clipboardIgnoredAppBundleIds);
     // From the list the Windows helper made, or a program the user picked: nothing the window typed is stored.
     const entry = action === 'choose' ? await program(await host.chooseProgram('Choose a program to ignore')) : (await host.apps()).find(app => app.path.toLowerCase() === text(given, 'an app to ignore').toLowerCase())?.path;
     if (action === 'add' && !entry) throw new Error('Clop does not know that app. Pick it from the list, or choose its program.');
-    if (!entry || has(current, entry)) return {};
-    await host.set({ clipboardIgnoredAppBundleIds: [...current, entry] });
+    if (!entry) return {};
+    await host.update(settings => {
+      const current = settings.clipboardIgnoredAppBundleIds;
+      if (has(current, entry)) return {};
+      tooMany(current);
+      return { clipboardIgnoredAppBundleIds: [...current, entry] };
+    });
     return {};
   }
 

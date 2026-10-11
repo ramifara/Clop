@@ -745,6 +745,11 @@ async function updateSettings(value: unknown) {
   const wasEnabled = settings.mcpEnabled;
   await settingsChanged(await store.set(value), wasEnabled);
 }
+/** A change that depends on the stored value, made while no other write can slip in (`SettingsStore.update`). */
+async function changeSettings(change: (current: typeof settings) => Partial<typeof settings>) {
+  const wasEnabled = settings.mcpEnabled;
+  await settingsChanged((await store.update(current => ({ patch: change(current), result: undefined }))).settings, wasEnabled);
+}
 /** Brings the app in line with settings that were just saved. */
 async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
   settings = saved;
@@ -1035,7 +1040,7 @@ else {
     updates = setupUpdates({ settings: () => settings, portable: isPortable(), releases: () => shell.openExternal(LINKS.releases), inform });
     saveDump = setupDebugDump({ settings: () => settings, userData, workdir: () => workdir?.root ?? settings.workdir, portable: isPortable() });
     prefs = createPrefs({
-      settings: () => settings, defaults: () => defaultSettings(paths), set: async partial => { await updateSettings(partial); }, home: paths.home,
+      settings: () => settings, defaults: () => defaultSettings(paths), set: async partial => { await updateSettings(partial); }, update: change => changeSettings(change), home: paths.home,
       chooseFolder: async (title, defaultPath) => { const picked = await dialog.showOpenDialog(main, { title, defaultPath, properties: ['openDirectory', 'createDirectory'] }); return picked.canceled ? undefined : picked.filePaths[0]; },
       chooseProgram: async title => { const picked = await dialog.showOpenDialog(main, { title, properties: ['openFile'], filters: process.platform === 'win32' ? [{ name: 'Programs', extensions: ['exe'] }] : [] }); return picked.canceled ? undefined : picked.filePaths[0]; },
       apps: async () => bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [],
