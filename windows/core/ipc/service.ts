@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { lookup } from 'node:dns/promises';
+import { request as httpRequest, type IncomingMessage } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { mkdir, rm, rmdir, stat } from 'node:fs/promises';
 import { BlockList, isIP } from 'node:net';
 import path from 'node:path';
@@ -51,6 +53,8 @@ export interface ServiceDeps {
    * app cannot do this request itself and the service should.
    */
   withCard?(file: string, kind: MediaKind, request: OptimisationRequest, signal: AbortSignal): Promise<string | { placed: string } | undefined>;
+  /** The addresses of a host name, for an agent's download. Only tests replace it. */
+  resolve?(host: string): Promise<{ address: string; family?: number }[]>;
 }
 
 type Emit = (message: ServerMessage) => void;
@@ -133,30 +137,58 @@ export const isPublicAddress = (address: string) => {
   return !NOT_PUBLIC.check(address, 'ipv6') && !MAPPED.check(address, 'ipv6');
 };
 
-/** An agent's download reaches only the internet: a host on this PC or its local network is refused before it is asked anything. */
-async function refuseLocalHost(url: string) {
-  const { protocol, hostname } = new URL(url), host = hostname.replace(/^\[|\]$/g, '');
-  if (protocol !== 'http:' && protocol !== 'https:') throw new Error(`Download failed: agents may only download http and https links, not ${url}`);
-  const addresses = isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: true }).catch(() => []);
-  if (!addresses.length || addresses.some(({ address }) => !isPublicAddress(address))) throw new Error(`Download failed: ${hostname} is on this PC or its local network, and agents may only download from the internet.`);
+const NOT_INTERNET = (host: string) => `Download failed: ${host} is on this PC or its local network, and agents may only download from the internet.`;
+const resolveAll = (host: string) => lookup(host, { all: true, verbatim: true });
+
+/**
+ * A DNS lookup for an agent's connection that refuses a host with any address on this PC or its local network, and gives the connection only
+ * addresses it has checked. The connection resolves the name through this and nowhere else, so a name that answers differently the second
+ * time (DNS rebinding) cannot send the request to a host that was never checked.
+ */
+export function publicLookup(resolve: (host: string) => Promise<{ address: string; family?: number }[]> = resolveAll) {
+  return (host: string, options: { all?: boolean }, callback: (error: Error | null, address?: unknown, family?: number) => void) => {
+    resolve(host).catch(() => []).then(found => {
+      if (!found.length || found.some(({ address }) => !isPublicAddress(address))) return callback(new Error(NOT_INTERNET(host)));
+      const addresses = found.map(({ address, family }) => ({ address, family: family ?? (isIP(address) || 4) }));
+      if (options.all) callback(null, addresses); else callback(null, addresses[0].address, addresses[0].family);
+    });
+  };
 }
 
-/** Fetches `url`. For an agent every hop, redirects included, must be a public host. */
-async function fetchFor(url: string, signal: AbortSignal, agent: boolean): Promise<Response> {
+/** One request to a public host, through `publicLookup`, as a web `Response` (redirects are not followed). */
+function requestPublic(url: string, signal: AbortSignal, resolve?: ServiceDeps['resolve']): Promise<Response> {
+  const target = new URL(url), host = target.hostname.replace(/^\[|\]$/g, '');
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') throw new Error(`Download failed: agents may only download http and https links, not ${url}`);
+  // A name is checked as the connection looks it up; an address is checked here, as no lookup happens for it.
+  if (isIP(host) && !isPublicAddress(host)) throw new Error(NOT_INTERNET(target.hostname));
+  return new Promise<Response>((resolveResponse, reject) => {
+    const send = target.protocol === 'https:' ? httpsRequest : httpRequest;
+    const outgoing = send(target, { method: 'GET', signal, lookup: publicLookup(resolve) as never, headers: { accept: '*/*', 'user-agent': 'Clop' } }, (incoming: IncomingMessage) => {
+      const headers = new Headers();
+      for (let i = 0; i < incoming.rawHeaders.length; i += 2) headers.append(incoming.rawHeaders[i], incoming.rawHeaders[i + 1]);
+      const status = incoming.statusCode ?? 0, empty = [101, 204, 205, 304].includes(status) || (status >= 300 && status < 400);
+      if (empty) incoming.resume();
+      resolveResponse(new Response(empty ? null : Readable.toWeb(incoming) as never, { status: Math.max(status, 200), statusText: incoming.statusMessage, headers }));
+    });
+    outgoing.once('error', reject);
+    outgoing.end();
+  });
+}
+
+/** Fetches `url`. For an agent every hop, redirects included, must be a public host, and the connection goes only to an address checked as public. */
+async function fetchFor(url: string, signal: AbortSignal, agent: boolean, resolve?: ServiceDeps['resolve']): Promise<Response> {
   if (!agent) return fetch(url, { signal });
   for (let hops = 0; ; hops++) {
-    await refuseLocalHost(url);
-    const response = await fetch(url, { signal, redirect: 'manual' });
+    const response = await requestPublic(url, signal, resolve);
     const location = response.status >= 300 && response.status < 400 ? response.headers.get('location') : null;
     if (!location) return response;
     if (hops >= 5) throw new Error(`Download failed: ${url} redirects too many times`);
-    await response.body?.cancel();
     url = new URL(location, url).href;
   }
 }
 
-async function download(url: string, workdir: Workdir, signal: AbortSignal, agent = false): Promise<string> {
-  const response = await fetchFor(url, signal, agent);
+async function download(url: string, workdir: Workdir, signal: AbortSignal, agent = false, resolve?: ServiceDeps['resolve']): Promise<string> {
+  const response = await fetchFor(url, signal, agent, resolve);
   if (!response.ok || !response.body) throw new Error(`Download failed: ${url} answered ${response.status}`);
   if (Number(response.headers.get('content-length')) > DOWNLOAD_LIMIT) throw new Error(`Download failed: ${url} is larger than 2 GB`);
   const dir = path.join(workdir.temp, `download-${randomUUID()}`);
@@ -280,7 +312,7 @@ export class ClopService {
     try {
       await previous;
       signal.throwIfAborted();
-      const input = urlPath(url) ?? await download(url, deps.workdir, signal, req.origin === 'mcp');
+      const input = urlPath(url) ?? await download(url, deps.workdir, signal, req.origin === 'mcp', deps.resolve);
       requireLocalDrive(req.origin === 'mcp', input);
       if (!await exists(input)) throw new Error(`File not found: ${input}`);
       if (!(await stat(input)).isFile()) throw new Error(`Not a file: ${input}`);

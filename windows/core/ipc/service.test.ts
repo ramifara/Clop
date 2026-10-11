@@ -17,7 +17,7 @@ import { needTools } from '../testing';
 import { shellEffects } from '../shell-effects';
 import { Workdir } from '../workdir';
 import { fileURL, type OptimisationRequest, type ServerMessage } from './protocol';
-import { ClopService, cropSizeText, factorText, isPublicAddress, requestSteps, type ServiceDeps } from './service';
+import { ClopService, cropSizeText, factorText, isPublicAddress, publicLookup, requestSteps, type ServiceDeps } from './service';
 
 async function setup(t: TestContext, deps: Partial<ServiceDeps> = {}, values: Partial<ClopSettings> = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-service-'));
@@ -141,6 +141,28 @@ test('an agent\'s download reaches only the internet: a host on this PC or its n
   assert.equal(fetched.kind, 'response', JSON.stringify(fetched));
   for (const address of ['127.0.0.1', '10.1.2.3', '172.20.0.1', '192.168.1.10', '169.254.1.1', '100.64.0.1', '0.0.0.0', '::1', 'fe80::1', 'fd00::1', '::ffff:127.0.0.1', '::ffff:7f00:1']) assert.equal(isPublicAddress(address), false, address);
   for (const address of ['8.8.8.8', '1.1.1.1', '2606:4700:4700::1111']) assert.equal(isPublicAddress(address), true, address);
+});
+
+test('an agent\'s download connects only to an address that passed the check, whatever the name answers next', async t => {
+  const asked: string[] = [];
+  const s = await setup(t, { resolve: async host => { asked.push(host); return host === 'mixed.test' ? [{ address: '93.184.216.34' }, { address: '127.0.0.1' }] : [{ address: '127.0.0.1' }]; } }, { mcpEnabled: true });
+  let hits = 0;
+  const server = createServer((_request, response) => { hits++; response.end('secret'); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const port = (server.address() as AddressInfo).port;
+  for (const host of ['mixed.test', 'plain.test']) {
+    const [refused] = await s.send({ urls: [`http://${host}:${port}/a.png`], origin: 'mcp' });
+    assert.match((refused as { error: { error: string } }).error.error, new RegExp(`^Download failed: ${host} is on this PC or its local network`));
+  }
+  assert.deepEqual([hits, asked], [0, ['mixed.test', 'plain.test']], 'the name is looked up once, by the connection itself, and nothing reached the server');
+  // The connection gets the address that was checked, not a second answer: a name that turns to loopback after the first lookup does not matter.
+  const answers = [[{ address: '93.184.216.34' }], [{ address: '127.0.0.1' }]];
+  const lookup = publicLookup(async () => answers.shift()!);
+  const first = await new Promise<unknown>(resolve => lookup('rebind.test', { all: true }, (error, found) => resolve(error ?? found)));
+  assert.deepEqual(first, [{ address: '93.184.216.34', family: 4 }]);
+  const single = await new Promise<unknown[]>(resolve => publicLookup(async () => [{ address: '2606:4700:4700::1111' }])('v6.test', {}, (error, address, family) => resolve([error, address, family])));
+  assert.deepEqual(single, [null, '2606:4700:4700::1111', 6]);
 });
 
 test('a request that shows its result lets the app optimise it with a card, then places that result', async t => {
