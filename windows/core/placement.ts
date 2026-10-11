@@ -156,7 +156,9 @@ export async function executePlacement(env: PlacementEnv, plan: PlacementPlan, p
   if (!same(dest, original) && !same(dest, produced) && await exists(dest)) {
     replaced = await workdir.backup(dest, { force: true }).catch(error => { throw new Error(`Could not back up ${dest} before replacing it: ${error instanceof Error ? error.message : error}`); });
   }
-  if (plan.behaviour === 'inPlace' && await exists(original)) {
+  // A template that names the original itself (`img-optimised.png` already carries it) replaces the file just as `inPlace` does. macOS has
+  // copied the input into its backups before it optimises; here this is the only copy taken, so it is kept in both cases.
+  if ((plan.behaviour === 'inPlace' || same(dest, original)) && await exists(original)) {
     if (same(original, produced)) {
       // The optimiser rewrote the original where it stood, so there is nothing to move. Report the copy taken before it ran.
       backup = await workdir.latestBackup(original);

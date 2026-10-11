@@ -150,6 +150,19 @@ test('sameFolder is idempotent: a file already named by the template keeps its n
   assert.equal(fresh.dest, path.join(source, 'img-optimised.png'));
 });
 
+test('a sameFolder template that already matches the file replaces it only after keeping a backup that restores it', async t => {
+  const { env, produced, source, workdir, result } = await setup(t, { ...behaviour('sameFolder'), sameFolderNameTemplateImage: '%f-%n' });
+  const family = path.join(source, 'family-photo.png'), bytes = Buffer.from('the only copy of the family photo');
+  await writeFile(family, bytes);
+  const plan = await planPlacement(env, { produced, original: family, type: 'image' });
+  assert.equal(plan.dest, family, 'the hyphenated name is taken for a templated one');
+  const placed = await executePlacement(env, plan, produced, family);
+  assert.deepEqual(await readFile(family), result);
+  assert.ok(placed.backup && placed.originalRemoved);
+  assert.deepEqual(await readFile(placed.backup!), bytes);
+  assert.deepEqual(await readdir(workdir.backups), [path.basename(placed.backup!)]);
+});
+
 test('sameFolder counts up with %i and an empty template falls back to the default name', async t => {
   const { env, original, produced, source } = await setup(t, { ...behaviour('sameFolder'), sameFolderNameTemplateImage: 'shot-%i' });
   const first = await planPlacement(env, { produced, original, type: 'image' });

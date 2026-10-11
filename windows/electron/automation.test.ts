@@ -96,6 +96,18 @@ test('moving results to a copy after an in-place one gives the file its original
   assert.deepEqual(await readFile(copy), original);
   assert.deepEqual(await readFile(file), original);
 });
+test('a watched file whose name already matches the same-folder template is backed up and can be restored', async t => {
+  const f = await setup(t, { optimisedImageBehaviour: 'sameFolder', sameFolderNameTemplateImage: '%f-optimised' }); if (!f) return;
+  const file = path.join(f.dir, 'holiday-optimised.png'), original = await sampleImage();
+  await writeFile(file, original);
+  assert.equal(await f.folders.optimise(file, 'image', f.dir), file);
+  assert.ok((await stat(file)).size < original.length);
+  // Compared with `equals`: a failing deepEqual would print these multi-megabyte buffers.
+  const kept = await backups(f.workdir);
+  assert.deepEqual([kept.length, kept[0]?.equals(original)], [1, true]);
+  await f.engine.restore(f.engine.list()[0].id);
+  assert.equal((await readFile(file)).equals(original), true);
+});
 test('a result that is not smaller leaves the file alone and marks it', async t => {
   const f = await setup(t); if (!f) return;
   const file = path.join(f.dir, 'small.png'); await writeFile(file, 'png bytes');
