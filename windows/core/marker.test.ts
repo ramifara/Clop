@@ -136,8 +136,11 @@ test('many marks at once are all saved, with no temporary files left behind', as
 test('on Windows marking also writes the alternate data stream hint', { skip: process.platform !== 'win32' }, async t => {
   const { file, marker } = await setup(t);
   assert.equal(await marker.hint(file), undefined);
+  const old = new Date(1704164645000);
+  await utimes(file, old, old);
   await marker.markOptimised(file);
   assert.equal(await marker.hint(file), true);
+  assert.equal((await stat(file)).mtimeMs, old.getTime(), 'writing the stream keeps the modification time');
   assert.equal(await readFile(`${file}:clop.optimisation.status`, 'utf8'), 'true');
   assert.equal(await marker.isOptimised(file), true, 'the stream does not disturb the recorded size and time');
 });

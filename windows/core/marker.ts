@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { retryBusy } from './run';
 import { defaultPaths } from './settings/paths';
@@ -111,7 +111,10 @@ export class OptimisedMarker {
 
   private async writeHint(file: string) {
     if (this.platform !== 'win32') return;
-    try { await writeFile(`${file}:${STREAM}`, 'true'); await writeFile(`${file}:${SIZE_STREAM}`, String((await stat(file)).size)); } catch {}
+    // NTFS counts a stream write as a write to the file, so its times are put back: marking must not look like an edit.
+    const before = await stat(file);
+    try { await writeFile(`${file}:${STREAM}`, 'true'); await writeFile(`${file}:${SIZE_STREAM}`, String(before.size)); } catch {}
+    await utimes(file, before.atime, before.mtime).catch(() => {});
   }
 
   /** Writes are coalesced: callers that arrive during a write share the next one. */
