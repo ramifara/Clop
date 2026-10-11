@@ -102,6 +102,25 @@ test('installing waits for the placements under way before the installer closes 
   assert.equal(calls.install, 1);
 });
 
+test('installing holds new work while it waits, and goes ahead when a placement is stuck', async () => {
+  const { calls, driver } = setup();
+  const events: string[] = [];
+  const updates = new Updates({
+    env: () => allowed, load: async () => driver, version: '0.2.0', log: () => {}, settleLimitMs: 30,
+    settle: () => { events.push('settle'); return new Promise<void>(() => {}); },
+    hold: () => { events.push('hold'); return () => { events.push('resume'); }; },
+  });
+  await updates.check();
+  await updates.install();
+  assert.equal(calls.install, 1, 'a placement that never ends does not stop the install');
+  assert.deepEqual(events, ['hold', 'settle'], 'new work stopped before the wait, and stays stopped for the restart');
+  // An install that fails lifts the hold.
+  const failing = new Updates({ env: () => allowed, load: async () => ({ ...driver, quitAndInstall() { throw new Error('no'); } }), version: '0.2.0', log: () => {}, hold: () => { events.push('hold'); return () => { events.push('resume'); }; } });
+  await failing.check();
+  await assert.rejects(failing.install(), /no/);
+  assert.deepEqual(events.slice(2), ['hold', 'resume']);
+});
+
 test('installing needs a found version, then downloads it and restarts into it', async () => {
   const { updates, calls } = setup();
   await assert.rejects(updates.install(), /Check for updates first/);

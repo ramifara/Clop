@@ -108,7 +108,11 @@ const lastBatch = new LastBatch();
 let lastCopier: { owner?: string; aumid?: string } | undefined;
 let shortcuts: ShortcutRegistry, trayShown: TrayVariant | undefined;
 const trayIcons: Partial<Record<TrayVariant, Electron.NativeImage>> = {};
-const paused = () => settings.pauseAutomaticOptimisations;
+/** An update is about to install: nothing new starts (watched folders, the clipboard, the command line) while the placements under way finish. */
+let updating = false;
+const paused = () => settings.pauseAutomaticOptimisations || updating;
+/** The settings the watched folders see: paused while an update installs. */
+const watchedSettings = () => updating ? { ...settings, pauseAutomaticOptimisations: true } : settings;
 const intake = new ClipboardIntake(error => inform(message(error)));
 // "Pause for the next clipboard event" (the pause shortcut's first step) lets one copy go by.
 const pickup = new ClipboardPickup(change => { if (!shortcutRunner.consumePauseNext()) void optimiseClipboard(change); });
@@ -607,7 +611,11 @@ async function serveCLI(userData: string) {
     workdir, marker, effects: options => pipelineEffects(options), copyFiles: list => files.copyFiles(list), home: app.getPath('home'), withCard: optimiseWithCard,
     counter: () => nameCounter ??= { value: settings.lastAutoIncrementingNumber },
   });
-  pipe = await startPipeServer(newPipePath(), (request, emit) => { console.log(`CLI request: ${request.kind}`); return service!.handle(request, emit); });
+  pipe = await startPipeServer(newPipePath(), (request, emit) => {
+    console.log(`CLI request: ${request.kind}`);
+    if (updating && request.kind === 'optimise') { for (const forURL of request.request.urls) emit({ kind: 'error', error: { error: 'Clop is about to restart to install an update. Try again in a moment.', forURL } }); emit({ kind: 'done' }); return Promise.resolve(); }
+    return service!.handle(request, emit);
+  });
   withdrawPipe = await publishPipe(userData, pipe);
 }
 /** `clop://settings/…` opens Settings on a tab and row and `clop://mcp/start|stop` flips the MCP switch; start asks first. */
@@ -1080,7 +1088,7 @@ else {
     if (!settingsError) settings = await store.update(current => ({ patch: seedBuiltinPipelines(current.savedPipelines, current.builtinPipelinesSeededVersion), result: undefined })).then(reply => reply.settings, error => { settingsError = error; return settings; });
     mirrorConsoleToFile(path.join(userData, 'logs', 'clop.log'), () => settings.persistDebugLogs);
     const paths = { home: app.getPath('home'), desktop: app.getPath('desktop'), userData };
-    updates = setupUpdates({ settings: () => settings, portable: isPortable(), releases: () => shell.openExternal(LINKS.releases), inform, settle: placementsSettled });
+    updates = setupUpdates({ settings: () => settings, portable: isPortable(), releases: () => shell.openExternal(LINKS.releases), inform, settle: placementsSettled, hold: () => { updating = true; return () => { updating = false; }; } });
     saveDump = setupDebugDump({ settings: () => settings, userData, workdir: () => workdir?.root ?? settings.workdir, portable: isPortable() });
     prefs = createPrefs({
       settings: () => settings, defaults: () => defaultSettings(paths), set: async partial => { await updateSettings(partial); }, update: change => changeSettings(change), home: paths.home,
@@ -1130,7 +1138,7 @@ else {
     const isLocal = (strict: boolean) => (file: string) => localFile(file, bridgeReady ? paths => bridge.request({ type: 'attributes', paths }) : undefined, !(strict && process.platform === 'win32'));
     watchers = (['image', 'video', 'pdf', 'audio'] as const).map(kind => new FolderWatcher(kind, {
       // The stream hint moves with a renamed file, which the cache keyed by path cannot follow; it counts while the size is unchanged.
-      settings: () => settings, home, firstLaunch, owns: file => workdir.owns(file), isOptimised: async file => await marker.isOptimised(file) || await marker.hintMatches(file),
+      settings: watchedSettings, home, firstLaunch, owns: file => workdir.owns(file), isOptimised: async file => await marker.isOptimised(file) || await marker.hintMatches(file),
       isLocal: isLocal(true), helper: () => bridgeReady || process.platform !== 'win32' ? 'ready' : bridgeStopped ? 'stopped' : 'starting',
       handle: (file, dir) => folders.optimise(file, kind, dir), cancel: files => folders.cancel(files), notice: inform,
       disable: () => toggleSetting({ [enabledKey(kind)]: false }),
