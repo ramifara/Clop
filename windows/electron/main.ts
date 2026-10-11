@@ -19,8 +19,9 @@ import { FolderWatcher } from './watcher';
 import { enabledKey, placeholderReply } from './watch-rules';
 import { FolderResults, LastBatch, restoreAll } from './automation';
 import { appsReply } from './apps';
-import { conflictNotice, nextDownscale, nextResolution, nextSpeed, shortcutProblem, ShortcutRegistry, shortcutsFor, type ShortcutAction } from '../core/shortcuts';
+import { conflictNotice, shortcutProblem, ShortcutRegistry, shortcutsFor, type ShortcutAction } from '../core/shortcuts';
 import { describeAccelerator } from '../src/settings/accelerator';
+import { ShortcutRunner } from './shortcut-actions';
 import { guarded, recentClipboard, toTemplate, trayMenu, trayTooltip, trayVariant, type TrayActions, type TrayVariant } from './tray-menu';
 import { allPipelineChoices, appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
 import { seedBuiltinPipelines } from '../core/pipeline/builtins';
@@ -91,13 +92,12 @@ function removed(id: string) { removedOrder.push(id); removedOrder.splice(0, rem
 const lastBatch = new LastBatch();
 /** The app that put the latest thing on the clipboard, for the tray's "Ignore clipboard events from" (the helper reports it with every change, ignored apps included). */
 let lastCopier: { owner?: string; aumid?: string } | undefined;
-/** How far shortcuts have stepped a result: `down:<id>` the downscale factor of a video, `dpi:<id>` a PDF's resolution, `speed:<id>` the playback speed. */
-const steps = new Map<string, number>();
 let shortcuts: ShortcutRegistry, trayShown: TrayVariant | undefined;
 const trayIcons: Partial<Record<TrayVariant, Electron.NativeImage>> = {};
 const paused = () => settings.pauseAutomaticOptimisations;
 const intake = new ClipboardIntake(error => inform(message(error)));
-const pickup = new ClipboardPickup(change => { void optimiseClipboard(change); });
+// "Pause for the next clipboard event" (the pause shortcut's first step) lets one copy go by.
+const pickup = new ClipboardPickup(change => { if (!shortcutRunner.consumePauseNext()) void optimiseClipboard(change); });
 let clipboardWrites: Promise<void> = Promise.resolve();
 const bridge = new WindowsBridge();
 let pipe: PipeServer | undefined, withdrawPipe: (() => void) | undefined, cliInstalled = false, askingMCP = false;
@@ -186,7 +186,7 @@ async function dismiss(id: string) {
   const timer = hideTimers.get(id); if (timer) clearTimeout(timer);
   for (const view of ['crop', 'compare', 'preview']) views.get(`${view}:${id}`)?.close();
   if (engine.has(id)) media?.revoke(engine.get(id).directory);
-  hideTimers.delete(id); hidden.delete(id); for (const kind of ['down', 'dpi', 'speed']) steps.delete(`${kind}:${id}`);
+  hideTimers.delete(id); hidden.delete(id); shortcutRunner.forget(id);
   await engine.dismiss(id);
   if (!quiet.delete(id)) removed(id);
 }
@@ -619,60 +619,23 @@ function showSettings(tab?: SettingsTab, row?: string) {
   main.show(); main.focus();
   if (tab || row) broadcast();
 }
-// The global shortcuts (spec step 38, `handleHotkey` in ClopApp.swift): they act on the newest result still in view, or on the clipboard.
-const currentResult = () => state().items.find(item => item.status === 'ready');
-/** Runs a card action, with its plan and checks, on a result as if its menu had been used. */
-const runAction = (id: string, invocation: { action: ActionId; arg?: string | number }) => runCard(main.webContents, [id], invocation);
-async function runShortcut({ kind, factor }: ShortcutAction) {
-  const item = currentResult();
-  const needResult = () => { inform('There is no result to do this on. Copy or drop a file first.'); };
-  switch (kind) {
-    case 'optimiseClipboard': return optimiseClipboard(undefined, true);
-    case 'aggressive':
-      if (!item) return optimiseClipboard(undefined, true, true);
-      if (item.options.mode === 'aggressive') return;
-      if (!ACTION_KINDS.aggressive.includes(item.kind)) { inform(`Aggressive optimisation is not offered for ${item.kind === 'video' ? 'videos' : item.kind}.`); return; }
-      return runAction(item.id, { action: 'aggressive' });
-    case 'downscale': case 'resize': {
-      if (!item) return downscaleAndPreviewClipboard(factor);
-      if (item.kind === 'audio') { inform("Audio has no resolution: use the card's menu to lower its bitrate."); return; }
-      if (item.kind === 'pdf') {
-        if (kind === 'resize') { inform('PDFs are downscaled by resolution: press the downscale key.'); return; }
-        const dpi = nextResolution(steps.get(`dpi:${item.id}`));
-        if (!dpi) { inform('This PDF is already at the lowest resolution.'); return; }
-        await runAction(item.id, { action: 'resolution', arg: dpi }); steps.set(`dpi:${item.id}`, dpi); return;
-      }
-      const current = item.kind === 'image' ? item.options.scale : steps.get(`down:${item.id}`) ?? 1, target = factor ?? nextDownscale(current);
-      if (!target) { inform('This result is already at the smallest size.'); return; }
-      await runAction(item.id, { action: 'downscale', arg: target }); steps.set(`down:${item.id}`, target); return;
-    }
-    case 'speedUp': {
-      if (!item) return needResult();
-      if (item.kind !== 'video' && item.kind !== 'audio') { inform('Only videos and audio can play faster.'); return; }
-      const speed = nextSpeed(steps.get(`speed:${item.id}`) ?? 1);
-      if (!speed) { inform('This result is already at the fastest speed.'); return; }
-      await runAction(item.id, { action: 'speed', arg: speed }); steps.set(`speed:${item.id}`, speed); return;
-    }
-    case 'dismiss': { const newest = state().items[0]; if (newest) await dismiss(newest.id); return; }
-    case 'clearAll': engine.stop(); for (const each of state().items) await dismiss(each.id); return;
-    case 'bringBack': return bringBackLast();
-    case 'preview': return item ? openView('preview', item.id) : needResult();
-    case 'crop': return item ? openView('crop', item.id) : needResult();
-    case 'restore': if (!item) return needResult(); if (item.restored || item.unchanged) return; return runAction(item.id, { action: 'restore' });
-    case 'pause': { const pause = !settings.pauseAutomaticOptimisations; await updateSettings({ pauseAutomaticOptimisations: pause }); inform(pause ? 'Automatic optimisations are paused.' : 'Clop is listening for clipboard and file events.'); return; }
-  }
-}
-/** "Downscale and preview the clipboard": optimises what is on the clipboard, takes the result down one downscale step (or to `factor`) and opens its preview. */
-async function downscaleAndPreviewClipboard(factor?: number) {
-  const before = new Set(engine.list().map(item => item.id));
-  await optimiseClipboard(undefined, true);
-  await intake.idle();
-  const fresh = engine.list().find(item => !before.has(item.id) && item.source === 'clipboard' && item.status === 'ready');
-  if (!fresh) return;
-  const target = factor ?? nextDownscale(fresh.kind === 'image' ? fresh.options.scale : 1);
-  if (target && (fresh.kind === 'image' || fresh.kind === 'video')) await runAction(fresh.id, { action: 'downscale', arg: target });
-  if (isReady(fresh.id)) await openView('preview', fresh.id);
-}
+// The global shortcuts (spec step 38, `handleHotkey` in ClopApp.swift): `ShortcutRunner` decides what each does; this is what it runs on.
+const shortcutRunner = new ShortcutRunner({
+  items: () => state().items, latestClipboard: () => engine.list().find(item => item.source === 'clipboard' && item.status === 'ready'),
+  run: (id, invocation) => runCard(main.webContents, [id], invocation),
+  open: (view, id) => openView(view, id), dismiss, stop: ids => engine.stop(ids), bringBack: bringBackLast,
+  paused, setPaused: pause => updateSettings({ pauseAutomaticOptimisations: pause }),
+  optimiseClipboard: aggressive => optimiseClipboard(undefined, true, aggressive),
+  freshClipboard: async () => {
+    const before = new Set(engine.list().map(item => item.id));
+    await optimiseClipboard(undefined, true);
+    await intake.idle();
+    return engine.list().find(item => !before.has(item.id) && item.source === 'clipboard' && item.status === 'ready');
+  },
+  bitrates: async id => (await mediaFacts(engine.output(id), 'audio')).bitrates ?? [],
+  inform,
+});
+const runShortcut = (action: ShortcutAction) => shortcutRunner.run(action);
 /** Every tray and shortcut handler reports a failure here: the notice shows it, and the menu is rebuilt so its checkboxes show what is really set. */
 function reportFailure(error: unknown) { console.warn(message(error)); inform(message(error)); updateTray(); }
 const toggleSetting = (value: unknown) => { updateSettings(value).catch(reportFailure); };
@@ -685,7 +648,7 @@ async function showRecentResult(id: string) {
 }
 const trayActions: TrayActions = {
   showLatest, showRecent: showRecentResult, batch: () => batch?.show(), settings: () => showSettings(), pipelines: () => openEditor(),
-  optimiseClipboard: aggressive => optimiseClipboard(undefined, true, aggressive), downscaleClipboard: () => downscaleAndPreviewClipboard(),
+  optimiseClipboard: aggressive => optimiseClipboard(undefined, true, aggressive), downscaleClipboard: () => shortcutRunner.downscaleClipboard(undefined, true),
   ignoreApp: (id, ignore) => {
     // The menu was built for the app that copied last; if another copied since, the click is for a menu that is gone.
     if (!lastCopier || copyingApp(lastCopier)?.id !== id) throw new Error('Another app copied since the menu opened. Open it again.');
@@ -711,7 +674,7 @@ function trayIcon(variant: TrayVariant) {
 /** The icon follows the engine: working, paused, or normal. */
 function refreshTrayIcon(force = false) {
   if (!tray) return;
-  const variant = trayVariant({ working: importsRunning > 0 || !!engine?.list().some(item => item.status === 'processing'), paused: paused() });
+  const variant = trayVariant({ working: importsRunning > 0 || !!engine?.processing(), paused: paused() });
   if (!force && variant === trayShown) return;
   trayShown = variant; tray.setImage(trayIcon(variant)); tray.setToolTip(trayTooltip(variant));
 }
@@ -889,6 +852,7 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
   if (plan.type !== 'ui') {
     if (makesNewCard(plan)) { await coverArtCard(creation(), id); return; }
     await runPlan(cardHost(), id, plan);
+    shortcutRunner.noted(id, invocation);
     if (copyBack && isReady(id) && copiesBack(id)) await copy([id]);
     return;
   }
@@ -896,7 +860,7 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
   switch (plan.ui) {
     case 'stop': engine.stop([id]); return;
     case 'dismiss': await dismiss(id); return;
-    case 'restore': await engine.restore(id); if (copiesBack(id)) await copy([id]); return;
+    case 'restore': await engine.restore(id); shortcutRunner.noted(id, invocation); if (copiesBack(id)) await copy([id]); return;
     case 'preview': await openView('preview', id); return;
     case 'compare': await openView('compare', id); return;
     case 'crop': await openView('crop', id); return;
@@ -1065,6 +1029,8 @@ else {
     store.on('change', (next, changed) => {
       settings = next; for (const watcher of watchers) void watcher.update();
       if (changed.some(key => ['keyComboModifiers', 'enabledKeys', 'quickResizeKeys', 'allowClopToAppearInScreenshots'].includes(key))) applyWindowSettings();
+      // A change made outside the app (the settings file, the CLI) shows or hides the tray icon and updates its menu and icon too.
+      if (changed.some(key => ['showMenubarIcon', 'pauseAutomaticOptimisations', 'enableClipboardOptimiser', 'keepDropZoneVisible'].includes(key))) updateTray();
       // Pipelines, attachments and preset zones show in the editor and, as tiles, on the drop target.
       if (changed.some(key => (EDITOR_SETTING_KEYS as readonly string[]).includes(key))) { syncFloating(); broadcast(); for (const window of [editorWindow, editorLoading?.window]) if (window && !window.isDestroyed()) window.webContents.send('clop:editor-changed'); }
     });

@@ -130,3 +130,13 @@ export function nextDownscale(current: number): number | undefined {
 export const nextSpeed = (current: number) => SPEED_UP.find(speed => speed > current + 1e-9);
 /** The next lower PDF resolution; a PDF starts at 300 dpi. */
 export const nextResolution = (current = 300) => PDF_RESOLUTIONS.find(dpi => dpi < current);
+
+/**
+ * The pause key's three steps (ClopApp.swift): running, then paused for the next clipboard event only, then stopped (paused until it is
+ * pressed again), then running. The notice says where it landed.
+ */
+export function nextPause({ paused, pauseNext }: { paused: boolean; pauseNext: boolean }): { paused: boolean; pauseNext: boolean; notice: string } {
+  if (paused) return { paused: false, pauseNext: false, notice: 'Running. Clop is listening for clipboard and file events.' };
+  if (pauseNext) return { paused: true, pauseNext, notice: 'Stopped. All automatic optimisations are stopped.' };
+  return { paused: false, pauseNext: true, notice: 'Paused. The next clipboard event will be ignored.' };
+}
