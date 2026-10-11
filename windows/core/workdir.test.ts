@@ -236,6 +236,26 @@ test('repair puts back an original a placement left away from its path, from its
   assert.deepEqual(await readdir(path.join(workdir.root, 'placing')), []);
 });
 
+test('repair keeps the note of an original it could not put back yet, and finishes at the next start', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-retry-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const workdir = await new Workdir(path.join(dir, 'work')).ensure();
+  const drive = path.join(dir, 'drive'), gone = path.join(drive, 'video.mp4');
+  await mkdir(drive); await writeFile(gone, 'the only copy');
+  const backup = (await workdir.backup(gone, { move: true }))!;
+  await workdir.journal(gone, backup);
+  // The folder is not there at this start (a drive that is not connected yet), and a month passes before the next one.
+  await rm(drive, { recursive: true }); await writeFile(drive, 'in the way');
+  assert.deepEqual(await workdir.repair(), []);
+  assert.equal((await readdir(path.join(workdir.root, 'placing'))).length, 1, 'the note stays');
+  assert.equal(await workdir.cleanup(DAY, later(30)), 0, 'and so does the backup it names');
+  assert.equal(await exists(backup), true);
+  await rm(drive); await mkdir(drive);
+  assert.deepEqual(await workdir.repair(), [gone]);
+  assert.equal(await readFile(gone, 'utf8'), 'the only copy');
+  assert.deepEqual(await readdir(path.join(workdir.root, 'placing')), []);
+});
+
 test('the cleaner leaves the backup a note names, so a start after a long stop can still put the original back', async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-noted-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
