@@ -42,6 +42,8 @@ export class ShortcutRunner {
   }
   forget(id: string) { for (const kind of ['down', 'dpi', 'speed', 'bitrate']) this.steps.delete(`${kind}:${id}`); }
   /** Whether the next clipboard event is to be ignored ("pause for the next clipboard event"); asking uses it up. */
+  /** The pause setting changed, by the key or from the tray, Settings, the CLI or the file: an armed "pause for the next clipboard event" no longer applies. */
+  pauseChanged() { this.pauseNext = false; }
   consumePauseNext() { const was = this.pauseNext; this.pauseNext = false; return was; }
 
   /** The newest result in view, ready; `undefined` when there is none. A result still working or failed is said so and never skipped for an older one. */

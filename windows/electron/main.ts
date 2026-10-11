@@ -1074,6 +1074,8 @@ else {
     engine.on('change', () => { syncFloating(); broadcast(); });
     engine.on('ready', (id: string) => { if (quiet.has(id)) return; hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
     engine.on('add', (id: string) => lastBatch.add(id));
+    // Whichever way a result gets its original back (card, selection, tray, error card), the shortcut steps start over.
+    engine.on('restored', (id: string) => shortcutRunner.forget(id));
     await createWindows();
     if (settingsError) inform(message(settingsError));
     if (workdirProblem) inform(workdirProblem);
@@ -1099,6 +1101,7 @@ else {
     batch = setupBatch({ here, devUrl, webPreferences, created: syncNative, quitting: () => quitting, settings: () => settings, owns: file => workdir.owns(file), isLocal: isLocal(false), env: () => ({ settings: () => settings, workdir, marker, home, counter: counter(), saved: saveCounter }) });
     store.on('change', (next, changed) => {
       settings = next; for (const watcher of watchers) void watcher.update();
+      if (changed.includes('pauseAutomaticOptimisations')) shortcutRunner.pauseChanged();
       if (changed.some(key => ['keyComboModifiers', 'enabledKeys', 'quickResizeKeys', 'allowClopToAppearInScreenshots'].includes(key))) applyWindowSettings();
       // A change made outside the app (the settings file, the CLI) shows or hides the tray icon and updates its menu and icon too.
       if (changed.some(key => ['showMenubarIcon', 'pauseAutomaticOptimisations', 'enableClipboardOptimiser', 'keepDropZoneVisible'].includes(key))) updateTray();

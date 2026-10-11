@@ -149,6 +149,16 @@ test('the pause key cycles running, paused for the next clipboard event, stopped
   assert.equal(runner.consumePauseNext(), false, 'which is used up by one event');
 });
 
+test('a pause change from anywhere else drops an armed "next clipboard event" pause', async () => {
+  const { runner, state } = setup();
+  await runner.run({ kind: 'pause' });
+  // The tray or Settings pauses and resumes while the key's first press is still waiting.
+  state.paused = true; runner.pauseChanged(); state.paused = false; runner.pauseChanged();
+  assert.equal(runner.consumePauseNext(), false, 'the next copy is not ignored');
+  await runner.run({ kind: 'pause' });
+  assert.equal(runner.consumePauseNext(), true, 'the key arms it again');
+});
+
 test('the pause cycle as a pure step', () => {
   assert.deepEqual(nextPause({ paused: false, pauseNext: false }), { paused: false, pauseNext: true, notice: 'Paused. The next clipboard event will be ignored.' });
   assert.equal(nextPause({ paused: false, pauseNext: true }).paused, true);
