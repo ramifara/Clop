@@ -5,7 +5,7 @@ import { stepParams, stepTemplates, type StepCategory } from './templates';
 // names coloured by category, parameter names muted and values prominent; a step unknown for the file type and a value
 // outside the type's suggestions are marked invalid. Offsets are UTF-16, as in a textarea.
 
-export type TokenType = 'arrow' | 'step' | 'params' | 'param' | 'value' | 'invalid';
+export type TokenType = 'arrow' | 'step' | 'params' | 'param' | 'value' | 'invalid' | 'comment';
 export interface Token { from: number; to: number; type: TokenType; category?: StepCategory }
 
 export function highlightTokens(text: string, fileType?: ClopFileType): Token[] {
@@ -35,6 +35,25 @@ export function highlightTokens(text: string, fileType?: ClopFileType): Token[] 
     }
   }
   return tokens.sort((a, b) => a.from - b.from || b.to - a.to);
+}
+
+/** The JSON view's colours: `//` and `/* *\/` comments, keys (a string followed by a colon) and other strings. */
+export function jsoncTokens(text: string): Token[] {
+  const tokens: Token[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '/' && (text[i + 1] === '/' || text[i + 1] === '*')) {
+      const end = text[i + 1] === '/' ? text.slice(i).search(/\r?\n/) : text.indexOf('*/', i + 2);
+      const to = end < 0 ? text.length : text[i + 1] === '/' ? i + end : end + 2;
+      tokens.push({ from: i, to, type: 'comment' }); i = to - 1;
+    } else if (c === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"' && text[j] !== '\n') j += text[j] === '\\' ? 2 : 1;
+      const to = Math.min(j + 1, text.length), key = /^\s*:/.test(text.slice(to));
+      tokens.push({ from: i, to, type: key ? 'param' : 'value' }); i = to - 1;
+    }
+  }
+  return tokens;
 }
 
 export interface Span { text: string; type?: TokenType; category?: StepCategory; error?: boolean }

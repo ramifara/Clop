@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { highlightSpans, highlightTokens } from './highlight';
+import { highlightSpans, highlightTokens, jsoncTokens } from './highlight';
 
 const kinds = (text: string, fileType?: Parameters<typeof highlightTokens>[1]) => highlightTokens(text, fileType).map(token => `${token.type}:${text.slice(token.from, token.to)}`);
 
@@ -26,4 +26,12 @@ test('spans cover the whole text and carry the innermost token and the parser\'s
   const bad = spans.filter(span => span.error);
   assert.deepEqual([bad.map(span => span.text).join(''), bad[0].type], ['zzz', 'invalid']);
   assert.deepEqual(highlightSpans('', []), []);
+});
+
+test('the JSON view colours comments, keys and strings, and skips what looks like a comment inside a string', () => {
+  const text = '[\n  // crop(width: 1)\n  {"crop": {"location": "http://a/b"}}, /* x */\n]';
+  const shown = jsoncTokens(text).map(token => `${token.type}:${text.slice(token.from, token.to)}`);
+  assert.deepEqual(shown, ['comment:// crop(width: 1)', 'param:"crop"', 'param:"location"', 'value:"http://a/b"', 'comment:/* x */']);
+  assert.deepEqual(jsoncTokens('/* never closed'), [{ from: 0, to: 15, type: 'comment' }]);
+  assert.deepEqual(jsoncTokens('"open string'), [{ from: 0, to: 12, type: 'value' }]);
 });

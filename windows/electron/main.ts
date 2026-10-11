@@ -53,7 +53,7 @@ let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefine
 let mcp: ReturnType<typeof mcpSettings>;
 let dropActive = false, dragging = false, importsRunning = 0, hovered = false;
 /** The files being dragged, and whether Ctrl or Alt is held, as the Windows helper reports them: Ctrl or Alt shows the preset zone tiles. */
-let dragFiles: string[] = [], dragModifiers = { ctrl: false, alt: false };
+let dragFiles: string[] = [], dragModifiers = { ctrl: false, alt: false }, presetsLatched = false;
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
 let clipboardTimer: NodeJS.Timeout | undefined;
@@ -116,7 +116,8 @@ function syncFloating() {
   if (!floating || floating.isDestroyed()) return;
   const target = dropActive || settings.keepDropZoneVisible;
   const count = Math.min(target ? 2 : 3, state().items.length);
-  const tiles = presetsRevealed() ? gridHeight(cellCount(presets())) + 8 : 0;
+  // Room for the tiles stays once they were shown, until the drag ends: a tile under the pointer must not lose its window when Ctrl is let go.
+  const tiles = presetsLatched || presetsRevealed() ? gridHeight(cellCount(presets())) + 8 : 0;
   const height = count * 166 + Math.max(0, count - 1) * 4 + (target ? 160 : 0) + tiles + (count > 1 ? 28 : 0) + (notice ? 85 : 0) + 40;
   const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
   floating.setSize(236, Math.min(height, area.height));
@@ -761,17 +762,17 @@ else {
       bridge.on('foreground', event => pickup.focus(Number(event.process)));
       bridge.on('drag-start', event => {
         if (!settings.enableDragAndDrop) return;
-        dragging = true; dropActive = true; dragModifiers = { ctrl: false, alt: false };
+        dragging = true; dropActive = true; dragModifiers = { ctrl: false, alt: false }; presetsLatched = false;
         dragFiles = Array.isArray(event.paths) ? (event.paths as unknown[]).filter((file): file is string => typeof file === 'string').slice(0, 64) : [];
         floating.setIgnoreMouseEvents(false); syncFloating(); broadcast();
       });
       // The helper reads Ctrl and Alt while a drag lasts; either one shows the preset zone tiles.
       bridge.on('drag-modifiers', event => {
         if (!dragging) return;
-        dragModifiers = { ctrl: event.ctrl === true, alt: event.alt === true }; syncFloating(); broadcast();
+        dragModifiers = { ctrl: event.ctrl === true, alt: event.alt === true }; presetsLatched ||= presetsRevealed(); syncFloating(); broadcast();
       });
       // The tiles stay for the moment a drop on one needs to land.
-      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; dragFiles = []; dragModifiers = { ctrl: false, alt: false }; syncFloating(); broadcast(); } }, 180); });
+      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; dragFiles = []; dragModifiers = { ctrl: false, alt: false }; presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
       bridge.on('stopped', () => { bridgeReady = false; pickup.cancel(); startClipboardFallback(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));

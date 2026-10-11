@@ -4,6 +4,7 @@ import { App } from './App';
 import { BatchView } from './batch/BatchView';
 import { CompareWindow } from './CompareWindow';
 import { CropWindow } from './CropWindow';
+import { Editor } from './Editor';
 import './style.css';
 const query = new URLSearchParams(location.search), crop = query.get('crop'), compare = query.get('compare'), batch = query.has('batch');
-createRoot(document.getElementById('root')!).render(<React.StrictMode>{batch ? <BatchView/> : crop ? <CropWindow id={crop}/> : compare ? <CompareWindow id={compare}/> : <App/>}</React.StrictMode>);
+createRoot(document.getElementById('root')!).render(<React.StrictMode>{batch ? <BatchView/> : crop ? <CropWindow id={crop}/> : compare ? <CompareWindow id={compare}/> : query.has('editor') ? <Editor/> : <App/>}</React.StrictMode>);
