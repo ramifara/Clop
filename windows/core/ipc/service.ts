@@ -4,7 +4,7 @@ import { mkdir, rm, rmdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline as pump } from 'node:stream/promises';
-import { copyTo, exists, moveTo, samePath } from '../fileops';
+import { copyTo, exists, moveTo, pathKey, samePath } from '../fileops';
 import type { OptimisedMarker } from '../marker';
 import { detectKind, probe } from '../media/detect';
 import { cropPDF, optimisePDF, PDF_DPI_NO_DOWNSAMPLE } from '../media/pdf';
@@ -157,6 +157,9 @@ async function discard(produced: string, final: string) {
   await rmdir(runRoot).catch(() => {});
 }
 
+/** The key requests on one file take turns by: the same file under different spellings (case on Windows) is one. */
+const turnKey = (url: string) => { const file = urlPath(url); return file === undefined ? url : pathKey(file); };
+
 export class ClopService {
   private readonly running = new Map<string, Set<AbortController>>();
   /** The files of each request that no worker has taken yet, so a stop reaches them too. */
@@ -218,10 +221,10 @@ export class ClopService {
     const controller = new AbortController(), { signal } = controller, { deps } = this;
     const controllers = this.running.get(url) ?? new Set();
     this.running.set(url, controllers.add(controller));
-    const previous = this.turns.get(url);
+    const previous = this.turns.get(turnKey(url));
     let release!: () => void;
     const turn = new Promise<void>(resolve => { release = resolve; });
-    this.turns.set(url, turn);
+    this.turns.set(turnKey(url), turn);
     try {
       await previous;
       signal.throwIfAborted();
@@ -270,7 +273,7 @@ export class ClopService {
       return response;
     } finally {
       release();
-      if (this.turns.get(url) === turn) this.turns.delete(url);
+      if (this.turns.get(turnKey(url)) === turn) this.turns.delete(turnKey(url));
       controllers.delete(controller);
       if (!controllers.size) this.running.delete(url);
     }

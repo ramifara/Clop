@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { exists } from './fileops';
+import { pathKey, exists } from './fileops';
 
 test('exists is false only when the file is absent', async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-fileops-'));
@@ -21,4 +21,10 @@ test('exists propagates errors that do not mean the file is absent', { skip: pro
   await writeFile(path.join(dir, 'locked', 'file.txt'), 'x');
   await chmod(path.join(dir, 'locked'), 0o000);
   await assert.rejects(exists(path.join(dir, 'locked', 'file.txt')), { code: 'EACCES' });
+});
+
+test('pathKey names one file once, ignoring case on Windows only', () => {
+  assert.equal(pathKey('C:\\Pics\\A.PNG', 'win32'), pathKey('c:\\pics\\a.png', 'win32'));
+  assert.notEqual(pathKey('/pics/A.PNG', 'linux'), pathKey('/pics/a.png', 'linux'));
+  assert.equal(pathKey('/pics/x/../a.png', 'linux'), pathKey('/pics/a.png', 'linux'));
 });

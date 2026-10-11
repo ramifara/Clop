@@ -1,6 +1,7 @@
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pathKey } from '../core/fileops';
 import { fileURL } from '../core/ipc/protocol';
 import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } from '../core/media/detect';
 import { resolveHome } from '../core/template';
@@ -62,18 +63,19 @@ export async function folderFiles(folder: string, recursive: boolean, types: rea
 
 /** `validateItems`: every file, folder content and URL to send, as URL strings. A missing file is an error unless `skipErrors`. */
 export async function validateItems(items: string[], { recursive, skipErrors, types, cwd, home }: { recursive: boolean; skipErrors: boolean; types: readonly string[]; cwd: string; home?: string }): Promise<string[]> {
-  const urls: string[] = [], folders: string[] = [];
+  const urls: string[] = [], folders: string[] = [], seen = new Set<string>();
+  // A file named twice, or named and inside a folder, is worked on once; on Windows `A.PNG` and `a.png` are one file.
+  const add = (url: string) => { const key = url.startsWith('file:') ? pathKey(fileURLToPath(url)) : url; if (!seen.has(key)) { seen.add(key); urls.push(url); } };
   for (const item of items) {
-    if (isURL(item) && !item.toLowerCase().startsWith('file:')) { urls.push(item); continue; }
+    if (isURL(item) && !item.toLowerCase().startsWith('file:')) { add(item); continue; }
     const file = isURL(item) ? fileURLToPath(item) : localPath(item, cwd, home);
     const info = await stat(file).catch(() => undefined);
     if (!info) { if (skipErrors) continue; throw new ValidationError(`File ${file} does not exist`); }
     if (info.isDirectory()) folders.push(file);
-    else if (types.includes(extension(file))) urls.push(fileURL(file));
+    else if (types.includes(extension(file))) add(fileURL(file));
   }
-  for (const folder of folders) urls.push(...(await folderFiles(folder, recursive, types)).map(fileURL));
-  // A file named twice, or named and inside a folder, is worked on once.
-  return [...new Set(urls)];
+  for (const folder of folders) for (const file of await folderFiles(folder, recursive, types)) add(fileURL(file));
+  return urls;
 }
 
 /** `normalizeRelativeOutput`: an output path or template made absolute against the working folder. */

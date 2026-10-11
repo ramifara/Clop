@@ -151,6 +151,19 @@ test('the same file twice in one request is worked on one pass after the other',
   assert.equal(messages.filter(m => m.kind === 'error').length, 2);
 });
 
+test('the same file under two spellings of its path is also worked on one pass after the other', async t => {
+  let active = 0, most = 0;
+  const s = await setup(t, { async withCard() { most = Math.max(most, ++active); await new Promise(resolve => setTimeout(resolve, 50)); active--; throw new Error('done with it'); } });
+  const file = s.file('a.png');
+  await graphic(20, 20).png().toFile(file);
+  // The same file, spelled differently in the URL (on Windows, `A.PNG` for `a.png` is the same kind of difference).
+  const other = fileURL(file).replace('/a.png', '/%61.png');
+  assert.notEqual(other, fileURL(file));
+  const messages = answers(await s.send({ urls: [fileURL(file), other], hideFloatingResult: false }));
+  assert.equal(most, 1);
+  assert.equal(messages.filter(m => m.kind === 'error').length, 2);
+});
+
 test('an agent\'s pipeline cannot replace a file by naming the same location text as the placement setting', async t => {
   if (!needTools(t, 'pngquant')) return;
   const s = await setup(t, {}, { mcpEnabled: true, optimisedImageBehaviour: 'sameFolder', sameFolderNameTemplateImage: '%f-optimised' });
