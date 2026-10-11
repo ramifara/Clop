@@ -5,6 +5,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline as pump } from 'node:stream/promises';
 import { copyTo, exists, moveTo, pathKey, samePath } from '../fileops';
+import { agentPathRefusal } from '../local-path';
 import type { OptimisedMarker } from '../marker';
 import { detectKind, probe } from '../media/detect';
 import { cropPDF, optimisePDF, PDF_DPI_NO_DOWNSAMPLE } from '../media/pdf';
@@ -12,7 +13,7 @@ import type { MediaKind } from '../media/types';
 import { isReadable } from '../pipeline/codec';
 import { runPipeline, type PipelineEffects, type PipelineRunOptions } from '../pipeline/executor';
 import { applyLocation } from '../pipeline/files';
-import { makeStep, resolvePipeline, type Pipeline, type PipelineStep } from '../pipeline/model';
+import { makeStep, resolvePipeline, stepPaths, type Pipeline, type PipelineStep } from '../pipeline/model';
 import { parseSteps } from '../pipeline/parser';
 import { RunState } from '../pipeline/run-state';
 import { effectiveBehaviour, placeOutput, type PlacementEnv } from '../placement';
@@ -192,6 +193,9 @@ export class ClopService {
     if (req.prepareInBatch) return fail('The batch optimiser window is not in this version of Clop for Windows yet. Run the command without --review.');
     let pipeline: Pipeline | undefined;
     try { pipeline = req.pipeline === undefined ? undefined : requestPipeline(req.pipeline, settings, this.deps.home); } catch (error) { return fail(message(error)); }
+    // An agent's files, output, templates and pipeline steps stay on this PC's own drives, checked before any of them is looked up.
+    const remote = req.origin === 'mcp' ? agentPathRefusal([...req.urls, req.output, req.placement?.sameFolderTemplate, req.placement?.specificFolderTemplate, req.placement?.specificFolderRoot, ...pipeline?.steps.flatMap(stepPaths) ?? []]) : undefined;
+    if (remote) return fail(remote);
 
     const counter = { value: settings.lastAutoIncrementingNumber }, copied: string[] = [];
     const queue = [...req.urls.entries()];

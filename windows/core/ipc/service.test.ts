@@ -105,6 +105,25 @@ test('agents are refused before any file is touched unless the user allowed them
   assert.match((review[0] as { error: { error: string } }).error.error, /batch optimiser window/);
 });
 
+test('an agent\'s request that names a network share or a device anywhere is refused before any file is touched', async t => {
+  const s = await setup(t, {}, { mcpEnabled: true, mcpAllowScriptSteps: true });
+  const input = s.file('a.png');
+  await graphic(50, 50).png().toFile(input);
+  const before = (await stat(input)).mtimeMs, local = fileURL(input);
+  const requests: (Partial<OptimisationRequest> & { urls: string[] })[] = [
+    { urls: ['file://server/share/a.png'] }, { urls: [local], output: '\\\\server\\share\\%f' },
+    { urls: [local], placement: { optimised: 'specificFolder', specificFolderTemplate: '//server/share/%f' } },
+    ...['copy(to: "\\\\\\\\server\\\\share\\\\")', 'move(to: "//server/share/")', 'watermark(image: "\\\\\\\\server\\\\share\\\\logo.png")', 'delete(path: "\\\\\\\\?\\\\UNC\\\\server\\\\share")', 'optimise(location: "\\\\\\\\.\\\\C:\\\\out\\\\%f")', 'runScript(path: "//server/share/x.ps1")', 'openWith(app: "\\\\\\\\server\\\\share\\\\x.exe")'].map(pipeline => ({ urls: [local], pipeline })),
+  ];
+  for (const request of requests) {
+    const messages = await s.send({ ...request, origin: 'mcp' });
+    assert.equal(messages.length, 2, JSON.stringify(request));
+    assert.match((messages[0] as { error: { error: string } }).error.error, /is on a network share or a device\. Agents may only use files and folders on this PC's own drives/, JSON.stringify(request));
+  }
+  assert.equal((await stat(input)).mtimeMs, before);
+  assert.deepEqual(await readdir(s.workdir.backups), []);
+});
+
 test('a request that shows its result lets the app optimise it with a card, then places that result', async t => {
   const seen: string[] = [];
   const s = await setup(t, {

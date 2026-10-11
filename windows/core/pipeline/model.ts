@@ -150,6 +150,14 @@ export const kindForTextName = (name: string): StepKind | undefined => name === 
 export const stepKind = (step: PipelineStep) => Object.keys(step)[0] as StepKind;
 export const stepEntry = (step: PipelineStep) => { const kind = stepKind(step); return [kind, (step as Record<string, unknown>)[kind]] as StepEntry; };
 
+/** Parameters that name a file, a folder or a program: where a step reads from, writes to or starts something. */
+const PATH_PARAMS = ['location', 'to', 'path', 'image', 'app', 'relativeTo'];
+/** The paths, templates and folder words a step names (`location`, `to`, `path`, `image`, `app`, `relativeTo`). */
+export const stepPaths = (step: PipelineStep): string[] => {
+  const params = stepEntry(step)[1] as Record<string, unknown> | undefined;
+  return PATH_PARAMS.flatMap(key => typeof params?.[key] === 'string' ? [params[key] as string] : []);
+};
+
 /** `known` keys in their order, then any other defined keys: values a newer macOS added are kept so they sync back. */
 export function ordered(value: Record<string, unknown>, known: readonly string[], map: (key: string, item: unknown) => unknown = (_, item) => item) {
   const out: Record<string, unknown> = {};
