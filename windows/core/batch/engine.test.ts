@@ -294,6 +294,23 @@ test('a failure after the original was taken restores it, and leaves a new resul
   }
 });
 
+test('a result whose manifest write failed is not remembered, so it never reaches the manifest later', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { dir, files, env, params } = await setup(t);
+  const a = await write(path.join(files, 'a.jpg'), await jpeg(320, 240, 1)), b = await write(path.join(files, 'b.jpg'), await jpeg(320, 240, 2)), out = path.join(dir, 'out');
+  const batch = await batchOf(env, [a], params({ output: { location: 'folder', folder: out, template: '%f' } }));
+  // Into a folder nothing is taken aside, so the manifest is first written when the result is recorded.
+  await breakManifest(batch);
+  await batch.run();
+  assert.deepEqual(statuses(batch), ['failed']);
+  assert.deepEqual(await readdir(out), [], 'no result is left behind');
+  assert.deepEqual(batch.backup.allResults(), [], 'and none is remembered');
+  // With the manifest writable again, a later save does not carry the failed result along.
+  await rm(path.join(batch.backup.dir, 'manifest.json'), { recursive: true });
+  await batch.backup.recordResult({ original: b, path: path.join(out, 'b.jpg'), size: 1, mtimeMs: 1, originalRemoved: false });
+  assert.deepEqual(JSON.parse(await readFile(path.join(batch.backup.dir, 'manifest.json'), 'utf8')).results.map((r: { original: string }) => r.original), [b]);
+});
+
 test('a file that changed while the batch ran is left as it is', async t => {
   if (!needTools(t, 'jpegoptim', 'exiftool')) return;
   const { files, env, params } = await setup(t);

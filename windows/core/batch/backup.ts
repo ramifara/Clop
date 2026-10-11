@@ -129,7 +129,12 @@ export class BatchBackup {
     return entry.path;
   }
 
-  async recordResult(result: ResultEntry) { this.results.set(this.key(result.original), result); await this.save(); }
+  /** Remembers where a result went. When the manifest cannot be written it is not remembered, so a later save does not carry it into the manifest. */
+  async recordResult(result: ResultEntry) {
+    const key = this.key(result.original), previous = this.results.get(key);
+    this.results.set(key, result);
+    try { await this.save(); } catch (error) { if (previous) this.results.set(key, previous); else this.results.delete(key); throw error; }
+  }
   result(original: string) { return this.results.get(this.key(original)); }
   async forgetResult(original: string) { this.results.delete(this.key(original)); await this.save(); }
 
