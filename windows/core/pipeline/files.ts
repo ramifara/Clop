@@ -108,10 +108,12 @@ export async function copyStep(run: RunState, to: string) {
   await run.mark(run.current);
 }
 
+/** `move(to:)`: marked like a copy, so a watcher over the folder it lands in does not take it for a new file. */
 export async function moveStep(run: RunState, to: string) {
   const dest = await fileDestination(run, to);
   await keepCollision(run, dest);
   run.current = await moveTo(run.current, dest);
+  await run.mark(run.current);
 }
 
 /** `rename(to:)`: a new name in the same folder, with the file's extension when the template gives none. */

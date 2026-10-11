@@ -98,7 +98,11 @@ export class ItemEngine extends EventEmitter {
   /** Imports still copying and probing their file, before they have a result to stop. */
   private staging = new Set<AbortController>();
   /** `settings` is read for every job, so a changed compression setting applies to the next one. */
-  constructor(private root: string, private settings: () => ItemSettings = defaultSettings) { super(); }
+  /**
+   * `mark` records a finished result as optimised (the app's `OptimisedMarker`: on Windows a stream on the file, which Explorer copies
+   * and drags carry), so a result pasted or dragged into a watched folder is not optimised a second time.
+   */
+  constructor(private root: string, private settings: () => ItemSettings = defaultSettings, private readonly mark: (file: string) => Promise<void> = async () => {}) { super(); }
   list() { return [...this.entries.values()].map(e => structuredClone(e.result)).reverse(); }
   get(id: string) { const entry = this.entries.get(id); if (!entry) throw new Error('This result is no longer in the shelf.'); return entry; }
   has(id: string) { return this.entries.has(id); }
@@ -261,7 +265,7 @@ export class ItemEngine extends EventEmitter {
         e.placing = true;
         try { e.placedPath = await e.placement.place(output, e.originalPath, options.format !== 'auto'); e.shown = true; } finally { e.placing = false; }
       }
-      if (!output.unchanged) e.revision++;
+      if (!output.unchanged) { e.revision++; await this.mark(output.path).catch(() => {}); }
       // Keep earlier results until the session ends: other apps may still be pasting or dragging them.
       e.outputPath = output.path;
       for (const warning of output.warnings ?? []) console.warn(warning);

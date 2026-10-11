@@ -27,6 +27,11 @@ test('copy, move and rename resolve templates, captures and folders, and carry o
   assert.equal(renamed.file, path.join(w.dir, 'sorted', 'Screenshot 10.32.11.png'));
   const relative = await w.run('copy(to: "backup/keep.png")', renamed.file);
   assert.equal(relative.file, path.join(w.dir, 'sorted', 'backup', 'keep.png'), 'a relative destination lands next to the file');
+  // A moved file is marked too, so a watcher over the folder it lands in leaves it alone.
+  const fresh = w.file('fresh.png');
+  await graphic(40, 30).png().toFile(fresh);
+  const sorted = await w.run(`move(to: ${quoted(path.join(w.dir, 'elsewhere') + '/')})`, fresh);
+  assert.equal(await w.marker.isOptimised(sorted.file), true);
 });
 
 test('a file in the way of a move is kept in the backups', async t => {

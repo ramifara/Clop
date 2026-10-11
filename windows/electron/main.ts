@@ -1104,7 +1104,7 @@ else {
     const session = sessionDir = path.join(workdir.temp, `session-${Date.now()}`);
     workdir.protect(session);
     stopCleaner = workdir.startCleaner(() => store.get('workdirCleanupInterval'));
-    engine = new ItemEngine(session, () => settings);
+    engine = new ItemEngine(session, () => settings, file => marker.markOptimised(file));
     media = new MediaFiles([session]);
     protocol.handle(MEDIA_SCHEME, request => media.handle(request));
     engine.on('change', () => { syncFloating(); broadcast(); });

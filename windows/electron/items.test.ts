@@ -37,6 +37,16 @@ test('optimises an image, resizes from the original and restores exact source by
   assert.deepEqual(await readFile(engine.output(id)), original);
   assert.equal(engine.get(id).result.restored, true);
 });
+test('every finished result is marked as optimised, so pasting or dragging it into a watched folder does not optimise it again', async t => {
+  if (!needTools(t, 'jpegoptim', 'pngquant')) return;
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-engine-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const marked: string[] = [], engine = new ItemEngine(dir, undefined, async file => { marked.push(file); });
+  const id = await engine.importBuffer(await sampleImage(), 'shot.png', 'clipboard', balanced);
+  assert.deepEqual(marked, [engine.output(id)]);
+  await engine.apply(id, { ...balanced, scale: .5 });
+  assert.deepEqual(marked.slice(1), [engine.output(id)], 'a card action\'s result too');
+});
 test('respects maximum edge, aspect ratio and never enlarges', async t => {
   const f = await fixture(t); if (!f) return;
   const { engine } = f;
