@@ -253,3 +253,13 @@ test('on Windows nothing is read while the helper is down, since a private copy 
   other.value.platform = 'linux';
   assert.equal((await clipboardIntake(undefined, false, memory(), other.value)).type, 'files');
 });
+
+test('a queued read that is no longer wanted when its turn comes does nothing', async () => {
+  const intake = new ClipboardIntake(error => { throw error; });
+  let wanted = true, reads = 0;
+  const first = intake.submit(async () => { await new Promise(resolve => setTimeout(resolve, 30)); reads++; });
+  const second = intake.submit(async () => { reads++; return async () => { reads++; }; }, () => wanted);
+  wanted = false;
+  await Promise.all([first, second]); await intake.idle();
+  assert.equal(reads, 1);
+});

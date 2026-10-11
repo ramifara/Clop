@@ -252,9 +252,10 @@ export class ClipboardIntake {
   private chain: Promise<void> = Promise.resolve();
   private running = new Set<Promise<void>>();
   constructor(private report: (error: unknown) => void) {}
-  /** Queues `read`, which returns the import to start, if any. Resolves once the read is done. */
-  submit(read: () => Promise<(() => Promise<unknown>) | void>): Promise<void> {
+  /** Queues `read`, which returns the import to start, if any. Resolves once the read is done. `wanted` is asked again when the read's turn comes, since settings can change while it waits. */
+  submit(read: () => Promise<(() => Promise<unknown>) | void>, wanted: () => boolean = () => true): Promise<void> {
     const step = this.chain.then(async () => {
+      if (!wanted()) return;
       const work = await read();
       if (!work) return;
       const job: Promise<void> = work().then(() => {}, this.report).finally(() => this.running.delete(job));

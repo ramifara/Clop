@@ -568,7 +568,7 @@ function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive 
       case 'image': return () => importClipboardImage(plan.bytes, `Clipboard-${stamp()}.${plan.ext}`, plan.sequence, aggressive, plan.app);
       case 'url': return () => importUrl(plan.url, aggressive, 'clipboard', plan.sequence);
     }
-  });
+  }, () => manual || (settings.enableClipboardOptimiser && !paused()));
 }
 function startClipboardFallback() {
   if (clipboardTimer) return;
