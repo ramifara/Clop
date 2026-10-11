@@ -223,7 +223,11 @@ test('a copy that replaces a file and keeps the source\'s old modification time 
   const old = path.join(dir, 'replaced.png'), hour = new Date(Date.now() - 3_600_000);
   await image(old); await utimes(old, hour, hour);
   await watcher.update();
-  // Seen once, for a change that is not new content.
+  // Seen once, for a change that is not new content. On Windows chmod only toggles the read-only attribute, and clearing it from a
+  // writable file changes nothing and reports nothing, so the file is made read-only first (and back, so it can be overwritten).
+  await chmod(old, 0o400);
+  await utimes(old, new Date(), hour);
+  await pause(200);
   await chmod(old, 0o600);
   await pause(400);
   assert.deepEqual(state.handled, []);
