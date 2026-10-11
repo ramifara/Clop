@@ -25,6 +25,8 @@ export interface ImageBatchParams {
   compression: number;
   /** PNG ↔ JPEG, whichever is smaller (the adaptive tier). */
   adaptive: boolean;
+  /** The lossless tier: the compression factor does not apply. */
+  lossless?: boolean;
   convert?: ImageConvert;
   /** Scale factor under 1. */
   downscale?: number;
@@ -77,7 +79,7 @@ export function defaultBatchParams(s: Pick<ClopSettings, 'imageCompression' | 'a
   return {
     ...(aggressive === undefined ? {} : { aggressive }),
     output: { location: 'inPlace' },
-    image: { compression: s.imageCompression.factor, adaptive: s.adaptiveImageSize || s.imageCompression.tier === 'adaptive', allowLarger: true },
+    image: { compression: s.imageCompression.factor, adaptive: s.adaptiveImageSize || s.imageCompression.tier === 'adaptive', ...(s.imageCompression.tier === 'lossless' ? { lossless: true } : {}), allowLarger: true },
     video: {
       compression: s.videoCompression.factor, encoder: tier === 'custom' ? 'smaller' : tier, removeAudio: s.removeAudioFromVideos, allowLarger: true,
       ...(s.capVideoFPS && s.targetVideoFPS > 0 ? { fps: Math.round(s.targetVideoFPS) } : {}),
@@ -150,7 +152,7 @@ export function parseBatchParams(value: unknown, isAbsolute: (folder: string) =>
   const edge = (value: unknown) => optional(value, v => int(v, 'long edge', 1, 16383));
   const image: ImageBatchParams = {
     compression: compression(i.compression, 'image compression'), adaptive: bool(i.adaptive, 'adaptive'), allowLarger: bool(i.allowLarger, 'keep if larger'),
-    ...strip({ convert: optional(i.convert, x => oneOf(x, IMAGE_CONVERTS, 'image format')), downscale: optional(i.downscale, x => factor(x, 'image downscale')), maxLongEdge: edge(i.maxLongEdge), crop: optional(i.crop, parseCrop) }),
+    ...strip({ lossless: optional(i.lossless, x => bool(x, 'lossless')) || undefined, convert: optional(i.convert, x => oneOf(x, IMAGE_CONVERTS, 'image format')), downscale: optional(i.downscale, x => factor(x, 'image downscale')), maxLongEdge: edge(i.maxLongEdge), crop: optional(i.crop, parseCrop) }),
   };
   const video: VideoBatchParams = {
     compression: compression(v.compression, 'video compression'), encoder: oneOf(v.encoder, VIDEO_ENCODER_TIERS, 'video encoder'), removeAudio: bool(v.removeAudio, 'remove audio'), allowLarger: bool(v.allowLarger, 'keep if larger'),

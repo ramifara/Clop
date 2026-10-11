@@ -46,6 +46,17 @@ async function batchOf(env: BatchEnv, paths: string[], params: BatchParams) {
 }
 const statuses = (batch: Batch) => batch.items.map(item => item.status);
 
+test('a lossless image setting stays lossless in a batch', async t => {
+  if (!needTools(t, 'jpegoptim', 'pngquant', 'exiftool')) return;
+  const { files, env, params } = await setup(t);
+  const source = await write(path.join(files, 'a.png'), await png(96, 64));
+  const before = await sharp(source).raw().toBuffer();
+  const batch = await batchOf(env, [files], { ...params(), image: { ...params().image, lossless: true } });
+  await batch.run();
+  assert.deepEqual(statuses(batch), ['done']);
+  assert.ok((await sharp(source).raw().toBuffer()).equals(before), 'every pixel is as it was');
+});
+
 test('optimises images in place, keeps the originals in the batch backup and reverts them byte for byte', async t => {
   if (!needTools(t, 'jpegoptim', 'pngquant', 'exiftool')) return;
   const { files, env, params } = await setup(t);

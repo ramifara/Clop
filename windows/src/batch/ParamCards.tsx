@@ -108,12 +108,13 @@ export function ParamCards({ params, onChange, present, cropSizes, audioFormats,
     <div className="cards">
       <div className="card-column">
         <Card title="Images" dimmed={!present.has('image')}>
-          <Row label="Compression">{compression('Image compression', image.compression, value => setImage({ compression: value }))}</Row>
+          <Row label="Compression" disabled={!!image.lossless}>{compression('Image compression', image.compression, value => setImage({ compression: value }))}</Row>
           <Row label="Convert to"><Choice label="Image format" value={image.convert ?? ''} options={IMAGE_FORMATS} onChange={value => setImage({ convert: value || undefined })}/></Row>
           <Row label="Downscale" disabled={!!image.maxLongEdge || !!image.crop}>{downscale('Image downscale', image.downscale, value => setImage({ downscale: value }))}</Row>
           <Row label="Max long edge" disabled={!!image.downscale || !!image.crop}><NumberField label="Image max long edge" value={image.maxLongEdge} suffix="px" onChange={value => setImage({ maxLongEdge: value })}/></Row>
           <Row label="Crop"><CropPicker label="Image crop" value={image.crop} sizes={cropSizes} onChange={crop => setImage({ crop })}/></Row>
-          <Toggle label="Adaptive (PNG ↔ JPEG)" checked={image.adaptive} onChange={value => setImage({ adaptive: value })}/>
+          <Toggle label="Lossless" checked={!!image.lossless} onChange={value => setImage({ lossless: value || undefined })}/>
+          <Toggle label="Adaptive (PNG ↔ JPEG)" checked={image.adaptive} disabled={!!image.lossless} onChange={value => setImage({ adaptive: value })}/>
           <Toggle label="Keep if larger" checked={image.allowLarger} disabled={!image.convert} onChange={value => setImage({ allowLarger: value })}/>
         </Card>
         <Card title="PDF" dimmed={!present.has('pdf')}>

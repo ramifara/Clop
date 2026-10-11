@@ -20,6 +20,8 @@ test('the default batch optimises each file as the settings would', () => {
   assert.equal(defaultBatchParams({ ...settings, pdfDPI: 0, capVideoFPS: false, imageCompression: { tier: 'adaptive', factor: 30 } }).pdf.dpi, 'adaptive');
   assert.equal(defaultBatchParams({ ...settings, targetVideoFPS: -2 }).video.fps, undefined, 'half the source rate stays with the settings');
   assert.equal(defaultBatchParams({ ...settings, imageCompression: { tier: 'adaptive', factor: 30 } }).image.adaptive, true);
+  assert.equal(defaultBatchParams({ ...settings, imageCompression: { tier: 'lossless', factor: 30 } }).image.lossless, true, 'a lossless setting stays lossless in the batch');
+  assert.equal(defaultBatchParams(settings).image.lossless, undefined);
   assert.equal(defaultBatchParams(settings, true).aggressive, true);
 });
 

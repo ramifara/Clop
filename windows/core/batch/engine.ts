@@ -195,7 +195,7 @@ export class Batch extends EventEmitter {
         const factor = ip.crop ? 1 : ip.maxLongEdge ? Math.min(1, ip.maxLongEdge / long) : ip.downscale ?? 1;
         const size = factor < 1 ? { width: Math.max(1, Math.round(info.width * factor)), height: Math.max(1, Math.round(info.height * factor)) } : {};
         const output = await optimiseImage(file, outputDir, {
-          ...job, ...size, aggressive, compression: { tier: ip.adaptive ? 'adaptive' : 'custom', factor: ip.compression }, format: ip.convert, cropSize: ip.crop,
+          ...job, ...size, aggressive, compression: { tier: ip.lossless ? 'lossless' : ip.adaptive ? 'adaptive' : 'custom', factor: ip.compression }, format: ip.convert, cropSize: ip.crop,
           stripMetadata: s.stripMetadata, preserveColorMetadata: s.preserveColorMetadata, gifFrameDropBehaviour: s.gifFrameDropBehaviour,
         });
         // The engine names a JPEG result `.jpeg`; a file that kept its format keeps its own extension (`.jpg`, `.tif`).
