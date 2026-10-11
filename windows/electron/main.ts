@@ -91,7 +91,7 @@ let marker: OptimisedMarker, folders: FolderResults, watchers: FolderWatcher[] =
 let home = '', sessionDir = '';
 /** Folders of the work directory's temp folder that hold pipeline results cards show; kept from the cleaner for the session. */
 const keptRoots = new Set<string>();
-let batch: ReturnType<typeof setupBatch> | undefined;
+let batch: ReturnType<typeof setupBatch> | undefined, batchSettled = false;
 /** Results from watched folders in `dirsHideFloatingResult`; they never show as floating results. */
 const quiet = new Set<string>();
 /** Results that hid or were dismissed, latest last, for "Bring back last result". */
@@ -1168,7 +1168,12 @@ else {
     }
     if (app.isPackaged) stopUpdates = updates.start();
   }).catch(error => { dialog.showErrorBox('Clop could not start', message(error)); app.quit(); });
-  app.on('before-quit', () => { quitting = true; stopUpdates?.(); for (const collector of verbCollectors.values()) collector.cancel(); withdrawPipe?.(); void pipe?.close(); engine?.abort(); batch?.host.stop(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
+  app.on('before-quit', event => {
+    // A running batch is stopped, and quitting waits (briefly) for its files to settle: one being placed has moved its original aside.
+    const settling = batch?.host.stop();
+    if (settling && !batchSettled) { event.preventDefault(); void Promise.race([settling, new Promise(resolve => setTimeout(resolve, 15_000))]).finally(() => { batchSettled = true; app.quit(); }); }
+    if (quitting) return;
+    quitting = true; stopUpdates?.(); for (const collector of verbCollectors.values()) collector.cancel(); withdrawPipe?.(); void pipe?.close(); engine?.abort(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });
   app.on('activate', () => { if (engine) showLatest(); });
 }
