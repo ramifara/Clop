@@ -19,7 +19,7 @@ import type { Workdir } from '../workdir';
 import { BatchBackup } from './backup';
 import { pdfAspectRatio } from './crop';
 import type { BatchFile } from './scan';
-import type { BatchOutput, BatchParams } from './spec';
+import { checkOutputTemplate, type BatchOutput, type BatchParams } from './spec';
 
 // The batch run of BatchOptimiser.swift (BatchManager.startRun, runItem, placeResult, restoreFromBackup) on the core engines.
 
@@ -85,6 +85,7 @@ export class Batch extends EventEmitter {
   private backupsDeleted = false;
   constructor(files: readonly BatchFile[], readonly params: BatchParams, private readonly env: BatchEnv) {
     super();
+    checkOutputTemplate(params.output);
     this.items = files.map(file => ({ path: file.path, name: path.basename(file.path), kind: file.kind, status: 'queued', oldBytes: file.bytes, oldFormat: file.format }));
     this.backup = new BatchBackup(env.workdir, this.id, env.platform);
     for (const item of this.items) this.claimed.add(this.key(item.path));

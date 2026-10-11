@@ -310,3 +310,13 @@ test('an in-place result replaces the original without ever leaving its path emp
   assert.deepEqual(seen, [true], 'the original is still there once its backup is taken');
   assert.equal(batch.backup.result(a)?.originalRemoved, false);
 });
+
+test('a batch refuses a name template that would put a result outside its folder, before anything is written', async t => {
+  const { dir, files, env, params } = await setup(t);
+  const a = await write(path.join(files, 'a.jpg'), Buffer.from('x')), out = path.join(dir, 'out', 'inner');
+  for (const template of ['../escape-%f', '..\\%f', '/abs/%f']) {
+    assert.throws(() => new Batch([{ path: a, kind: 'image', bytes: 1, format: 'JPG' }], params({ output: { location: 'folder', folder: out, template } }), env), /stay inside the chosen folder/, template);
+  }
+  assert.throws(() => new Batch([{ path: a, kind: 'image', bytes: 1, format: 'JPG' }], params({ output: { location: 'sameFolder', template: '../%f' } }), env), /names a file/);
+  assert.equal(await exists(path.join(dir, 'out')), false);
+});

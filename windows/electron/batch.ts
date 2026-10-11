@@ -33,6 +33,8 @@ export class BatchHost {
   private truncated = false;
   private aggressive?: boolean;
   private batch?: Batch;
+  /** Folders the user picked in the folder chooser; results go only to these, never to a path the window names on its own. */
+  private readonly chosen = new Set<string>();
   private timer?: NodeJS.Timeout;
   constructor(private options: BatchHostOptions) {}
 
@@ -84,11 +86,20 @@ export class BatchHost {
     const prepared = new Map(this.files.map(file => [key(file.path), file]));
     const chosen = [...new Set(files.map(key))].map(file => prepared.get(file));
     if (chosen.some(file => !file)) throw new Error('Only files listed in the batch window can be optimised.');
-    const batch = new Batch(chosen as BatchFile[], parseBatchParams(params, folder => path.isAbsolute(folder)), this.options.env());
+    const parsed = parseBatchParams(params, folder => path.isAbsolute(folder));
+    if (parsed.output.location === 'folder' && !this.chosen.has(key(parsed.output.folder))) throw new Error('Choose the folder for the results with the folder button first.');
+    const batch = new Batch(chosen as BatchFile[], parsed, this.options.env());
     this.batch = batch; this.files = []; this.truncated = false;
     batch.on('change', () => this.publishSoon());
     this.publish();
     void batch.run().finally(() => this.publish());
+  }
+
+  /** Asks `pick` for a results folder and remembers what it returns: the only folders a batch may save into. */
+  async chooseFolder(pick: () => Promise<string | undefined>) {
+    const folder = await pick();
+    if (folder && path.isAbsolute(folder)) this.chosen.add(key(folder));
+    return folder;
   }
 
   private current(id: unknown) {

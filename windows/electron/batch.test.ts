@@ -95,3 +95,21 @@ test('a started batch runs, reports its rows, reverts, and a later drop starts a
   host.clear();
   assert.deepEqual([host.state().files, host.state().batch], [[], undefined]);
 });
+
+test('results go only to a folder the folder chooser returned', async t => {
+  const { dir, host, file } = await setup(t);
+  const a = await file('a.png'), out = path.join(dir, 'out'), other = path.join(dir, 'other');
+  await host.add([a]);
+  const params = (folder: string, template = '%f') => ({ ...defaultBatchParams(defaultSettings()), output: { location: 'folder', folder, template } });
+  await assert.rejects(host.start({ files: [a], params: params(out) }), /Choose the folder for the results/);
+  assert.equal(await host.chooseFolder(async () => undefined), undefined, 'a cancelled dialog allows nothing');
+  await assert.rejects(host.start({ files: [a], params: params(out) }), /Choose the folder/);
+  assert.equal(await host.chooseFolder(async () => out), out);
+  await assert.rejects(host.start({ files: [a], params: params(other) }), /Choose the folder/, 'only the chosen folder');
+  await assert.rejects(host.start({ files: [a], params: params(path.join(out, '..', 'other')) }), /Choose the folder/, 'not by walking around');
+  await assert.rejects(host.start({ files: [a], params: params(out, '../%f') }), /stay inside the chosen folder/);
+  assert.equal(host.state().batch, undefined);
+  await host.start({ files: [a], params: params(out + path.sep) });
+  assert.ok(host.state().batch, 'the chosen folder is accepted');
+  await until(() => host.state().batch?.phase !== 'running');
+});

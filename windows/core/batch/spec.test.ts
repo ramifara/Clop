@@ -5,7 +5,7 @@ import { DEFAULT_CROP_ASPECT_RATIOS, DEFAULT_CROP_SIZES } from '../data/cropSize
 import { cropGeometry } from '../media/crop-size';
 import { defaultSettings } from '../settings/schema';
 import { batchCrop, flipped, pdfAspectRatio, withOrientation } from './crop';
-import { defaultBatchParams, parseBatchParams, type BatchParams } from './spec';
+import { checkOutputTemplate, defaultBatchParams, parseBatchParams, type BatchParams } from './spec';
 
 const parse = (value: unknown) => parseBatchParams(value, folder => path.isAbsolute(folder));
 const ratio = (name: string) => DEFAULT_CROP_ASPECT_RATIOS.find(size => size.name === name)!;
@@ -45,6 +45,18 @@ test('invalid batch parameters are refused with a reason', () => {
     [{ ...base, output: { location: 'temporary' } }, /save location/], [{ ...base, image: { ...base.image, crop: { width: 0, height: 0 } } }, /crop size/],
   ];
   for (const [value, reason] of cases) assert.throws(() => parse(value), reason, JSON.stringify(value)?.slice(0, 120));
+});
+
+test('name templates cannot place a result outside the chosen folder or beside the original under another folder', () => {
+  const base = defaultBatchParams(defaultSettings()), folder = path.resolve('/tmp/out');
+  const folderOutput = (template: string) => ({ ...base, output: { location: 'folder', folder, template } });
+  for (const template of ['../escape', 'a/../../escape', '..\\escape', '..', '/etc/%f', '\\\\host\\share\\%f', 'C:\\Windows\\%f', 'C:%f', 'x/%P/%f', '%F', 'file:stream'])
+    assert.throws(() => parse(folderOutput(template)), /name template, which must stay inside/, template);
+  for (const template of ['%f-small', 'sub/%f', 'sub\\%y-%m\\%f', '.hidden/%f', 'a..b/%f', '%f.%e'])
+    assert.equal((parse(folderOutput(template)).output as { template: string }).template, template, template);
+  for (const template of ['sub/%f', '..\\%f', '../%f', '/abs/%f'])
+    assert.throws(() => parse({ ...base, output: { location: 'sameFolder', template } }), /name template, which names a file/, template);
+  assert.throws(() => checkOutputTemplate({ location: 'folder', folder, template: '../x' }), /stay inside/);
 });
 
 test('crop presets take the chosen orientation as BatchCropButton applies them', () => {

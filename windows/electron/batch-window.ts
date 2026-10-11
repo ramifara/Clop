@@ -40,10 +40,10 @@ export function setupBatch(options: BatchWindowOptions) {
       case 'delete-backups': await host.deleteBackups(args[0]); return;
       case 'failures': return host.failures(args[0]);
       case 'reveal': host.reveal(args[0]); return;
-      case 'choose-folder': {
-        const result = await dialog.showOpenDialog(window, { title: 'Save results to', properties: ['openDirectory', 'createDirectory'] });
+      case 'choose-folder': return await host.chooseFolder(async () => {
+        const result = await dialog.showOpenDialog(window!, { title: 'Save results to', properties: ['openDirectory', 'createDirectory'] });
         return result.canceled ? undefined : result.filePaths[0];
-      }
+      });
       case 'clear': host.clear(); return;
       case 'close': window.hide(); return;
       default: throw new Error('Unknown batch action.');

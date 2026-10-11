@@ -101,6 +101,19 @@ function oneOf<T>(value: unknown, list: readonly T[], what: string): T { return 
 const factor = (value: unknown, what: string) => typeof value === 'number' && value > 0.04 && value < 1 ? value : fail(what);
 const template = (value: unknown, what: string) => typeof value === 'string' && value.trim() && value.length <= 512 ? value : fail(what);
 
+/**
+ * Checks the name template of a batch's output, which is expanded into a path: next to the original it is a file name, so it
+ * cannot hold a separator; in a folder it may add subfolders, but never reach out of that folder (`..`), start somewhere else
+ * (a root, a drive, a share) or name another file's folder (`%P`, `%F`). Throws a reason; used for requests from the window
+ * and by `Batch` itself, so no caller can place a result outside the folder it was given.
+ */
+export function checkOutputTemplate(output: BatchOutput) {
+  if (output.location === 'inPlace') return;
+  const text = template(output.template, 'name template');
+  if (output.location === 'sameFolder') { if (/[\\/]/.test(text)) fail('name template, which names a file and cannot hold a folder'); return; }
+  if (text.split(/[\\/]/).includes('..') || /^[\\/]|:|%[PF]/.test(text)) fail('name template, which must stay inside the chosen folder');
+}
+
 /** A crop size with whole-pixel width and height (0 for one side scales to the other) and an optional relative rectangle. */
 export function parseCrop(value: unknown): CropSpec {
   const c = record(value, 'crop size');
@@ -115,14 +128,15 @@ export function parseCrop(value: unknown): CropSpec {
 }
 const strip = <T extends Fields>(value: T) => Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as { [K in keyof T]: Exclude<T[K], undefined> };
 
+const checked = (output: BatchOutput) => { checkOutputTemplate(output); return output; };
 function parseOutput(value: unknown, isAbsolute: (folder: string) => boolean): BatchOutput {
   const o = record(value, 'save location');
   switch (o.location) {
     case 'inPlace': return { location: 'inPlace' };
-    case 'sameFolder': return { location: 'sameFolder', template: template(o.template, 'name template') };
+    case 'sameFolder': return checked({ location: 'sameFolder', template: template(o.template, 'name template') });
     case 'folder': {
       const folder = typeof o.folder === 'string' && isAbsolute(o.folder) ? o.folder : fail('folder');
-      return { location: 'folder', folder, template: template(o.template, 'name template') };
+      return checked({ location: 'folder', folder, template: template(o.template, 'name template') });
     }
     default: return fail('save location');
   }
