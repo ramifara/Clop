@@ -365,3 +365,15 @@ test('outside a chosen folder, %f matches any text as on macOS, so a nested file
   assert.equal(await destinationPath(env, 'image', 'optimised', nested), nested, 'already under the templated folder');
   assert.equal(isTemplatedCopy(env, 'image', nested), true);
 });
+
+test('an agent\'s name template that expands to a network or device path is refused before a folder is made', async t => {
+  const { env, produced } = await setup(t);
+  const original = 'C:\\Users\\me\\photo';
+  const agent: PlacementEnv = { ...env, platform: 'win32', agent: true };
+  const refused = /is on a network share or a device/;
+  for (const template of ['%e\\\\host\\share\\%f', '%e//host/share/%f', '\\\\host\\share\\%f', '%e\\\\?\\UNC\\host\\share\\%f']) {
+    await assert.rejects(planPlacement(agent, { produced, original, type: 'image', overrides: { optimised: 'specificFolder', specificFolderTemplate: template } }), refused, template);
+    await assert.rejects(planPlacement(agent, { produced, original, type: 'image', overrides: { optimised: 'specificFolder', specificFolderTemplate: template, specificFolderRoot: 'C:\\Pictures' } }), /outside the chosen folder|network share/, template);
+  }
+  await assert.rejects(executePlacement(agent, { behaviour: 'specificFolder', dest: '\\\\host\\share\\photo' }, produced, original), refused, 'the placement itself checks its destination');
+});

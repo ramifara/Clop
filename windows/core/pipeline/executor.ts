@@ -61,7 +61,7 @@ async function runStep(run: RunState, step: PipelineStep, following: PipelineSte
     case 'copyToClipboard': return copyToClipboard(run, p);
     case 'copyLinkForSending': throw new Error('Share links need an upload target in Settings.');
     case 'fork': return fork(run, p.location, following);
-    case 'openWith': case 'shelveWith': case 'uploadWith': return effects.openWith(run.current, p.app);
+    case 'openWith': case 'shelveWith': case 'uploadWith': run.expanded(p.app); return effects.openWith(run.current, p.app);
     default: return runSolo(run, step, progress);
   }
 }

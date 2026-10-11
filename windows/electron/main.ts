@@ -594,7 +594,7 @@ function startClipboardFallback() {
 const optimiseWithCard = cardOptimiser({
   engine: () => engine, makeRoom, defaults,
   placement: (file, kind, req) => req.output || effectiveBehaviour(folderEnv(), kind, 'optimised', req.placement) === 'temporary' ? undefined
-    : folderPlacement(file, kind, folderEnv, value => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); }, req.placement),
+    : folderPlacement(file, kind, req.origin === 'mcp' ? () => ({ ...folderEnv(), agent: true }) : folderEnv, value => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); }, req.placement),
 });
 /** The placement environment of watched files, Explorer verbs and command-line cards. */
 const folderEnv = () => ({ settings, workdir, marker, home, counter: nameCounter ??= { value: settings.lastAutoIncrementingNumber } });

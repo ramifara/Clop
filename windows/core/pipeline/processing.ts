@@ -245,6 +245,8 @@ export async function runSolo(run: RunState, step: PipelineStep, progress: Progr
     }
     case 'watermark': {
       const file = run.resolve(p.image);
+      run.expanded(file);
+      run.local(path.resolve(file));
       if (!await exists(file)) throw new Error(`Watermark image not found: ${file}`);
       const watermark = { file, position: (WATERMARK_POSITIONS.includes(p.position as WatermarkPosition) ? p.position : 'bottomRight') as WatermarkPosition, opacity: p.opacity, scale: p.scale };
       const dir = await run.scratch();
@@ -259,11 +261,15 @@ export async function runSolo(run: RunState, step: PipelineStep, progress: Progr
   }
 }
 
+/** A path template expanded for an agent's run, refused when it names a network share or a device. */
+function expandedFor(run: RunState, template: string) { const text = run.resolve(template); run.expanded(text); return text; }
+
 /** `handleExtractPagesAsImages`: renders every page, optimises each image, and carries on with the image of a one-page PDF. */
 async function extractPages(run: RunState, { format, quality, location }: Params<'extractPagesAsImages'>, progress: Progress) {
   const input = run.current;
   const dir = location === 'temporaryFolder' ? await run.scratch()
-    : location !== 'sameFolder' && /[\\/]/.test(location) ? path.resolve(path.dirname(input), run.resolve(location)) : path.dirname(input);
+    : location !== 'sameFolder' && /[\\/]/.test(location) ? path.resolve(path.dirname(input), expandedFor(run, location)) : path.dirname(input);
+  run.local(dir);
   const pages = await renderPDFPages(input, dir, {
     format: format === 'png' ? 'png' : 'jpeg', scale: quality === 'low' ? 1 : quality === 'high' ? 3 : 2, optimise: run.settings.imageCompression, signal: run.signal, onProgress: progress,
   });

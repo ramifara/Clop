@@ -102,3 +102,29 @@ test('a stored step with a value out of range or empty is refused before it runs
   assert.deepEqual(w.effects.trashed, []);
   assert.equal((await w.run([makeStep('optimise', { dpi: 0 })], input)).didWork, true, 'a stored dpi of 0 means adaptive');
 });
+
+test('an agent\'s path step is judged where it is used: a token or capture that expands to nothing cannot make a network path', async t => {
+  const w = await pipelineWorkspace(t); if (!w) return;
+  const photo = w.file('photo.jpg'), bare = w.file('photo');
+  await writeFile(photo, 'pixels');
+  await graphic(40, 30).png().toFile(bare);
+  const agent = { fileType: 'image' as const, env: { settings: w.settings, workdir: w.workdir, counter: w.counter, marker: w.marker, agent: true } };
+  const refused = /is on a network share or a device\. Agents may only use files and folders on this PC's own drives/;
+  // The reviewer's reproduction: the capture matches nothing, so `$1//host/share/` is `//host/share/`.
+  await assert.rejects(w.run('if(regex: "^(z*)") -> copy(to: "$1//host/share/")', photo, agent), refused);
+  await assert.rejects(w.run('if(regex: "^(z*)") -> move(to: "$1//host/share/x")', photo, agent), refused);
+  await assert.rejects(w.run('if(regex: "^(z*)") -> delete(path: "$1//host/share/x")', photo, agent), refused);
+  await assert.rejects(w.run('if(regex: "^(z*)") -> rename(to: "$1//host/share/x")', photo, agent), refused);
+  // `%e` is empty for a file with no extension.
+  await assert.rejects(w.run([makeStep('copy', { to: '%e//host/share/' })], bare, agent), refused);
+  await assert.rejects(w.run([makeStep('copy', { to: '%e\\\\host\\share\\' })], bare, agent), refused);
+  // A leading `//` as written, and the long UNC form an empty token produces.
+  await assert.rejects(w.run([makeStep('copy', { to: '//host/share/' })], photo, agent), refused);
+  await assert.rejects(w.run([makeStep('copy', { to: '%e\\\\?\\UNC\\host\\share\\' })], bare, agent), refused);
+  await assert.rejects(w.run([makeStep('fork', { location: '%e//host/share/%f' })], bare, agent), refused);
+  await assert.rejects(w.run([makeStep('watermark', { image: '%e//host/share/logo.png' })], bare, agent), refused);
+  assert.deepEqual((await readdir(w.files)).sort(), ['photo', 'photo.jpg'], 'nothing was copied, moved or removed');
+  // Where the path is local, the same steps work for an agent.
+  assert.equal((await w.run('copy(to: "%P/copies/")', photo, agent)).file, path.join(w.files, 'copies', 'photo.jpg'));
+  assert.equal((await w.run('if(regex: "^(ph)") -> rename(to: "$1-renamed")', photo, agent)).file, w.file('ph-renamed.jpg'));
+});

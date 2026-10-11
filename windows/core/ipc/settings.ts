@@ -4,7 +4,7 @@ import { shortcutProblem } from '../shortcuts';
 import { isReadable, type Stored } from '../pipeline/codec';
 import { namesProgramByPath } from '../pipeline/app-resolve';
 import { stepEntry, stepPaths, type Pipeline, type PipelineStep, type PresetZone } from '../pipeline/model';
-import { isRemotePath, remotePathRefusal } from '../local-path';
+import { isRemoteTemplate, remotePathRefusal } from '../local-path';
 import { parsePipelineText } from '../pipeline/parser';
 import { SETTINGS_CHANGED, type MCPSettingInfo, type SettingsRequest, type SettingsResponse } from './protocol';
 
@@ -254,14 +254,14 @@ function remoteRefusal(values: Record<string, unknown>, settings: ClopSettings):
   for (const [key, value] of Object.entries(values)) {
     if (!isKey(key)) continue;
     const before = spec(key).parse(settings[key]) ?? settings[key], after = spec(key).parse(value) ?? value, known = new Set(texts(before));
-    const text = texts(after).find(item => !known.has(item) && isRemotePath(item));
+    const text = texts(after).find(item => !known.has(item) && isRemoteTemplate(item));
     if (text !== undefined) return remotePathRefusal(text);
     const was = placedPipelines(key, before);
     for (const [place, entries] of placedPipelines(key, after)) {
-      if (!was.has(place) && isRemotePath(place)) return remotePathRefusal(place);
+      if (!was.has(place) && isRemoteTemplate(place)) return remotePathRefusal(place);
       const kept = new Set((was.get(place) ?? []).map(json));
       for (const entry of entries) {
-        const found = isReadable(entry) && !kept.has(json(entry)) ? entry.steps.flatMap(stepPaths).find(isRemotePath) : undefined;
+        const found = isReadable(entry) && !kept.has(json(entry)) ? entry.steps.flatMap(stepPaths).find(isRemoteTemplate) : undefined;
         if (found !== undefined) return remotePathRefusal(found);
       }
     }

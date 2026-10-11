@@ -13,6 +13,7 @@ import { toPNG } from '../core/media/image-codecs';
 import { stripExifFile, type StripKeep } from '../core/media/strip-copy';
 import { cropPDF, extendPDF, uncropPDF } from '../core/media/pdf';
 import { queue, run } from '../core/run';
+import { requireLocalDrive, requireNotRemote } from '../core/local-path';
 import { expandPathTemplate, expandTemplate, type Counter } from '../core/template';
 import { ExitCode, ValidationError } from './args';
 import { openWorkdir } from './backend';
@@ -92,9 +93,14 @@ The extension of the conversion format is automatically added.`, 'o'),
 /** `ConvertLegacyCommand.convert`: AVIF and WebP through sharp, HEIC through heif-enc (the macOS CLI uses heif-enc and cwebp). */
 async function convert(ctx: Context, file: string, format: string, quality: number, output: string | undefined, force: boolean, counter: Counter) {
   const { dir, name } = path.parse(file);
+  const agent = ctx.origin === 'mcp';
   let target = output ? expandPathTemplate(output, { path: file, counter }).replace(/\.[^.\\/]*$/, '') : path.join(dir, name);
+  // Whatever the template's tokens made of the path is judged before it is looked up, for an agent.
+  requireNotRemote(agent, target);
+  requireLocalDrive(agent, path.resolve(target));
   if (output && (/[\\/]$/.test(output) || (await stat(target).catch(() => undefined))?.isDirectory())) target = path.join(target, name);
   target = `${target}.${format}`;
+  requireLocalDrive(agent, path.resolve(target));
   ctx.io.out(`${dim(`${CIRCLE()} Converting ${underline(shellString(file))} to ${bold(format)}`)}\n`);
   const temp = await mkdtemp(path.join(os.tmpdir(), 'clop-convert-')), produced = path.join(temp, path.basename(target));
   try {
@@ -177,6 +183,11 @@ async function pdfs(ctx: Context, items: string[], recursive: boolean, output: s
  * own `.pdf` is dropped, since the extension is added after it (macOS writes `-o a4.pdf` as `a4.pdf.pdf`).
  */
 async function pdfOutput(pdf: string, output: string | undefined, ctx: Context, counter: Counter) {
+  const dest = await pdfDestination(pdf, output, ctx, counter);
+  requireLocalDrive(ctx.origin === 'mcp', path.resolve(dest));
+  return dest;
+}
+async function pdfDestination(pdf: string, output: string | undefined, ctx: Context, counter: Counter) {
   if (output === undefined) return pdf;
   output = output.replace(/\.pdf$/i, '');
   if (/[\\/]/.test(output)) {

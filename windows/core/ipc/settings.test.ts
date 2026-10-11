@@ -159,7 +159,7 @@ test('agents may not point the working directory, a name template, a watched fol
   const store = memoryStore({ mcpEnabled: true, mcpAllowScriptSteps: true });
   const mcp = (req: Omit<SettingsRequest, 'origin'>) => handleSettingsRequest({ ...req, origin: 'mcp' }, store);
   const refused = /is on a network share or a device\. Agents may only use files and folders on this PC's own drives/;
-  for (const [key, value] of [['workdir', '\\\\server\\share\\work'], ['specificFolderNameTemplateImage', '\\\\server\\share\\%f'], ['convertedSameFolderNameTemplateVideo', '//server/share/%f'], ['customNameTemplateForClipboardImages', '\\\\?\\UNC\\server\\share\\%f']]) {
+  for (const [key, value] of [['workdir', '\\\\server\\share\\work'], ['specificFolderNameTemplateImage', '\\\\server\\share\\%f'], ['convertedSameFolderNameTemplateVideo', '//server/share/%f'], ['customNameTemplateForClipboardImages', '\\\\?\\UNC\\server\\share\\%f'], ['sameFolderNameTemplateImage', '%e\\\\host\\share\\%f'], ['specificFolderNameTemplateVideo', '$1//host/share/%f']]) {
     assert.match((await mcp({ action: 'set', key, value })).error!, refused, key);
     assert.match((await mcp({ action: 'update', values: { [key]: value } })).error!, refused, key);
   }
@@ -169,6 +169,8 @@ test('agents may not point the working directory, a name template, a watched fol
     { pipelinesToRunOnImage: { '\\\\server\\share': [step('optimise()')] } },
     { pipelinesToRunOnImage: { clipboard: [step('copy(to: "\\\\\\\\server\\\\share\\\\")')] } },
     { savedPipelines: [step('watermark(image: "//server/share/logo.png")')] },
+    { pipelinesToRunOnImage: { clipboard: [step('if(regex: "^(z*)") -> copy(to: "$1//host/share/")')] } },
+    { savedPipelines: [step('rename(to: "%e//host/share/x")')] },
     { presetZones: [{ id: 'z-all', icon: 'x', name: 'z', pipeline: step('delete(path: "\\\\\\\\.\\\\C:\\\\x")') }] },
   ]) assert.match((await mcp({ action: 'update', values })).error!, refused, JSON.stringify(values));
   assert.equal((await mcp({ action: 'set', key: 'workdir', value: 'D:\\Clop work' })).ok, true, 'a drive path is fine');

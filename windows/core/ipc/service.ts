@@ -7,7 +7,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline as pump } from 'node:stream/promises';
 import { copyTo, exists, moveTo, pathKey, samePath } from '../fileops';
-import { agentPathRefusal } from '../local-path';
+import { agentPathRefusal, requireLocalDrive } from '../local-path';
 import type { OptimisedMarker } from '../marker';
 import { detectKind, probe } from '../media/detect';
 import { cropPDF, optimisePDF, PDF_DPI_NO_DOWNSAMPLE } from '../media/pdf';
@@ -281,12 +281,13 @@ export class ClopService {
       await previous;
       signal.throwIfAborted();
       const input = urlPath(url) ?? await download(url, deps.workdir, signal, req.origin === 'mcp');
+      requireLocalDrive(req.origin === 'mcp', input);
       if (!await exists(input)) throw new Error(`File not found: ${input}`);
       if (!(await stat(input)).isFile()) throw new Error(`Not a file: ${input}`);
       const kind = await detectKind(input, { signal });
       if (!kind) throw new Error(`Clop cannot optimise ${path.basename(input)}: it is not an image, video, audio file or PDF.`);
       const before = await facts(input, kind), settings = deps.store.get();
-      const env: PlacementEnv = { settings: requestSettings(settings, req, kind), workdir: deps.workdir, counter, marker: deps.marker, home: deps.home };
+      const env: PlacementEnv = { settings: requestSettings(settings, req, kind), workdir: deps.workdir, counter, marker: deps.marker, home: deps.home, agent: req.origin === 'mcp' };
       // Agents only run script steps, and open programs by path, when the user allowed them; anyone else runs their own pipelines.
       const allowScripts = req.origin !== 'mcp' || settings.mcpAllowScriptSteps;
       const settingsStep = pipeline && !pipeline.skipOptimisation ? makeStep('optimise', { encoder: req.aggressiveOptimisation ? 'aggressive' : 'medium', adaptive: false, location: optimisedLocation(env, kind, req.placement) }) : undefined;

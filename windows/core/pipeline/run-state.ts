@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { requireLocalDrive, requireNotRemote } from '../local-path';
 import { defaultMarker } from '../marker';
 import type { PlacementEnv, PlacementOverride } from '../placement';
 import { expandTemplate, resolveHome } from '../template';
@@ -68,6 +69,12 @@ export class RunState {
   constructor(input: string, readonly opts: PipelineRunOptions) { this.original = this.current = path.resolve(input); }
   get settings() { return this.opts.env.settings; }
   get fileType() { return this.opts.fileType; }
+  /** Whether an agent started the run: every path a step uses, once expanded, must be on a local drive. */
+  get agent() { return this.opts.env.agent === true; }
+  /** Refuses an agent's path, as its tokens and captures expanded it, that is on a network share or a device. Call it before the text is resolved. */
+  expanded(...texts: string[]) { requireNotRemote(this.agent, ...texts); }
+  /** Refuses an agent's resolved path that is not a local drive-letter path. Call it before the path is looked up or written. */
+  local(...files: string[]) { for (const file of files) requireLocalDrive(this.agent, file, this.opts.env.platform); }
   get signal() { return this.opts.signal; }
   marker() { return this.opts.env.marker ?? defaultMarker(); }
   mark(file: string) { return this.marker().markOptimised(file).catch(() => {}); }

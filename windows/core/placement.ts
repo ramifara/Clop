@@ -1,6 +1,7 @@
 import { access, constants, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { copyTo, exists, moveTo, samePath } from './fileops';
+import { requireLocalDrive } from './local-path';
 import { defaultMarker, type OptimisedMarker } from './marker';
 import type { ClopSettings } from './settings/schema';
 import { expandPathTemplate, expandTemplate, isAbsoluteTemplate, nameMatchesTemplate, resolveHome, type Counter } from './template';
@@ -25,6 +26,8 @@ export interface PlacementEnv {
   marker?: OptimisedMarker;
   home?: string;
   platform?: NodeJS.Platform;
+  /** The request comes from an agent: every destination, once its template is expanded, must be on a local drive. */
+  agent?: boolean;
 }
 export interface PlacementPlan {
   behaviour: FileBehaviour;
@@ -66,6 +69,8 @@ function templateOf(env: PlacementEnv, type: FileType, kind: OutputKind, folder:
 const platformOf = (env: PlacementEnv) => env.platform ?? process.platform;
 const pathApi = (env: PlacementEnv) => (env.platform ?? process.platform) === 'win32' ? path.win32 : path.posix;
 const context = (env: PlacementEnv, file: string) => ({ path: file, counter: env.counter, home: env.home, platform: env.platform });
+/** Refuses an agent's destination that expansion turned into a network share or a device, before anything looks at it. */
+const checkedDestination = (env: PlacementEnv, dest: string) => { requireLocalDrive(env.agent, dest, platformOf(env)); return dest; };
 const stemOf = (file: string, env: PlacementEnv) => pathApi(env).parse(file).name;
 const withoutExtension = (file: string, env: PlacementEnv) => { const p = pathApi(env), { dir, name } = p.parse(file); return p.join(dir, name); };
 
@@ -79,6 +84,7 @@ async function rootedDestination(env: PlacementEnv, template: string, root: stri
   const held = inside(original);
   if (held && nameMatchesTemplate(withoutExtension(held, env), template, { platform, singleFileName: true })) return original;
   const dest = expandPathTemplate(template, { ...context(env, original), relativeTo: root });
+  checkedDestination(env, dest);
   if (!inside(dest)) throw new Error(`The name template ${template} puts ${stemOf(original, env)} outside the chosen folder.`);
   await mkdir(p.dirname(dest), { recursive: true });
   return dest;
@@ -97,14 +103,14 @@ export async function destinationPath(env: PlacementEnv, type: FileType, kind: O
     case 'sameFolder': {
       const template = templateOf(env, type, kind, 'same', overrides);
       if (nameMatchesTemplate(stemOf(original, env), template, { platform })) return original;
-      return pathApi(env).join(pathApi(env).dirname(original), expandTemplate(template, context(env, original)));
+      return checkedDestination(env, pathApi(env).join(pathApi(env).dirname(original), expandTemplate(template, context(env, original))));
     }
     case 'specificFolder': {
       const template = templateOf(env, type, kind, 'specific', overrides), root = overrides?.specificFolderRoot;
       if (root !== undefined) return rootedDestination(env, template, root, original);
       const absolute = isAbsoluteTemplate(template, env);
       if (nameMatchesTemplate(withoutExtension(original, env), template, { allowPathPrefix: !absolute, platform })) return original;
-      const dest = expandPathTemplate(template, context(env, original));
+      const dest = checkedDestination(env, expandPathTemplate(template, context(env, original)));
       await mkdir(pathApi(env).dirname(dest), { recursive: true });
       return dest;
     }
@@ -138,6 +144,7 @@ export async function planPlacement(env: PlacementEnv, args: { produced: string;
   if (!dest) return { behaviour };
   const p = pathApi(env), extension = placedExtension(produced, original);
   if (p.extname(dest).toLowerCase() !== extension.toLowerCase()) dest = p.join(p.dirname(dest), p.parse(dest).name + extension);
+  checkedDestination(env, dest);
   // Replacing a file needs write access to the folder holding it, not to the file.
   const folder = p.dirname(dest);
   await access(folder, constants.W_OK).catch(() => { throw new Error(`Clop cannot write to ${folder}. Choose a folder you can write to.`); });
@@ -174,6 +181,7 @@ export function executePlacement(env: PlacementEnv, plan: PlacementPlan, produce
 async function place(env: PlacementEnv, plan: PlacementPlan, produced: string, original: string): Promise<PlacedOutput> {
   if (!plan.dest) return { path: produced, originalRemoved: false };
   const { dest } = plan, { workdir } = env;
+  checkedDestination(env, dest);
   let backup: string | undefined, originalRemoved = false, moved = false, replaced: string | undefined, away: (() => Promise<void>) | undefined;
   // A different file already at the destination (a template collision, or `shot.webp` beside `shot.png`) would be lost to the copy, so keep it first.
   const same = (a: string, b: string) => samePath(a, b, platformOf(env));

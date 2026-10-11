@@ -145,6 +145,8 @@ async function runFile(run: RunState, script: string | undefined, code: string |
   // One absolute path to another existing file of the kind being processed (or an unknown kind) carries on. Several lines
   // are the script's own log; one line that names no usable file is reported, so a mangled path does not go unnoticed.
   if (!printed || /[\r\n]/.test(printed) || (path.isAbsolute(printed) && samePath(printed, input))) return;
+  run.expanded(printed);
+  if (path.isAbsolute(printed)) run.local(path.resolve(printed));
   if (!path.isAbsolute(printed) || !await isFile(printed)) { run.warnings.push(`Script '${name}' printed a path that was not found, so the pipeline carried on with ${input}: ${printed}`); return; }
   const kind = await detectKind(printed, { signal: run.signal }).catch(() => undefined);
   if (!kind || kind === run.fileType) run.current = path.resolve(printed);
@@ -159,6 +161,8 @@ export async function runScript(run: RunState, { path: scriptPath, code }: { pat
   if (code?.trim()) return runFile(run, undefined, code, 'runScript');
   const script = run.resolve(scriptPath ?? '');
   if (!path.isAbsolute(script)) throw new Error(`runScript needs the full path of a script, such as "%P/fix.ps1" or "~/scripts/fix.ps1", not "${script}".`);
+  run.expanded(script);
+  run.local(path.resolve(script));
   return runFile(run, path.resolve(script), undefined, 'runScript');
 }
 

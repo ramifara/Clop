@@ -61,14 +61,17 @@ export async function applyLocation(run: RunState, location: string, result: str
   }
   const resolved = run.resolve(location);
   if (!resolved) return result;
+  run.expanded(resolved);
   const ext = ownExtension.slice(1);
   let dest: string;
   if (!SEPARATOR.test(resolved)) dest = path.join(path.dirname(original), hasFileExtension(resolved, [ext]) ? resolved : `${resolved}.${ext}`);
   else {
     const absolute = path.resolve(path.dirname(original), resolved);
+    run.local(absolute);
     dest = endsInSeparator(resolved) || await isDirectory(absolute) ? path.join(absolute, name) : absolute;
   }
   if (!hasFileExtension(path.basename(dest), [extension(result), extension(original)]) && ext) dest = `${dest}.${ext}`;
+  run.local(dest);
   if (samePath(dest, result)) return result;
   if (run.opts.refuseExisting && !fromSettings && ![original, run.original].some(file => samePath(dest, file)) && await exists(dest)) {
     throw new Error(`${dest} already exists, and this request may not replace a file that is already there: ask for an output path that doesn't exist yet.`);
@@ -90,6 +93,8 @@ async function keepCollision(run: RunState, dest: string) {
  */
 async function fileDestination(run: RunState, to: string): Promise<string> {
   const named = run.resolve(to), resolved = path.resolve(path.dirname(run.current), named);
+  run.expanded(named);
+  run.local(resolved);
   if (endsInSeparator(to) || endsInSeparator(named) || await isDirectory(resolved)) {
     await mkdir(resolved, { recursive: true });
     return path.join(resolved, path.basename(run.current));
@@ -122,6 +127,8 @@ export async function renameStep(run: RunState, to: string) {
   const last = name.split(SEPARATOR).at(-1) ?? name, ext = extension(run.current);
   if (!hasFileExtension(last, [ext]) && ext) name += `.${ext}`;
   const dest = path.join(path.dirname(run.current), name);
+  run.expanded(name);
+  run.local(dest);
   await keepCollision(run, dest);
   run.current = await moveTo(run.current, dest);
 }
@@ -131,6 +138,8 @@ export async function deleteStep(run: RunState, target: string) {
   const named = target === 'sourceFile' ? run.original : run.resolve(target).trim();
   if (!named) return;
   const resolved = path.resolve(path.dirname(run.current), named);
+  run.expanded(named);
+  run.local(resolved);
   const info = await stat(resolved).catch(() => undefined);
   if (info) await run.opts.effects.trash(resolved, info.isDirectory() ? 'folder' : 'file');
 }

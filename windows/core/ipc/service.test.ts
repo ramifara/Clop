@@ -113,7 +113,8 @@ test('an agent\'s request that names a network share or a device anywhere is ref
   await graphic(50, 50).png().toFile(input);
   const before = (await stat(input)).mtimeMs, local = fileURL(input);
   const requests: (Partial<OptimisationRequest> & { urls: string[] })[] = [
-    { urls: ['file://server/share/a.png'] }, { urls: [local], output: '\\\\server\\share\\%f' },
+    { urls: ['file://server/share/a.png'] }, { urls: [local], output: '\\\\server\\share\\%f' }, { urls: [local], output: '%e\\\\host\\share\\%f' }, { urls: [local], placement: { optimised: 'sameFolder', sameFolderTemplate: '%e//host/share/%f' } },
+    { urls: [local], pipeline: 'if(regex: "^(z*)") -> copy(to: "$1//host/share/")' },
     { urls: [local], placement: { optimised: 'specificFolder', specificFolderTemplate: '//server/share/%f' } },
     ...['copy(to: "\\\\\\\\server\\\\share\\\\")', 'move(to: "//server/share/")', 'watermark(image: "\\\\\\\\server\\\\share\\\\logo.png")', 'delete(path: "\\\\\\\\?\\\\UNC\\\\server\\\\share")', 'optimise(location: "\\\\\\\\.\\\\C:\\\\out\\\\%f")', 'runScript(path: "//server/share/x.ps1")', 'openWith(app: "\\\\\\\\server\\\\share\\\\x.exe")'].map(pipeline => ({ urls: [local], pipeline })),
   ];
