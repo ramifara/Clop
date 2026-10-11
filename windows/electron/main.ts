@@ -22,6 +22,7 @@ import { appsReply } from './apps';
 import { conflictNotice, shortcutProblem, ShortcutRegistry, shortcutsFor, type ShortcutAction } from '../core/shortcuts';
 import { describeAccelerator } from '../src/settings/accelerator';
 import { ShortcutRunner } from './shortcut-actions';
+import { protectFromCapture } from './capture';
 import { guarded, recentClipboard, toTemplate, trayMenu, trayTooltip, trayVariant, type TrayActions, type TrayVariant } from './tray-menu';
 import { allPipelineChoices, appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
 import { seedBuiltinPipelines } from '../core/pipeline/builtins';
@@ -300,6 +301,7 @@ async function createWindows() {
   main = new BrowserWindow({ width: 920, height: 660, minWidth: 720, minHeight: 480, show: false, backgroundColor: '#f3f1ef', title: 'Clop settings', autoHideMenuBar: true, webPreferences: windowPreferences });
   floating = new BrowserWindow({ width: 236, height: 206, frame: false, resizable: false, transparent: true, show: false, skipTaskbar: true, alwaysOnTop: settings.floatingResultsAlwaysOnTop, backgroundColor: '#00000000', webPreferences: windowPreferences });
   configure(main); configure(floating);
+  protectFromCapture(floating, settings.allowClopToAppearInScreenshots);
   await load(main, { preferences: '1' }); await load(floating, { floating: '1' });
   positionFloating();
   floating.setIgnoreMouseEvents(true, { forward: true });
@@ -708,7 +710,7 @@ async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
 /** The shortcuts and the windows' screenshot protection follow the settings, whichever way they changed. */
 function applyWindowSettings() {
   syncShortcuts();
-  for (const window of BrowserWindow.getAllWindows()) protectFromCapture(window);
+  protectFromCapture(floating, settings.allowClopToAppearInScreenshots);
 }
 let lastShortcutProblem: string | undefined;
 /** Registers what the settings ask for. A conflict is announced once, all together, and not again at later launches; unusable trigger keys (set from a file) are said once. */
@@ -720,8 +722,6 @@ function syncShortcuts() {
   const problem = shortcutProblem(settings);
   if (problem !== lastShortcutProblem) { lastShortcutProblem = problem; if (problem) inform(`The global shortcuts are off: ${problem}`); }
 }
-// "Show Clop UI in screenshots": every window of Clop is hidden from screenshots and recordings unless it is on, including windows made later.
-function protectFromCapture(window: BrowserWindow) { if (!window.isDestroyed()) window.setContentProtection(!settings.allowClopToAppearInScreenshots); }
 /** Presses inside Clop's own windows, the crop and compare windows too, never start a drag. */
 function nativeSettings() {
   return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating, editorWindow, ...views.values(), batch?.window()].filter((window): window is BrowserWindow => !!window && !window.isDestroyed()).map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
@@ -952,7 +952,6 @@ ipcMain.on('clop:drag', (event, id: string) => {
     if (dismissOnDrop && process.platform === 'win32') setTimeout(() => { if (engine.has(id) && !over()) void dismiss(id); }, 250);
   } catch (error) { inform(message(error)); }
 });
-app.on('browser-window-created', (_event, window) => protectFromCapture(window));
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', (_event, argv) => {
