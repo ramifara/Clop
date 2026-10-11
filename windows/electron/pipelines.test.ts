@@ -238,3 +238,17 @@ test('a pipeline that makes a video a GIF gives the card the GIF\'s kind, so its
   await f.engine.apply(id, { ...balanced, scale: 0.5 });
   assert.equal(f.engine.get(id).result.status, 'ready', f.engine.get(id).result.error);
 });
+
+test('a copied video, PDF or audio file is optimised before its pipelines even when they all skip optimisation', async t => {
+  const f = await setup(t); if (!f) return;
+  const convert = [pipeline('WEBP', 'convert(to: webp)')];
+  const options = { host: f.host, context: { kind: 'image' as const }, fallback: true };
+  assert.equal(attachedAutomation(convert, options)!.skipOptimisation, true, 'a copied image goes straight to its pipelines');
+  const always = attachedAutomation(convert, { ...options, alwaysOptimise: true })!;
+  assert.equal(always.skipOptimisation, false);
+  let optimised: string | undefined;
+  const run = always.run;
+  always.run = async input => { optimised = input.optimised; return run(input); };
+  await f.engine.importPath(await f.image('shot.png', 600, 400), 'clipboard', balanced, undefined, { automation: always });
+  assert.ok(optimised, 'the pipelines start from the optimised file');
+});

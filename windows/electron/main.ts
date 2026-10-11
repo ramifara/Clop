@@ -286,14 +286,20 @@ function afterPipelines(id: string | undefined, outcome: PipelinesOutcome, sourc
   // Not awaited: the fork's job queues behind the one that is running.
   for (const fork of outcome.forks) void makeRoom().then(() => engine.importPath(fork, source, defaults(), undefined, { automation: AS_IS })).catch(error => inform(message(error)));
 }
-/** The pipelines attached to the clipboard for a copied file of `kind`, as an import's automation. */
-function clipboardAutomation(kind: MediaKind, app?: CopyingApp): ImportExtra | undefined {
+/**
+ * The pipelines attached to `source` (`clipboard` or `dropZone`) for a file of `kind`, as an import's automation. A copied image
+ * skips the usual optimisation when every pipeline does (Images.swift); a copied video, PDF or audio file is optimised first
+ * (ClopApp.swift), then the pipelines run. A drop skips it for every kind (OptimisationUtils.swift) and is optimised anyway when
+ * no pipeline did anything.
+ */
+function attachedExtra(kind: MediaKind, source: 'clipboard' | 'dropZone', result: ItemResult['source'], app?: CopyingApp): ImportExtra | undefined {
   let id: string | undefined;
-  const automation = attachedAutomation(attachedPipelines(kind, 'clipboard', settings, home), {
-    host: pipelineHost, context: { kind, sourceApp: app }, fallback: true, done: outcome => afterPipelines(id, outcome, 'clipboard'),
+  const automation = attachedAutomation(attachedPipelines(kind, source, settings, home), {
+    host: pipelineHost, context: { kind, sourceApp: app }, fallback: true, alwaysOptimise: source === 'clipboard' && kind !== 'image', done: outcome => afterPipelines(id, outcome, result),
   });
   return automation && { automation, staged: staged => { id = staged; } };
 }
+const clipboardAutomation = (kind: MediaKind, app?: CopyingApp) => attachedExtra(kind, 'clipboard', 'clipboard', app);
 /** The pipelines attached to the watched folder `dir`. When they replace optimisation and none did anything, the card stays out of sight, as on macOS. */
 function folderAutomation(file: string, kind: MediaKind, dir: string, id: () => string | undefined) {
   const pipelines = attachedPipelines(kind, dir, settings, home), replaces = pipelinesSkipOptimisation(pipelines);
