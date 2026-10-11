@@ -124,6 +124,7 @@ test('name templates apply under Same folder and path templates under Specific f
  * change wires a setting, remove it here and from the row's `ui.pending`; a new row that does nothing must be added here knowingly.
  */
 const PENDING_KEYS = [
+  'audioFormat',
   'autoHideClipboardResultAfter', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter',
   'convertHDRToSDR', 'defaultLinkExpiration', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnUpload',
   'enableFloatingResults', 'followCursorScreen', 'formatsToConvertToJPEG', 'formatsToConvertToMP4',
