@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -13,6 +13,7 @@ import { ItemEngine } from './items';
 import { MediaFiles } from './media-files';
 import { applyCrop, cropSource, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
 import { compareSources, parseCompareView } from './compare';
+import { viewFile } from './previews';
 
 const balanced = { mode: 'balanced', format: 'auto', scale: 1 } as const;
 const size = (width: number, height: number, cropRect?: CropSize['cropRect'], name = ''): CropSize => ({ width, height, name, longEdge: false, smartCrop: false, ...(cropRect ? { cropRect } : {}) });
@@ -177,6 +178,11 @@ test('crop and compare work on the file a pipeline left, which is outside the se
   const compare = await compareSources(engine.get(id), { page: 3 }, files);
   assert.equal(compare.pages, 3);
   assert.ok((await fetchFile(files, compare.result.url)).length > 0);
+  // A page change asks again: the copy of the pipeline's file made for this revision is served, not made anew.
+  const copy = viewFile(engine.get(id).directory, piped, `compare-r${piping}.pdf`), made = (await stat(copy)).mtimeMs;
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal((await compareSources(engine.get(id), { page: 2 }, files)).pages, 3);
+  assert.equal((await stat(copy)).mtimeMs, made, 'not copied again');
   await engine.crop(id, { type: 'pdf-aspect', aspectRatio: 1, orientation: 'adaptive', extend: false });
   assert.equal(engine.get(id).result.status, 'ready', engine.get(id).result.error);
   assert.equal((await boxes(engine.output(id))).length, 3, 'the crop started from the pipeline\'s file, not the optimised one');

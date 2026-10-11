@@ -1,4 +1,4 @@
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { audioMetadata } from '../core/media/audio';
 import { loadPDF } from '../core/media/pdf';
@@ -18,11 +18,14 @@ export function parseCompareView(value: unknown): { page: number } {
 /**
  * The file the window shows as the result: a pipeline's file when one replaced the optimised one. A file outside the session
  * (the user's folder) is served from a copy named for the revision, since only session files get a URL and the same path can hold a new file.
+ * The copy is made once per revision: one that is still there, as new as the file and the same size, is served again (every page change asks).
  */
 async function currentResult(entry: ViewEntry): Promise<string> {
   const file = entry.placedPath ?? entry.outputPath, inside = path.relative(entry.directory, file);
   if (!entry.placedPath || (inside && !inside.startsWith('..') && !path.isAbsolute(inside))) return file;
   const copy = viewFile(entry.directory, file, `compare-r${entry.revision ?? 0}${path.extname(file)}`);
+  const [source, kept] = await Promise.all([stat(file), stat(copy).catch(() => undefined)]);
+  if (kept && kept.size === source.size && kept.mtimeMs >= source.mtimeMs) return copy;
   await mkdir(path.dirname(copy), { recursive: true });
   await copyFile(file, copy);
   return copy;
