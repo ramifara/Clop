@@ -12,7 +12,7 @@ import { needTools } from '../core/testing';
 import { DECLINED_PREFIX, INSTRUCTIONS, SMALLER_OPTIONS_TEXT } from './mcp-copy';
 import { connect, folder, removeFolder } from './mcp.fixtures';
 import { TOOLS } from './mcp-table';
-import { annotate, speedSteps, withFrames } from './mcp-tools';
+import { annotate, inTurn, speedSteps, withFrames, writesSettings } from './mcp-tools';
 
 // A hung server must fail one test, not run out the CI job.
 const TIMEOUT = 120_000;
@@ -121,6 +121,41 @@ test('questions: an agent that may not make changes is refused before the file i
   assert.equal(refused.error, true);
   assert.match(refused.text, /^Clop is not accepting changes from agents/);
   assert.match((await declining.call('clop_optimise', { paths: ['nope.mp4'], playbackSpeedFactor: 2 })).text, /^Clop is not accepting changes from agents/);
+});
+
+test('questions: no tool that takes files looks one up before the gate has answered', { timeout: TIMEOUT }, async t => {
+  const f = await folder(t);
+  const seen: string[] = [];
+  const { call } = await connect(t, f, { extra: { lookedUp: file => { seen.push(file); } } });
+  const files = ['\\\\server\\share\\a.mp4'];
+  for (const [tool, args] of [['clop_optimise', { paths: files }], ['clop_pipeline_run', { pipeline: 'optimise()', paths: files }], ['clop_pipeline_run', { pipeline: 'changeSpeed(factor: 2)', paths: files }]] as const) {
+    const refused = await call(tool, args);
+    assert.match(refused.text, /^Clop is not accepting changes from agents/, tool);
+  }
+  assert.deepEqual(seen, [], 'a network path would have been contacted');
+  // The same call is looked at once the switch is on.
+  await f.settle({ mcpEnabled: true });
+  await call('clop_pipeline_run', { pipeline: 'optimise()', paths: files });
+  assert.ok(seen.length > 0);
+});
+
+test('only the commands that write settings take turns: a slow pipeline run does not hold up a settings read', async () => {
+  assert.deepEqual(['settings set', 'pipeline add', 'pipeline delete', 'pipeline attach', 'pipeline detach', 'pipeline preset', 'logs persist'].map(text => writesSettings(text.split(' '))), Array(7).fill(true));
+  assert.deepEqual(['settings get', 'settings schema', 'pipeline run', 'pipeline list', 'pipeline show', 'pipeline prompt', 'optimise', 'logs status', 'mcp status'].map(text => writesSettings(text.split(' '))), Array(9).fill(false));
+  let release!: () => void;
+  const slow = inTurn(['pipeline', 'run'], () => new Promise<string>(resolve => { release = () => resolve('ran'); }));
+  assert.equal(await inTurn(['settings', 'get'], async () => 'read'), 'read', 'the read did not wait for the run');
+  assert.equal(await inTurn(['pipeline', 'run'], async () => 'second run'), 'second run', 'nor did a second run');
+  // Writes still take turns.
+  const order: string[] = [];
+  let free!: () => void;
+  const first = inTurn(['settings', 'set'], async () => { await new Promise<void>(resolve => { free = resolve; }); order.push('first'); });
+  const second = inTurn(['settings', 'set'], async () => { order.push('second'); });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(order, []);
+  free(); await Promise.all([first, second]);
+  assert.deepEqual(order, ['first', 'second']);
+  release(); assert.equal(await slow, 'ran');
 });
 
 test('settings changes made at the same time are all kept when the app is not running', { timeout: TIMEOUT }, async t => {

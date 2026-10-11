@@ -36,6 +36,8 @@ export interface MCPOptions {
   appExecutables?: string[];
   /** How long clop_start_server waits for the user to allow agents. */
   startWaitMs?: number;
+  /** Told of every path an agent named that is looked up on disk (tests watch the order against the gate). */
+  lookedUp?: (file: string) => void;
   /** Where the commands' own stderr goes: the client's log, by default. */
   log?: (text: string) => void;
 }
@@ -52,12 +54,24 @@ const FILE_TIMEOUT = 900;
 
 /**
  * One `clop` command in this process, its stdout and stderr captured. Its stderr still reaches the client's log. Commands that
- * write the settings file run one at a time: each loads the file itself, so two at once could keep only the later change.
+ * change settings run one at a time (see `inTurn`).
+ */
+function runCommand(call: Call, args: string[], timeoutSeconds: number) {
+  return inTurn(args, () => execute(call, args, timeoutSeconds));
+}
+
+/** The subcommands that write settings: `settings set`, the library edits of `pipeline`, and `logs persist`. Reads and file work do not. */
+export function writesSettings(args: readonly string[]) {
+  return (args[0] === 'settings' && args[1] === 'set') || (args[0] === 'pipeline' && ['add', 'delete', 'attach', 'detach', 'preset'].includes(args[1])) || (args[0] === 'logs' && args[1] === 'persist');
+}
+/**
+ * Runs `task` for the command `args`. Commands that write settings take turns, as each loads the file itself and two at once could
+ * keep only the later change; everything else (reads, and file work that takes minutes) starts at once and never waits behind them.
  */
 let settingsWrites: Promise<unknown> = Promise.resolve();
-function runCommand(call: Call, args: string[], timeoutSeconds: number) {
-  if (!['settings', 'pipeline', 'logs'].includes(args[0])) return execute(call, args, timeoutSeconds);
-  const turn = settingsWrites.then(() => execute(call, args, timeoutSeconds));
+export function inTurn<T>(args: readonly string[], task: () => Promise<T>): Promise<T> {
+  if (!writesSettings(args)) return task();
+  const turn = settingsWrites.then(task);
   settingsWrites = turn.catch(() => {});
   return turn;
 }
@@ -184,6 +198,8 @@ const commonFlags = (a: Args) => [...flag(a, 'recursive', '--recursive'), ...fla
 const exists = (file: string) => { try { return statSync(file); } catch { return undefined; } };
 /** A path the agent gave, as the command will read it. */
 const local = (call: Call, file: string) => path.resolve(call.options.cwd ?? process.cwd(), file);
+/** Looks up a path the agent gave. */
+const lookUp = (call: Call, file: string) => { call.options.lookedUp?.(file); return exists(local(call, file)); };
 
 // MARK: The switch
 
@@ -263,14 +279,16 @@ export async function status(_: Args, call: Call): Promise<ToolOutput> {
  */
 async function refuseBeforeAsking(call: Call, files: string[] = []) {
   await refuseUnlessAllowed(call);
-  const missing = files.filter(file => !isURL(file) && !exists(local(call, file)));
+  const missing = files.filter(file => !isURL(file) && !lookUp(call, file));
   if (missing.length) throw new ClopMCPError(`not found: ${missing.join(', ')}`);
 }
 
 /** Before any path the agent gave is looked up: a lookup of a network path sends the user's credentials, which an agent has no right to ask for. */
 async function refuseUnlessAllowed(call: Call) {
   const mcp = await mcpStatus(call);
-  if (mcp && mcp.enabled !== true) throw new ClopMCPError(annotate('Clop is not accepting changes from agents.'));
+  // An answer that did not come is a refusal too: nothing is looked up on the strength of a status nobody read.
+  if (!mcp) throw new ClopMCPError('Clop did not say whether it accepts changes from agents, so nothing was looked at. Try again.');
+  if (mcp.enabled !== true) throw new ClopMCPError(annotate('Clop is not accepting changes from agents.'));
 }
 
 // MARK: Questions
@@ -358,7 +376,7 @@ export function withFrames(dsl: string, value: string): string {
 
 /** Whether a run over `list` can reach a video: a folder or a URL can, so only files that are all something else skip the question. */
 function mayContainVideo(call: Call, list: string[]) {
-  return list.some(item => isURL(item) || !exists(local(call, item))?.isFile() || VIDEO_EXTENSIONS.includes(path.extname(item).slice(1).toLowerCase()));
+  return list.some(item => isURL(item) || !lookUp(call, item)?.isFile() || VIDEO_EXTENSIONS.includes(path.extname(item).slice(1).toLowerCase()));
 }
 
 /** The playbackSpeedFrameBehaviour setting in the DSL's words; `keep`, its default, when it can't be read. */
@@ -484,6 +502,8 @@ const takesVideo = (type: unknown) => ['', 'video'].includes(argument(type).toLo
 const sourceLabel = (source: string) => source === 'clipboard' ? 'the clipboard' : source === 'dropZone' ? 'the drop zone' : `“${path.basename(source.replace(/[\\/]+$/, ''))}”`;
 
 export async function pipelineRun(a: Args, call: Call): Promise<ToolOutput> {
+  // Before any path is looked up: a network path sends the user's credentials.
+  await refuseUnlessAllowed(call);
   const files = paths(a, call);
   let pipeline = argument(a.pipeline);
   if (mayContainVideo(call, files)) {
