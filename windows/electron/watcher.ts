@@ -241,15 +241,16 @@ export class FolderWatcher {
     const entry: { file: string; dir: string; timer?: NodeJS.Timeout } = { file, dir };
     if (!safe) { entry.timer = setTimeout(() => this.recent.delete(id), this.timing.windowMs); entry.timer.unref(); }
     this.recent.set(id, entry);
-    clearTimeout(this.cleaner);
-    // A file the .clopignore names is no part of a burst or of the files held at first launch.
+    // A file the .clopignore names is no part of a burst or of the files held at first launch, and does not hold off the cleanup after a burst.
     if (await clopIgnored(this.kind, path.resolve(expandHome(dir, this.host.home)), file)) { clearTimeout(entry.timer); this.recent.delete(id); return; }
+    clearTimeout(this.cleaner);
     if (safe) return this.hold();
     if (this.recent.size > w.maxFiles) {
       this.host.notice(`More than ${w.maxFiles} ${NOUN[this.kind]}${w.maxFiles === 1 ? '' : 's'} appeared in ${path.dirname(file)}, so Clop is leaving them alone.`);
       const files = [...this.recent].filter(([key]) => !this.cancelled.has(key));
       for (const [key] of files) this.cancelled.add(key);
       this.host.cancel(files.map(([, { file }]) => file));
+      clearTimeout(this.cleaner);
       this.cleaner = setTimeout(() => { this.cancelled.clear(); this.recent.clear(); }, this.timing.windowMs);
       return;
     }
