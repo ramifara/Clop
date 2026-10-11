@@ -186,7 +186,7 @@ function syncCursorFollower() {
   if (!settings.followCursorScreen) { clearInterval(followTimer); followTimer = undefined; cursorFollower.reset(); return; }
   followTimer = setInterval(() => {
     if (!floating || floating.isDestroyed()) return;
-    const moveTo = cursorFollower.tick({ cursor: screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id, current: floatingDisplay, active: floating.isVisible() && visible().length > 0, frozen: dragging || dropActive });
+    const moveTo = cursorFollower.tick({ cursor: screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id, current: floatingDisplay, active: floating.isVisible() && visible().length > 0, frozen: dragging });
     if (moveTo !== undefined) { floatingDisplay = moveTo; syncFloating(); }
   }, FOLLOW_INTERVAL_MS);
   followTimer.unref();
