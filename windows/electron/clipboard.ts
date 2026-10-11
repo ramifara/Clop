@@ -155,13 +155,13 @@ export function sequenceReply(reply: unknown): number {
   return sequence;
 }
 /** The bytes of an `image-data` reply from the Windows helper (base64), at most the helper's limit. */
-export function imageDataReply(reply: unknown): Buffer {
+export function imageDataReply(reply: unknown, limit = IMAGE_DATA_LIMIT): Buffer {
   const bytes = (reply as Record<string, unknown> | null)?.bytes;
-  if (typeof bytes !== 'string' || bytes.length > IMAGE_DATA_LIMIT * 4 / 3 + 4) throw new Error('The Windows helper sent unreadable image data.');
+  if (typeof bytes !== 'string' || bytes.length > Math.ceil(limit / 3) * 4) throw new Error('The Windows helper sent unreadable image data.');
   return Buffer.from(bytes, 'base64');
 }
 /** The most bytes of HEIC or AVIF data the helper hands over. */
-export const IMAGE_DATA_LIMIT = 64 * 1024 * 1024;
+export const IMAGE_DATA_LIMIT = 32 * 1024 * 1024;
 /** A `copy` reply: skipped because the clipboard changed meanwhile, or written with the clipboard's new sequence number. */
 export function copyReply(reply: unknown): { skipped: true } | { skipped: false; sequence: number } {
   const r = reply as Record<string, unknown> | null;

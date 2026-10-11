@@ -276,7 +276,7 @@ namespace ClopWindows {
     }
     // HEIC, HEIF and AVIF image data by file extension, under the names apps register: Windows has no standard clipboard format for them.
     static readonly string[][] ImageData = { new[] { "heic", "image/heic", "HEIC" }, new[] { "heif", "image/heif", "HEIF" }, new[] { "avif", "image/avif", "AVIF" } };
-    const int MaxImageData = 64 * 1024 * 1024;
+    const int MaxImageData = 32 * 1024 * 1024;
     static string ImageDataKind(IDataObject contents) {
       if (contents == null) return null;
       foreach (var row in ImageData) for (int i = 1; i < row.Length; i++) if (contents.GetDataPresent(row[i], false)) return row[0];
@@ -291,7 +291,15 @@ namespace ClopWindows {
           object data = contents.GetData(row[i], false);
           var bytes = data as byte[];
           var stream = data as Stream;
-          if (bytes == null && stream != null && (!stream.CanSeek || stream.Length <= MaxImageData)) using (var copy = new MemoryStream()) { stream.CopyTo(copy); bytes = copy.ToArray(); }
+          if (bytes == null && stream != null) {
+            // Read up to the limit and no further: a stream may not say how long it is.
+            using (var copy = new MemoryStream()) {
+              var buffer = new byte[81920];
+              int read;
+              while ((read = stream.Read(buffer, 0, buffer.Length)) > 0) { copy.Write(buffer, 0, read); if (copy.Length > MaxImageData) break; }
+              if (copy.Length <= MaxImageData) bytes = copy.ToArray();
+            }
+          }
           if (bytes != null && bytes.Length > 0 && bytes.Length <= MaxImageData) return bytes;
         }
       }
@@ -326,11 +334,21 @@ namespace ClopWindows {
           Emit(new { type = "reply", id, ok = true, sequence = GetClipboardSequenceNumber(), paths = FileList().ToArray(), bitmap = HasBitmap(contents), data = ImageDataKind(contents), text, owned, transient = Excluded(contents), owner, aumid }); return;
         }
         if (type == "image-data") {
-          string ext = Convert.ToString(command["ext"]);
-          byte[] bytes = ReadImageData(Clipboard.GetDataObject(), ext);
-          if (bytes == null) throw new InvalidOperationException("The clipboard holds no " + ext + " data.");
-          // Written by hand: JavaScriptSerializer refuses more than 2 MB of text.
-          Console.WriteLine("{\"type\":\"reply\",\"id\":" + Json.Serialize(id) + ",\"ok\":true,\"bytes\":\"" + Convert.ToBase64String(bytes) + "\"}"); Console.Out.Flush(); return;
+          // Reading another app's delay-rendered data and writing tens of megabytes to the pipe can take long. This thread pumps the
+          // mouse hook, which Windows drops when it stalls, so it runs on a thread of its own, STA for the clipboard, as `apps` does.
+          string request = id, ext = Convert.ToString(command["ext"]);
+          var reader = new Thread(() => {
+            var json = new JavaScriptSerializer();
+            try {
+              byte[] bytes = ReadImageData(Clipboard.GetDataObject(), ext);
+              if (bytes == null) throw new InvalidOperationException("The clipboard holds no " + ext + " data.");
+              // Written by hand, as one line: JavaScriptSerializer refuses more than 2 MB of text.
+              Console.WriteLine("{\"type\":\"reply\",\"id\":" + json.Serialize(request) + ",\"ok\":true,\"bytes\":\"" + Convert.ToBase64String(bytes) + "\"}");
+              Console.Out.Flush();
+            } catch (Exception error) { EmitFrom(json, new { type = "reply", id = request, ok = false, error = error.Message }); }
+          });
+          reader.IsBackground = true; reader.SetApartmentState(ApartmentState.STA); reader.Start();
+          return;
         }
         if (type == "apps") {
           // Walking processes and the Start Menu takes a while. This thread pumps the mouse hook, which Windows drops when it

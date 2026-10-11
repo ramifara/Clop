@@ -310,5 +310,8 @@ test('the helper\'s data names and image bytes are checked', () => {
   assert.equal(clipboardChange({ type: 'reply', sequence: 3, paths: [], data: null })?.data, undefined);
   assert.equal(clipboardChange({ type: 'reply', sequence: 3, paths: [], data: 'tiff' }), undefined);
   assert.deepEqual(imageDataReply({ ok: true, bytes: Buffer.from('abc').toString('base64') }), Buffer.from('abc'));
-  for (const bad of [null, {}, { bytes: 5 }, { bytes: 'A'.repeat(90 * 1024 * 1024) }]) assert.throws(() => imageDataReply(bad), /unreadable/);
+  for (const bad of [null, {}, { bytes: 5 }]) assert.throws(() => imageDataReply(bad), /unreadable/);
+  // The limit is on the decoded size: 6 bytes are 8 characters of base64.
+  assert.deepEqual(imageDataReply({ bytes: Buffer.alloc(6).toString('base64') }, 6), Buffer.alloc(6));
+  assert.throws(() => imageDataReply({ bytes: Buffer.alloc(7).toString('base64') }, 6), /unreadable/);
 });
