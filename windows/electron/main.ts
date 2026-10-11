@@ -15,6 +15,7 @@ import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ignoredApp, withIgnored } from './apps';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
+import { CursorFollower, FOLLOW_INTERVAL_MS, hideDelay } from './floating-results';
 import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, copiesFiles, DEFAULT_NAME_TEMPLATE, pausedForPoll, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp, imageDataReply } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
@@ -146,7 +147,8 @@ const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 const presetsRevealed = () => presetReveal.revealed(settings.onlyShowPresetZonesOnControlTapped);
 /** The preset zone tiles for the files being dragged. */
 function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, draggedType(dragFiles, mediaKind)) }; }
-const visible = () => engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id));
+// With `enableFloatingResults` off Clop runs without a result UI: results stay in the shelf, unseen.
+const visible = () => settings.enableFloatingResults ? engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id)) : [];
 let choices: { saved: ClopSettings['savedPipelines']; list: ReturnType<typeof allPipelineChoices> } | undefined;
 /** The saved pipelines, kept until the library changes: the state is sent on every progress step. */
 const pipelineList = () => (choices?.saved === settings.savedPipelines ? choices : choices = { saved: settings.savedPipelines, list: allPipelineChoices(settings) }).list;
@@ -160,11 +162,32 @@ function broadcast() {
   if (views.size) { const all = engine.list(); for (const [key, window] of views) if (!window.isDestroyed()) window.webContents.send('clop:state', { ...state(), items: viewItems(all, key) }); }
 }
 function inform(text: string) { notice = text; syncFloating(); broadcast(); }
+/** The display the floating results sit on: the cursor's when they appear, then wherever `followCursorScreen` moved them. */
+let floatingDisplay: number | undefined;
+function floatingArea() {
+  if (!floating.isVisible()) floatingDisplay = undefined;
+  const display = screen.getAllDisplays().find(candidate => candidate.id === floatingDisplay) ?? screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  floatingDisplay = display.id;
+  return display.workArea;
+}
 function positionFloating() {
-  const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+  const area = floatingArea();
   const [w, h] = floating.getSize();
   floating.setPosition(settings.floatingResultsCorner.endsWith('Right') ? area.x + area.width - w : area.x,
     settings.floatingResultsCorner.startsWith('bottom') ? area.y + area.height - h : area.y);
+}
+const cursorFollower = new CursorFollower();
+let followTimer: NodeJS.Timeout | undefined;
+/** Starts or stops the look at the cursor that `followCursorScreen` asks for. */
+function syncCursorFollower() {
+  if (settings.followCursorScreen === (followTimer !== undefined)) return;
+  if (!settings.followCursorScreen) { clearInterval(followTimer); followTimer = undefined; cursorFollower.reset(); return; }
+  followTimer = setInterval(() => {
+    if (!floating || floating.isDestroyed()) return;
+    const moveTo = cursorFollower.tick({ cursor: screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id, current: floatingDisplay, active: floating.isVisible() && visible().length > 0, frozen: dragging || dropActive });
+    if (moveTo !== undefined) { floatingDisplay = moveTo; syncFloating(); }
+  }, FOLLOW_INTERVAL_MS);
+  followTimer.unref();
 }
 function showFloating(focus = false, reposition = false) {
   if (reposition && !floating.isVisible()) positionFloating();
@@ -175,7 +198,7 @@ const compactHeight = (rows: number) => 38 + rows * (settings.showCompactImages 
 function syncFloating() {
   if (!floating || floating.isDestroyed()) return;
   const target = dropActive || settings.keepDropZoneVisible;
-  const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+  const area = floatingArea();
   const items = visible();
   // Room for the tiles stays once they were shown, until the drag ends: a tile under the pointer must not lose its window when Ctrl is let go.
   const tiles = presetsLatched || presetsRevealed() ? gridHeight(cellCount(presets())) + 8 : 0;
@@ -210,7 +233,8 @@ function scheduleHide(id: string) {
     if (hovered || dragging) { hideTimers.set(id, setTimeout(check, 1000)); return; }
     hideResults([id]);
   };
-  hideTimers.set(id, setTimeout(check, engine.get(id).result.source === 'clipboard' ? 10000 : 30000));
+  const delay = hideDelay(settings, engine.get(id).result.source);
+  if (delay !== undefined) hideTimers.set(id, setTimeout(check, delay));
 }
 async function dismiss(id: string) {
   const timer = hideTimers.get(id); if (timer) clearTimeout(timer);
@@ -335,6 +359,7 @@ async function createWindows() {
   protectFromCapture(floating, settings.allowClopToAppearInScreenshots);
   await load(main, { preferences: '1' }); await load(floating, { floating: '1' });
   positionFloating();
+  syncCursorFollower();
   floating.setIgnoreMouseEvents(true, { forward: true });
   // The drop zone that stays, and the welcome card of a first run, show from the start.
   if (settings.keepDropZoneVisible || !settings.finishedOnboarding) syncFloating();
@@ -792,6 +817,7 @@ async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
   if (settings.mcpEnabled !== wasEnabled && app.isPackaged) void mcp.writeCard().catch(error => console.warn(`Could not write the MCP server card: ${message(error)}`));
   if (!settings.enableClipboardOptimiser || paused()) pickup.cancel();
   floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop);
+  syncCursorFollower();
   syncFloating();
   if (process.platform === 'win32') syncLoginItem(app, settings.launchAtLogin, loginExecutable());
   applyWindowSettings();
@@ -1151,6 +1177,7 @@ else {
       if (changed.includes('pauseAutomaticOptimisations')) shortcutRunner.pauseChanged();
       if (changed.some(key => ['keyComboModifiers', 'enabledKeys', 'quickResizeKeys', 'allowClopToAppearInScreenshots'].includes(key))) applyWindowSettings();
       // A change made outside the app (the settings file, the CLI) shows or hides the tray icon and updates its menu and icon too.
+      if (changed.some(key => ['enableFloatingResults', 'followCursorScreen'].includes(key))) { syncCursorFollower(); syncFloating(); broadcast(); }
       if (changed.some(key => ['showMenubarIcon', 'pauseAutomaticOptimisations', 'enableClipboardOptimiser', 'keepDropZoneVisible'].includes(key))) updateTray();
       // Pipelines, attachments and preset zones show in the editor and, as tiles, on the drop target.
       if (changed.some(key => (EDITOR_SETTING_KEYS as readonly string[]).includes(key))) { syncFloating(); broadcast(); for (const window of [editorWindow, editorLoading?.window]) if (window && !window.isDestroyed()) window.webContents.send('clop:editor-changed'); }

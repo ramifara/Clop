@@ -125,9 +125,9 @@ test('name templates apply under Same folder and path templates under Specific f
  */
 const PENDING_KEYS = [
   'audioFormat',
-  'autoHideClipboardResultAfter', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter',
   'defaultLinkExpiration', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnUpload',
-  'enableFloatingResults', 'followCursorScreen', 'onlyShowDropZoneOnOption', ];
+  'onlyShowDropZoneOnOption',
+];
 
 test('the rows that do nothing yet are exactly the pinned list, each with a reason', () => {
   const pending = SETTING_ENTRIES.filter(entry => entry.ui?.pending);
