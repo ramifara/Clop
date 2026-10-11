@@ -104,7 +104,7 @@ function optimiseSettings(steps: PipelineStep[], fallback: CompressionQuality) {
 }
 
 const settingsOf = (run: RunState) => run.settings;
-const imageBase = (run: RunState) => { const s = settingsOf(run); return { stripMetadata: s.stripMetadata, preserveColorMetadata: s.preserveColorMetadata, gifFrameDropBehaviour: s.gifFrameDropBehaviour, signal: run.signal }; };
+const imageBase = (run: RunState) => { const s = settingsOf(run); return { stripMetadata: s.stripMetadata, preserveColorMetadata: s.preserveColorMetadata, gifFrameDropBehaviour: s.gifFrameDropBehaviour, formatsToConvertToJPEG: s.formatsToConvertToJPEG, formatsToConvertToPNG: s.formatsToConvertToPNG, convertHDRToSDR: s.convertHDRToSDR, signal: run.signal }; };
 const videoBase = (run: RunState) => {
   const s = settingsOf(run);
   return {
@@ -114,7 +114,7 @@ const videoBase = (run: RunState) => {
 };
 const audioBase = (run: RunState) => {
   const s = settingsOf(run);
-  return { compression: s.audioCompression, formatsToConvertToAAC: s.formatsToConvertToAAC, formatsToConvertToMP3: s.formatsToConvertToMP3, coverArt: s.audioCoverArt, preserveDates: s.preserveDates, signal: run.signal };
+  return { compression: s.audioCompression, formatsToConvertToAAC: s.formatsToConvertToAAC, formatsToConvertToMP3: s.formatsToConvertToMP3, formatsToConvertToOutputAudio: s.formatsToConvertToOutputAudio, audioFormat: s.audioFormat, coverArt: s.audioCoverArt, preserveDates: s.preserveDates, signal: run.signal };
 };
 
 function imageFormat(to: string): ImageFormat {

@@ -203,6 +203,7 @@ export class Batch extends EventEmitter {
         const output = await optimiseImage(file, outputDir, {
           ...job, ...size, aggressive, compression: { tier: ip.lossless ? 'lossless' : ip.adaptive ? 'adaptive' : 'custom', factor: ip.compression }, format: ip.convert, cropSize: ip.crop,
           stripMetadata: s.stripMetadata, preserveColorMetadata: s.preserveColorMetadata, gifFrameDropBehaviour: s.gifFrameDropBehaviour,
+          formatsToConvertToJPEG: s.formatsToConvertToJPEG, formatsToConvertToPNG: s.formatsToConvertToPNG, convertHDRToSDR: s.convertHDRToSDR,
         });
         // The engine names a JPEG result `.jpeg`; a file that kept its format keeps its own extension (`.jpg`, `.tif`).
         if (!output.unchanged && output.format === info.format && path.extname(output.path).toLowerCase() !== path.extname(file).toLowerCase()) {
@@ -243,6 +244,7 @@ export class Batch extends EventEmitter {
           ...job, aggressive, format, compression: { tier: 'custom', factor: ap.compression }, bitrate: ap.bitrate, loudnorm: ap.loudnorm, allowLarger: ap.allowLarger && !!format,
           coverArt: ap.coverArt, coverArtMaxLongEdge: ap.coverArtMaxLongEdge, coverArtSquaring: ap.coverArtSquaring, preserveDates: s.preserveDates,
           formatsToConvertToAAC: s.formatsToConvertToAAC, formatsToConvertToMP3: s.formatsToConvertToMP3,
+          formatsToConvertToOutputAudio: s.formatsToConvertToOutputAudio, audioFormat: s.audioFormat,
         });
         const kbps = (bits?: number) => bits === undefined ? undefined : Math.trunc(bits / 1000);
         return { output, converted: !!format && extension(output.path) !== ext, allowLarger: true, oldDetail: kbps(info.bitrate), newDetail: output.bitrate };

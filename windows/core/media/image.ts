@@ -7,6 +7,7 @@ import type { ToolName } from '../tools';
 import type { CompressionQuality } from '../settings/schema';
 import * as cq from './compression';
 import { centreRect, cropGeometry, type CropSpec, type Rect } from './crop-size';
+import { imageConversionTarget, type ImageConversionSettings } from './conversion';
 import { copyMetadata } from './exif';
 import { encodeHEIC, encodeJXL, probeImage, readableImage } from './image-codecs';
 import { toneMapToSDR } from './hdr';
@@ -24,8 +25,10 @@ export const IMAGE_FORMATS: readonly ImageFormat[] = ['png', 'jpeg', 'webp', 'av
 export interface ImageOptimiseOptions {
   /** The `imageCompression` setting. The Windows-only `lossless` tier optimises without changing pixels. */
   compression: CompressionQuality;
-  /** Output format; the input's own when omitted, with TIFF and SVG becoming PNG, HEIC and BMP JPEG (PNG when transparent). */
+  /** Output format; when omitted the formats `formatsToConvertToJPEG` and `formatsToConvertToPNG` list become JPEG (PNG when transparent) or PNG, animations keep theirs, and TIFF, BMP and SVG left unlisted become PNG. */
   format?: ImageFormat;
+  /** Tone map HDR photos to SDR even in the lossless tier, which otherwise keeps one it does not change (`convertHDRToSDR`). */
+  convertHDRToSDR?: boolean;
   /** Displayed size to scale to; the input's own when omitted. */
   width?: number; height?: number;
   /** A crop instead of `width` and `height`: smart crops cut around sharp's attention region, except in GIFs and animations, which keep the centre. */
@@ -37,7 +40,7 @@ export interface ImageOptimiseOptions {
   /** Output file name without extension; the input's name when omitted. */
   name?: string;
 }
-type Options = ImageOptimiseOptions & MediaJobOptions;
+type Options = ImageOptimiseOptions & ImageConversionSettings & MediaJobOptions;
 type Source = ImageFormat | 'tiff' | 'bmp' | 'svg';
 interface Job {
   input: string; tmp: string; source: Source; meta: Metadata; width: number; height: number; crop?: Rect; fill?: 'attention' | 'centre';
@@ -112,7 +115,7 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
     await copyFile(input, copy);
     let started = false;
     const start = () => { if (!started) { started = true; opts.onProgress?.(0); } };
-    const readable = await readableImage(copy, source, { signal: opts.signal, onStart: start, keepHDR: lossless });
+    const readable = await readableImage(copy, source, { signal: opts.signal, onStart: start, keepHDR: lossless && !opts.convertHDRToSDR });
     let meta = readable.decoded ? await decode(readable.file).metadata() : sourceMeta!;
     const [sourceWidth, sourceHeight] = displaySize(meta);
     const geometry = opts.cropSize ? cropGeometry(opts.cropSize, sourceWidth, sourceHeight) : undefined;
@@ -135,7 +138,7 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
       Object.assign(readable, { file: sdr, decoded: true });
       meta = await decode(sdr).metadata();
     }
-    let format = opts.format ?? await defaultFormat(source as Source, readable.file);
+    let format = opts.format ?? await defaultFormat(source as Source, readable.file, animated ? false : opts);
     // A JPEG keeps its pixels only when jpegoptim works on it as it is; edited or converted, it becomes PNG.
     if (lossless && format === 'jpeg' && (edited || source !== 'jpeg')) format = 'png';
     // x265 encodes at most 12 bits per sample, so a lossless HEIC of a 16-bit source would lose precision.
@@ -169,12 +172,18 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
   } finally { await rm(tmp, { recursive: true, force: true }); }
 }
 
-/** Formats without an optimiser of their own become what macOS converts them to by default (`formatsToConvertToJPEG`/`PNG`), keeping transparency (`formatKeepingTransparency`). */
-async function defaultFormat(source: Source, file: string): Promise<ImageFormat> {
-  if (source === 'tiff' || source === 'svg') return 'png';
-  if (source !== 'heic' && source !== 'bmp') return source;
-  const meta = await decode(file).metadata();
-  return meta.hasAlpha && !(await decode(file).stats()).isOpaque ? 'png' : 'jpeg';
+/**
+ * The format of an optimisation that did not ask for one: the Compatibility lists' target (`imageConversionTarget`, none for an
+ * animation, which a still format would cut to one frame), keeping transparency. TIFF, BMP and SVG have no optimiser of their own, so they become PNG when unlisted.
+ */
+async function defaultFormat(source: Source, file: string, conversion: ImageConversionSettings | false): Promise<ImageFormat> {
+  const target = conversion ? imageConversionTarget(source, conversion) : undefined;
+  if (target === 'jpeg') {
+    const meta = await decode(file).metadata();
+    return meta.hasAlpha && !(await decode(file).stats()).isOpaque ? 'png' : 'jpeg';
+  }
+  if (target === 'png' || source === 'tiff' || source === 'bmp' || source === 'svg') return 'png';
+  return source;
 }
 
 async function optimiseStill(job: Job, format: ImageFormat): Promise<Encoded> {

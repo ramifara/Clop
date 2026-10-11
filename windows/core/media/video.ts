@@ -4,6 +4,7 @@ import sharp from 'sharp';
 import { queue, retryBusy, run, ToolError, type RunOptions } from '../run';
 import type { CompressionQuality } from '../settings/schema';
 import { clampRect, computedSize, even, isFullFrame, pixelRect, type CropSpec } from './crop-size';
+import { convertsToMP4 } from './conversion';
 import { videoInfo, type VideoInfo } from './detect';
 import { ffprobe } from './ffprobe';
 import { CONVERSION_EXTENSIONS, encoderFamily, videoConversionArgs, videoEncoderArgs, type VideoCodecConversion, type VideoEncoderSetting } from './videoCompression';
@@ -19,7 +20,7 @@ export interface VideoOptimiseOptions {
   compression: CompressionQuality;
   /** The `videoEncoder` setting; `auto` by default. */
   encoder?: VideoEncoderSetting;
-  /** Output container extension; the input's own when omitted. */
+  /** Output container extension; when omitted the input's own, or mp4 for the types `formatsToConvertToMP4` lists. */
   format?: string;
   /** Re-encode to another codec (`videoConversionArgs`). Without a compression the historical fixed arguments apply. */
   convert?: { codec: VideoCodecConversion; compression?: CompressionQuality };
@@ -39,6 +40,8 @@ export interface VideoOptimiseOptions {
   /** Tone map HDR to SDR. By default HDR becomes SDR when the output is H.264, which has no useful HDR form. */
   hdrToSdr?: boolean;
   stripMetadata?: boolean;
+  /** Input types (extensions) that become MP4 when `format` is not given (`formatsToConvertToMP4`); none when omitted. */
+  formatsToConvertToMP4?: readonly string[];
   /** Keep a plain optimisation even when it is not smaller. */
   allowLarger?: boolean;
   /** Output file name without extension; the input's name when omitted. */
@@ -178,7 +181,7 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
   const info = videoInfo(await ffprobe(input, { signal }));
   const inputBytes = (await stat(input)).size, inputExt = extension(input);
   const convert = opts.convert, wantsHardwareHEVC = convert?.codec === 'hevc' && (!convert.compression || convert.compression.tier === 'fast');
-  const ext = (convert && CONVERSION_EXTENSIONS[convert.codec]) ?? (opts.format ?? (inputExt || 'mp4')).toLowerCase();
+  const ext = (convert && CONVERSION_EXTENSIONS[convert.codec]) ?? (opts.format ?? (convertsToMP4(inputExt, opts) ? 'mp4' : inputExt || 'mp4')).toLowerCase();
   const useEncoder = !!convert || !!opts.encoderArgs || ENCODED_CONTAINERS.has(ext);
   const family = encoderFamily(opts.encoder ?? 'auto');
   const outputCodec = convert?.codec ?? (useEncoder ? family : ext === 'webm' ? 'vp9' : 'h264');

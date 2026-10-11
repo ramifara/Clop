@@ -247,3 +247,19 @@ test('progress reads ffmpeg out_time_us against the duration, or the duration ff
   ['out_time_us=100', '  Duration: 00:00:04.00, start: 0.000000, bitrate: 512 kb/s', 'out_time_us=1000000'].forEach(unknown);
   assert.deepEqual(seen, [0.125]);
 });
+
+test('a video of a type formatsToConvertToMP4 lists becomes an MP4 even when larger; unlisted types and callers without the list keep their container', async t => {
+  const w = await workspace(t); if (!w) return;
+  const mov = await clip(w.file('take.mov'), { audio: 'aac' }), webm = await clip(w.file('web.webm'), { audio: 'libopus', video: ['-c:v', 'libvpx-vp9', '-b:v', '1M'] });
+  const listed = await optimiseVideo(mov, w.out, { compression: smaller(30), formatsToConvertToMP4: ['mov', 'webm'] });
+  assert.deepEqual([path.basename(listed.path), listed.format, listed.unchanged], ['take.mp4', 'mp4', undefined]);
+  assert.equal((await video(listed.path)).codec, 'h264');
+  const fromWebm = await optimiseVideo(webm, w.out, { compression: smaller(30), formatsToConvertToMP4: ['mov', 'webm'] });
+  assert.deepEqual([path.basename(fromWebm.path), (await video(fromWebm.path)).codec], ['web.mp4', 'h264']);
+  const kept = await optimiseVideo(mov, w.out, { compression: smaller(30), formatsToConvertToMP4: ['webm'], name: 'kept', allowLarger: true });
+  assert.equal(path.basename(kept.path), 'kept.mov');
+  const bare = await optimiseVideo(mov, w.out, { compression: smaller(30), name: 'bare', allowLarger: true });
+  assert.equal(path.basename(bare.path), 'bare.mov');
+  const explicit = await optimiseVideo(mov, w.out, { compression: smaller(30), format: 'mov', name: 'explicit', formatsToConvertToMP4: ['mov'], allowLarger: true });
+  assert.equal(path.basename(explicit.path), 'explicit.mov', 'an explicit format wins');
+});

@@ -126,9 +126,8 @@ test('name templates apply under Same folder and path templates under Specific f
 const PENDING_KEYS = [
   'audioFormat',
   'autoHideClipboardResultAfter', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter',
-  'convertHDRToSDR', 'defaultLinkExpiration', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnUpload',
-  'enableFloatingResults', 'followCursorScreen', 'formatsToConvertToJPEG', 'formatsToConvertToMP4',
-  'formatsToConvertToOutputAudio', 'formatsToConvertToPNG', 'onlyShowDropZoneOnOption', 'optimiseHEICAVIFClipboard',
+  'defaultLinkExpiration', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnUpload',
+  'enableFloatingResults', 'followCursorScreen', 'onlyShowDropZoneOnOption', 'optimiseHEICAVIFClipboard',
   'optimiseTIFF',
 ];
 

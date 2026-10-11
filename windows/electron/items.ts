@@ -88,7 +88,7 @@ type Edit = (input: string, outputDir: string, name: string, signal: AbortSignal
 /** Dismissed results kept for `bringBack`. */
 const REMOVED = 40;
 export type ItemSettings = Pick<ClopSettings, 'imageCompression' | 'stripMetadata' | 'preserveColorMetadata' | 'gifFrameDropBehaviour' | 'videoCompression' | 'videoEncoder' | 'capVideoFPS' | 'targetVideoFPS'
-  | 'minVideoFPS' | 'removeAudioFromVideos' | 'convertAudioToAAC' | 'adaptiveVideoSize' | 'pdfDPI' | 'audioCompression' | 'formatsToConvertToAAC' | 'formatsToConvertToMP3' | 'audioCoverArt' | 'preserveDates'>;
+  | 'minVideoFPS' | 'removeAudioFromVideos' | 'convertAudioToAAC' | 'adaptiveVideoSize' | 'pdfDPI' | 'audioCompression' | 'formatsToConvertToAAC' | 'formatsToConvertToMP3' | 'formatsToConvertToJPEG' | 'formatsToConvertToPNG' | 'formatsToConvertToMP4' | 'formatsToConvertToOutputAudio' | 'audioFormat' | 'convertHDRToSDR' | 'audioCoverArt' | 'preserveDates'>;
 /**
  * The session's results: images, videos, PDFs and audio files. Each keeps a copy of its original, so results always start
  * from it and restoring gives back its exact bytes. Sources are never written to.
@@ -254,7 +254,8 @@ export class ItemEngine extends EventEmitter {
         const settings = this.settings();
         output = await optimiseImage(e.originalPath, outputDir, {
           ...(options.compression ? { compression: options.compression } : imageCompression(options.mode, settings.imageCompression)), format: options.format === 'auto' ? undefined : options.format, ...(cropSize ? { cropSize } : { width, height }),
-          stripMetadata: settings.stripMetadata, preserveColorMetadata: settings.preserveColorMetadata, gifFrameDropBehaviour: settings.gifFrameDropBehaviour, name, signal,
+          stripMetadata: settings.stripMetadata, preserveColorMetadata: settings.preserveColorMetadata, gifFrameDropBehaviour: settings.gifFrameDropBehaviour,
+          formatsToConvertToJPEG: settings.formatsToConvertToJPEG, formatsToConvertToPNG: settings.formatsToConvertToPNG, convertHDRToSDR: settings.convertHDRToSDR, name, signal,
         });
       } else output = await this.optimiseMedia(r.kind, e.originalPath, outputDir, { aggressive: options.mode === 'aggressive', name, signal, onProgress: this.progress(r), crop: options.crop });
       signal.throwIfAborted();
@@ -396,9 +397,10 @@ export class ItemEngine extends EventEmitter {
   private optimiseMedia(kind: Exclude<MediaKind, 'image'>, file: string, outputDir: string, { crop, ...job }: MediaJobOptions & { name: string; crop?: ImageOptions['crop'] }): Promise<MediaOutput> {
     const s = this.settings();
     if (kind === 'video') return optimiseVideo(file, outputDir, { ...job, crop, compression: s.videoCompression, encoder: s.videoEncoder, capVideoFPS: s.capVideoFPS, targetVideoFPS: s.targetVideoFPS,
-      minVideoFPS: s.minVideoFPS, removeAudio: s.removeAudioFromVideos, convertAudioToAAC: s.convertAudioToAAC, adaptiveVideoSize: s.adaptiveVideoSize, stripMetadata: s.stripMetadata });
+      minVideoFPS: s.minVideoFPS, removeAudio: s.removeAudioFromVideos, convertAudioToAAC: s.convertAudioToAAC, adaptiveVideoSize: s.adaptiveVideoSize, stripMetadata: s.stripMetadata, formatsToConvertToMP4: s.formatsToConvertToMP4 });
     if (kind === 'pdf') return optimisePDF(file, outputDir, { ...job, dpiSetting: s.pdfDPI });
-    return optimiseAudio(file, outputDir, { ...job, compression: s.audioCompression, formatsToConvertToAAC: s.formatsToConvertToAAC, formatsToConvertToMP3: s.formatsToConvertToMP3, coverArt: s.audioCoverArt, preserveDates: s.preserveDates });
+    return optimiseAudio(file, outputDir, { ...job, compression: s.audioCompression, formatsToConvertToAAC: s.formatsToConvertToAAC, formatsToConvertToMP3: s.formatsToConvertToMP3,
+      formatsToConvertToOutputAudio: s.formatsToConvertToOutputAudio, audioFormat: s.audioFormat, coverArt: s.audioCoverArt, preserveDates: s.preserveDates });
   }
   /** Reports progress in 2 % steps, so a long encode does not flood the windows with updates. */
   private progress(r: ItemResult) {

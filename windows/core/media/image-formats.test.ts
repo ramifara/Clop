@@ -10,7 +10,7 @@ import { optimiseImage } from './image';
 import { toneMapToSDR } from './hdr';
 import { clipboardPNG, probeImage, sniffImage, toPNG } from './image-codecs';
 import { stripImageMetadata } from './image-ops';
-import { graphic, photo } from './image.fixtures';
+import { animation, graphic, photo } from './image.fixtures';
 
 const at = (factor: number) => ({ tier: 'custom', factor }) as const;
 const lossless = { tier: 'lossless', factor: 30 } as const;
@@ -246,4 +246,34 @@ test('aborting while the image is probed reports the abort, not an unreadable im
   // JPEG XL sizes come from exiftool, so the abort lands while it runs.
   setTimeout(() => controller.abort(), 20);
   await assert.rejects(optimiseImage(jxl, w.out, { compression: at(30), signal: controller.signal }), { name: 'AbortError' });
+});
+
+test('the Compatibility lists choose what an image becomes: JPEG (PNG when transparent), PNG, or its own format; animations are never flattened', async t => {
+  const w = await workspace(t); if (!w) return;
+  const picture = await w.file('picture.webp', photo(160, 120).webp({ quality: 90 })), clear = await w.file('clear.webp', graphic(160, 120, { alpha: true }).webp({ quality: 90 }));
+  assert.equal((await optimiseImage(picture, w.out, { compression: at(30), name: 'a' })).format, 'jpeg', 'WebP is converted by default, as on macOS');
+  assert.equal((await optimiseImage(clear, w.out, { compression: at(30), name: 'b' })).format, 'png', 'transparent pixels keep the PNG');
+  assert.equal((await optimiseImage(picture, w.out, { compression: at(30), name: 'c', formatsToConvertToJPEG: [] })).format, 'webp');
+  assert.equal((await optimiseImage(picture, w.out, { compression: at(30), name: 'd', formatsToConvertToJPEG: [], formatsToConvertToPNG: ['webp'] })).format, 'png');
+  assert.equal((await optimiseImage(picture, w.out, { compression: at(30), name: 'e', format: 'webp' })).format, 'webp', 'a requested format wins');
+  const moving = await w.file('moving.webp', await animation('webp'));
+  assert.equal((await optimiseImage(moving, w.out, { compression: at(30), name: 'f' })).format, 'webp');
+  // Unlisted, a BMP still has no optimiser of its own and becomes PNG.
+  const bmp = path.join(w.dir, 'graphic.bmp');
+  await run('ffmpeg', ['-v', 'error', '-i', await w.file('graphic.png', graphic(160, 120).png()), bmp]);
+  assert.equal((await optimiseImage(bmp, w.out, { compression: at(30), name: 'g', formatsToConvertToJPEG: [] })).format, 'png');
+  // A HEIC unlisted stays HEIC.
+  const heic = (await optimiseImage(await w.file('photo.png', photo(160, 120).png()), w.out, { compression: at(30), format: 'heic', name: 'photo' })).path;
+  assert.equal((await optimiseImage(heic, w.out, { compression: at(30), name: 'h', formatsToConvertToJPEG: ['webp'] })).format, 'heic');
+});
+
+test('convertHDRToSDR makes the lossless tier tone-map an HDR photo it would otherwise keep', async t => {
+  const w = await workspace(t); if (!w) return;
+  const source = await w.file('pq.png', patches([pq(100), pq(1000)])), heic = path.join(w.dir, 'pq.heic');
+  await run('heif-enc', ['-L', '-b', '10', '--colour_primaries', '9', '--transfer_characteristic', '16', '--matrix_coefficients', '0', '-o', heic, source]);
+  const kept = await optimiseImage(heic, w.out, { compression: lossless, name: 'kept' });
+  assert.deepEqual([kept.unchanged, kept.format], [true, 'heic']);
+  const tonemapped = await optimiseImage(heic, w.out, { compression: lossless, convertHDRToSDR: true, name: 'sdr' });
+  assert.notEqual(tonemapped.unchanged, true);
+  assert.equal(tonemapped.format, 'png', 'lossless keeps the SDR pixels exactly, so a JPEG becomes a PNG');
 });

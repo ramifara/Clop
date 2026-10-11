@@ -125,14 +125,22 @@ export function audioFormatFromName(target: string): AudioFormat | undefined {
   return AUDIO_FORMAT_NAMES.find(f => f === lower) ?? AUDIO_FORMAT_NAMES.find(f => AUDIO_FORMATS[f].ext === lower);
 }
 
-export interface AudioConversionSettings { formatsToConvertToAAC?: readonly string[]; formatsToConvertToMP3?: readonly string[] }
+export interface AudioConversionSettings {
+  formatsToConvertToAAC?: readonly string[]; formatsToConvertToMP3?: readonly string[];
+  /** Types converted to `audioFormat` when neither list above claims them. Both are needed; macOS only reads this set to seed the lists above. */
+  formatsToConvertToOutputAudio?: readonly string[]; audioFormat?: AudioFormat | 'sameAsInput';
+}
 
-/** `audioConversionTarget(forInput:)`: AAC or MP3 when the settings list the input's type, AAC first; otherwise undefined. */
+/**
+ * `audioConversionTarget(forInput:)`: AAC or MP3 when the settings list the input's type, AAC first; otherwise the output format
+ * (`audioFormat`) when `formatsToConvertToOutputAudio` lists the type; otherwise undefined.
+ */
 export function audioConversionTarget(ext: string, settings: AudioConversionSettings = {}): AudioFormat | undefined {
   const type = normalisedExtension(ext);
   const listed = (list: readonly string[]) => list.some(item => normalisedExtension(item) === type);
   if (listed(settings.formatsToConvertToAAC ?? settingsSchema.formatsToConvertToAAC.default as string[])) return 'aac';
   if (listed(settings.formatsToConvertToMP3 ?? settingsSchema.formatsToConvertToMP3.default as string[])) return 'mp3';
+  if (settings.audioFormat && settings.audioFormat !== 'sameAsInput' && listed(settings.formatsToConvertToOutputAudio ?? [])) return settings.audioFormat;
 }
 
 /** The format an optimisation writes: the assigned conversion target, else the input's own format. */
