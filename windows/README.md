@@ -295,7 +295,7 @@ A global shortcut is taken from every app, and Ctrl+Shift+letter is where Window
 | --- | --- | --- | --- |
 | `C` | Optimise current clipboard | yes | C |
 | `A` | Optimise the newest result, or the clipboard, more aggressively | yes | A |
-| `-` | Downscale the newest result one step: a quarter off above 50%, a tenth below, on the largest step of the card menu at or below that (1, 0.7, 0.4, 0.3, 0.2, 0.1). A PDF's resolution steps down instead, and an audio file's bitrate (from the highest its format allows, since its own is not read). With no result it downscales the clipboard's result | yes | - |
+| `-` | Downscale the newest result one step: a quarter off above 50%, a tenth below, on the largest step of the card menu at or below that (1, 0.7, 0.4, 0.3, 0.2, 0.1). A PDF's resolution steps down instead (from the `pdfDPI` setting when it is not adaptive), and an audio file's bitrate (from the file's own, to the next one its format allows). With no result it downscales the clipboard's result | yes | - |
 | `1` to `9` | Downscale to 10% through 90% (`quickResizeKeys`) | none | 1 to 9 |
 | `=` | Bring back the last result that hid or was dismissed | yes | = |
 | `Space` | Open the preview window; with no result in view, the last clipboard result, or the clipboard's | yes | Space (Quick Look) |

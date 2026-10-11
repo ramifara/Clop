@@ -23,6 +23,10 @@ export interface ShortcutHost {
   freshClipboard(): Promise<ItemResult | undefined>;
   /** The bitrates (kbps) an audio result's format allows. */
   bitrates(id: string): Promise<readonly number[]>;
+  /** The bitrate (kbps) of an audio result's current file, when it can be read. */
+  bitrate(id: string): Promise<number | undefined>;
+  /** The `pdfDPI` setting: 0 is adaptive. */
+  pdfDpi(): number;
   inform(text: string): void;
 }
 
@@ -112,14 +116,15 @@ export class ShortcutRunner {
     const { host } = this;
     if (item.kind === 'audio') {
       if (factor !== undefined) throw new Error('Audio has no resolution. Press the downscale key to lower its bitrate.');
-      // The file's own bitrate is not known here: the first step goes down from the highest the format allows.
-      const allowed = [...await host.bitrates(item.id)].sort((a, b) => b - a), current = this.steps.get(`bitrate:${item.id}`) ?? allowed[0], next = allowed.find(kbps => kbps < current);
+      // The first step goes down from the file's own bitrate (a step that raised it would change nothing but count as a press).
+      const allowed = [...await host.bitrates(item.id)].sort((a, b) => b - a), current = this.steps.get(`bitrate:${item.id}`) ?? await host.bitrate(item.id) ?? allowed[0], next = allowed.find(kbps => kbps < current);
       if (!next) throw new Error('This audio file is already at its lowest bitrate.');
       return this.step(item.id, { action: 'bitrate', arg: next });
     }
     if (item.kind === 'pdf') {
       if (factor !== undefined) throw new Error('PDFs are downscaled by resolution: press the downscale key.');
-      const dpi = nextResolution(this.steps.get(`dpi:${item.id}`));
+      // A PDF optimised at a chosen resolution (the `pdfDPI` setting) goes down from that one.
+      const dpi = nextResolution(this.steps.get(`dpi:${item.id}`) ?? (host.pdfDpi() > 0 ? host.pdfDpi() : undefined));
       if (!dpi) throw new Error('This PDF is already at the lowest resolution.');
       return this.step(item.id, { action: 'resolution', arg: dpi });
     }

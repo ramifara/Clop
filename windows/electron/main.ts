@@ -49,6 +49,7 @@ import { FileCollector, quietWindow } from './file-collector';
 import { pipelineMenu } from './pipeline-menu';
 import { installVerbs, portablePaths, removeVerbs, verbsStatus } from './explorer';
 import { explorerVerb, type VerbId } from '../core/shell-verbs';
+import { audioMetadata } from '../core/media/audio';
 import { stripExifFile } from '../core/media/strip-copy';
 import { expandFolders, explorerRequest, failureName, skippedNote, stripAll, stripSummary, usableFiles, verbNotes } from './verbs';
 import { mirrorConsoleToFile } from './debug-log';
@@ -688,6 +689,8 @@ const shortcutRunner = new ShortcutRunner({
     return engine.list().find(item => !before.has(item.id) && item.source === 'clipboard' && item.status === 'ready');
   },
   bitrates: async id => (await mediaFacts(engine.output(id), 'audio')).bitrates ?? [],
+  bitrate: async id => audioMetadata(engine.output(id)).then(info => info.bitrate ? Math.round(info.bitrate / 1000) : undefined, () => undefined),
+  pdfDpi: () => settings.pdfDPI,
   inform,
 });
 const runShortcut = (action: ShortcutAction) => shortcutRunner.run(action);
