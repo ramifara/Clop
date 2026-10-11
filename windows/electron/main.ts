@@ -62,7 +62,7 @@ import { setupBatch } from './batch-window';
 import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
 import { expandHome } from '../core/settings/paths';
 import { menuTemplate } from './card-menu';
-import { coverArtCard, eachResult, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, startProgram, type CardCreation, type CardHost } from './cards';
+import { coverArtCard, eachResult, editorLabel, editorProgram, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, startProgram, type CardCreation, type CardHost } from './cards';
 import { CompactMode, cardsThatFit } from './compact';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -797,7 +797,7 @@ function cardIds(value: unknown) {
 async function cardFacts(id: string): Promise<Facts> {
   const { result } = engine.get(id), editor = editorFor(result.kind);
   const facts: Facts = { native: true, pipelines: pipelineChoices(settings, result.kind) };
-  if (isEditorPath(editor) && await isFile(editor)) facts.editor = path.win32.basename(editor).replace(/\.exe$/i, '');
+  facts.editor = await editorLabel(editor, isFile);
   if (result.status === 'ready') Object.assign(facts, await mediaFacts(engine.output(id), result.kind));
   return facts;
 }

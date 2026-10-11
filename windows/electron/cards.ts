@@ -82,6 +82,12 @@ export const isEditorPath = (value: string) => {
   return path.win32.isAbsolute(program) && /^[a-z]:[\\/]/i.test(program) && !program.slice(2).includes(':') && /\.exe$/i.test(program);
 };
 
+/** The name the menu shows for "Edit with": the program's name when the setting is the full path of an existing .exe, else undefined (no entry). */
+export async function editorLabel(editor: string, isFile: (file: string) => Promise<boolean>) {
+  const program = editor.trim().replace(/^"(.*)"$/, '$1');
+  return isEditorPath(program) && await isFile(program) ? path.win32.basename(program).replace(/\.exe$/i, '') : undefined;
+}
+
 /**
  * The program "Edit with" starts for the `editorApp…` setting `editor`, or an error that says why not. It fails closed: the setting must be the
  * absolute path of an existing .exe that is not an interpreter or launcher, is not inside a watched folder (a file arriving there could be loaded

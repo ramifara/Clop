@@ -17,7 +17,7 @@ import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { run } from '../core/run';
 import { needTools } from '../core/testing';
 import { Workdir } from '../core/workdir';
-import { coverArtCard, eachResult, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, type CardCreation, type CardHost } from './cards';
+import { coverArtCard, eachResult, editorLabel, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, type CardCreation, type CardHost } from './cards';
 import { ItemEngine } from './items';
 import type { PipelineHost } from './pipelines';
 import type { ItemResult } from '../src/types';
@@ -259,10 +259,16 @@ test('Edit with fails closed: only the full path of an existing .exe that passes
 test('a window that asks for Edit with when the menu hides it is refused the same way', async () => {
   const win = { platform: 'win32' as const, marked: clean, canonical: async (file: string) => file };
   // The menu shows the entry only for an existing .exe path (`cardFacts`); the main process runs `editorProgram` on the same setting.
+  const image = { kind: 'image' as const, status: 'ready' as const, format: 'png', animated: false, options: balanced };
+  const shows = async (setting: string, exists_: boolean) => itemMenu(image, { native: true, editor: await editorLabel(setting, async () => exists_) }).some(node => 'label' in node && node.label.startsWith('Edit with'));
   for (const [setting, exists_, reason] of [['', true, /No editor app/], ['gimp', true, /full path/], ['C:\\Apps\\gone.exe', false, /was not found/], ['C:\\Windows\\System32\\cmd.exe', true, /runs other programs/]] as const) {
     await assert.rejects(editorProgram(setting, { ...win, isFile: async () => exists_ }), reason, setting);
-    assert.equal(itemMenu({ kind: 'image', status: 'ready', format: 'png', animated: false, options: balanced }, { native: true }).some(node => 'label' in node && node.label.startsWith('Edit with')), false);
+    // The entry is hidden exactly when the main process would refuse for lack of a program (not for the later safety checks, which it also applies).
+    assert.equal(await shows(setting, exists_), reason.source === 'runs other programs', setting);
   }
+  assert.equal(await shows('"C:\\Program Files\\GIMP\\gimp.exe"', true), true);
+  assert.equal(await editorProgram('"C:\\Program Files\\GIMP\\gimp.exe"', { ...win, isFile: async () => true }), 'C:\\Program Files\\GIMP\\gimp.exe');
+  assert.equal(await shows('\\\\host\\share\\x.exe', true), false);
 });
 
 test('the table refuses what the menu disables, and values the menu never offers', () => {
