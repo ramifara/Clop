@@ -10,8 +10,8 @@ import { defaultPaths } from './settings/paths';
 
 const DAY = 86400000;
 const STREAM = 'clop.optimisation.status';
-/** The file's size when it was marked, so the hint can tell a renamed file from an edited one. */
-const SIZE_STREAM = 'clop.optimisation.size';
+/** The file's size and modification time (whole milliseconds) when it was marked, so the hint can tell a renamed file from an edited one. */
+const SIZE_STREAM = 'clop.optimisation.size', MTIME_STREAM = 'clop.optimisation.mtime';
 interface Entry { size: number; mtimeMs: number; at: number }
 export interface MarkerOptions {
   /** Entries older than this are dropped when the cache loads. */
@@ -101,19 +101,23 @@ export class OptimisedMarker {
   }
 
   /**
-   * Whether the stream hint says `file` was optimised and its size is still the size it was marked at. Streams move with a
-   * renamed or moved file, which the cache keyed by path cannot follow; an edit that changes the size clears it.
+   * Whether the stream hint says `file` was optimised and its size and modification time are still what they were when it was
+   * marked. Streams move with a renamed or moved file, which the cache keyed by path cannot follow; a save in place keeps the
+   * streams but changes the time, so any edit clears the hint.
    */
   async hintMatches(file: string): Promise<boolean> {
     if (await this.hint(file) !== true) return false;
-    try { return Number(await readFile(`${file}:${SIZE_STREAM}`, 'utf8')) === (await stat(file)).size; } catch { return false; }
+    try {
+      const info = await stat(file);
+      return Number(await readFile(`${file}:${SIZE_STREAM}`, 'utf8')) === info.size && Number(await readFile(`${file}:${MTIME_STREAM}`, 'utf8')) === Math.floor(info.mtimeMs);
+    } catch { return false; }
   }
 
   private async writeHint(file: string) {
     if (this.platform !== 'win32') return;
     // NTFS counts a stream write as a write to the file, so its times are put back: marking must not look like an edit.
     const before = await stat(file);
-    try { await writeFile(`${file}:${STREAM}`, 'true'); await writeFile(`${file}:${SIZE_STREAM}`, String(before.size)); } catch {}
+    try { await writeFile(`${file}:${STREAM}`, 'true'); await writeFile(`${file}:${SIZE_STREAM}`, String(before.size)); await writeFile(`${file}:${MTIME_STREAM}`, String(Math.floor(before.mtimeMs))); } catch {}
     await utimes(file, before.atime, before.mtime).catch(() => {});
   }
 

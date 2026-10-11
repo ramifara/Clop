@@ -152,11 +152,23 @@ test('the stream hint follows a renamed file while its size is unchanged', async
   assert.equal(await marker.hintMatches(file), true);
   const renamed = path.join(dir, 'renamed.png');
   await rename(file, renamed);
-  if (process.platform !== 'win32') for (const stream of ['status', 'size']) await rename(`${file}:clop.optimisation.${stream}`, `${renamed}:clop.optimisation.${stream}`);
+  if (process.platform !== 'win32') for (const stream of ['status', 'size', 'mtime']) await rename(`${file}:clop.optimisation.${stream}`, `${renamed}:clop.optimisation.${stream}`);
   assert.equal(await marker.isOptimised(renamed), false, 'the cache is keyed by path');
   assert.equal(await marker.hintMatches(renamed), true);
   await appendFile(renamed, 'an edit');
   assert.equal(await marker.hintMatches(renamed), false, 'an edit that changes the size clears the hint');
+});
+
+test('the stream hint does not survive an edit in place, even one that keeps the size', async t => {
+  const { file, marker } = await setup(t, { platform: 'win32' });
+  await marker.markOptimised(file);
+  assert.equal(await marker.hintMatches(file), true);
+  const { size, mtimeMs } = await stat(file);
+  // The streams stay with the file when an editor overwrites it in place; only the size and time can differ.
+  await writeFile(file, Buffer.alloc(size, 1));
+  await utimes(file, new Date(mtimeMs + 5000), new Date(mtimeMs + 5000));
+  assert.equal((await stat(file)).size, size);
+  assert.equal(await marker.hintMatches(file), false, 'an edit that keeps the size but not the time clears the hint');
 });
 
 test('the stream hint does not exist off Windows and never decides the answer', async t => {
