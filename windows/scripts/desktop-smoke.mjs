@@ -152,11 +152,18 @@ try {
   const known = new Set(finalState.items.map(item => item.id)), fresh = async () => (await main.evaluate('window.clop.state()')).items.find(item => !known.has(item.id) && item.source === 'clipboard');
   // Copying text first ends the clipboard pickup's editing session with the earlier image, which would otherwise hold back every further image copied from the app in front until the user leaves it.
   const copyText = () => execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::SetText("Clop ignored apps smoke")']);
-  await main.evaluate('window.clop.settings({ clipboardIgnoredAppBundleIds: ["powershell.exe"] })');
+  // Ignored apps come from the helper's list of programs, as in the settings window, so a PowerShell is kept running to be listed.
+  const sleeper = spawn('powershell.exe', ['-NoProfile', '-Command', 'Start-Sleep -Seconds 120'], { stdio: 'ignore' });
+  let powershell;
+  try {
+    powershell = await until(async () => (await main.evaluate('window.clop.apps()')).find(app => /\\powershell\.exe$/i.test(app.path))?.path, 'Windows PowerShell is not in the list of apps to ignore');
+  } finally { sleeper.kill(); }
+  await main.evaluate(`window.clop.prefs({ action: 'ignore', op: 'add', entry: ${JSON.stringify(powershell)} })`);
+  assert.deepEqual((await main.evaluate('window.clop.state()')).settings.clipboardIgnoredAppBundleIds, [powershell]);
   copyText(); await pause(1000);
   copyImage(); await pause(3000);
   assert.equal(await fresh(), undefined, 'An image copied by an ignored app must not be optimised');
-  await main.evaluate('window.clop.settings({ clipboardIgnoredAppBundleIds: [] })');
+  await main.evaluate(`window.clop.prefs({ action: 'ignore', op: 'remove', entry: ${JSON.stringify(powershell)} })`);
   copyText(); await pause(1000);
   copyImage();
   await until(fresh, 'The same copy was not optimised once its app was no longer ignored');
