@@ -147,13 +147,8 @@ export const isAumid = (target: string) => !path.win32.isAbsolute(target);
 export const watchedFolders = (settings: Pick<ClopSettings, 'imageDirs' | 'videoDirs' | 'pdfDirs' | 'audioDirs'>, home?: string) =>
   [...settings.imageDirs, ...settings.videoDirs, ...settings.pdfDirs, ...settings.audioDirs].map(dir => path.resolve(expandHome(dir, home)));
 
-/**
- * The App Paths default value in `reg query … /ve` output, with its environment variables expanded. The value's own name is
- * localised (`(Default)`, `(Standard)`), so the line is found by its type.
- */
-export function appPathFromReg(output: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const match = /\s{2,}REG_(?:EXPAND_)?SZ\s{2,}(.+?)\s*$/m.exec(output);
-  if (!match) return;
-  const value = match[1].replace(/^"(.*)"$/, '$1').replace(/%([^%]+)%/g, (whole, name: string) => Object.entries(env).find(([key]) => same(key, name))?.[1] ?? whole);
-  return path.win32.isAbsolute(value) ? value : undefined;
+/** The program an `app-path` reply from the Windows helper names, or undefined when there is no entry or it is not a full path. */
+export function appPathReply(reply: unknown): string | undefined {
+  const value = (reply as Record<string, unknown> | null)?.path;
+  return typeof value === 'string' && path.win32.isAbsolute(value) ? value : undefined;
 }

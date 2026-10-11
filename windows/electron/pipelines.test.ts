@@ -18,7 +18,7 @@ import type { AppEntry } from '../src/types';
 import { FolderResults, type FolderEnv } from './automation';
 import { copyingApp } from './clipboard';
 import { ItemEngine } from './items';
-import { appPathFromReg, attachedAutomation, attachedPipelines, chosenPipeline, pipelineChoices, resolveApp, runForApp, tempRoots, type PipelineHost } from './pipelines';
+import { appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, pipelineChoices, resolveApp, runForApp, tempRoots, type PipelineHost } from './pipelines';
 
 const balanced = { mode: 'balanced', format: 'auto', scale: 1 } as const;
 const pipeline = (id: string, text: string, extra: Partial<Pipeline> = {}): Pipeline => ({ id, steps: parseSteps(text), rawText: text, skipOptimisation: false, hideResult: false, ...extra });
@@ -81,12 +81,9 @@ test('openWith only opens apps Windows knows, and programs by path only for the 
   assert.equal(await resolveApp('paint', risky), 'Microsoft.Paint_8wekyb3d8bbwe!App', 'a packaged app\'s ID is not a path');
 });
 
-test('App Paths entries are read from reg.exe output, with variables expanded', () => {
-  assert.equal(appPathFromReg('\r\nHKEY_CURRENT_USER\\…\\App Paths\\x.exe\r\n    (Default)    REG_SZ    C:\\Apps\\x.exe\r\n'), 'C:\\Apps\\x.exe');
-  assert.equal(appPathFromReg('    (Default)    REG_EXPAND_SZ    "%ProgramFiles%\\Y\\y.exe"', { PROGRAMFILES: 'C:\\Program Files' }), 'C:\\Program Files\\Y\\y.exe');
-  assert.equal(appPathFromReg('    (Default)    REG_SZ    y.exe'), undefined, 'a bare name is not a path');
-  assert.equal(appPathFromReg('\r\n    (Standard)    REG_SZ    C:\\Apps\\z.exe\r\n'), 'C:\\Apps\\z.exe', 'the value\'s name is localised');
-  assert.equal(appPathFromReg('ERROR: The system was unable to find the specified registry key or value.'), undefined);
+test('an App Paths reply from the helper is used only when it is a full path', () => {
+  assert.equal(appPathReply({ path: 'C:\\Apps\\x.exe' }), 'C:\\Apps\\x.exe');
+  for (const bad of [{ path: 'x.exe' }, { path: null }, { path: 4 }, {}, null]) assert.equal(appPathReply(bad), undefined);
 });
 
 test('the copying app is named for if(copiedBy:)', () => {

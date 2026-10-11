@@ -19,11 +19,10 @@ import { FolderWatcher } from './watcher';
 import { enabledKey, placeholderReply } from './watch-rules';
 import { FolderResults, LastBatch, restoreAll } from './automation';
 import { appsReply } from './apps';
-import { appPathFromReg, attachedAutomation, attachedPipelines, chosenPipeline, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
+import { appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
 import { seedBuiltinPipelines } from '../core/pipeline/builtins';
 import { pipelinesSkipOptimisation, type PipelinesOutcome } from '../core/pipeline/triggers';
 import type { PipelineEffects } from '../core/pipeline/executor';
-import { run } from '../core/run';
 import type { MediaKind } from '../core/media/types';
 import { spawn } from 'node:child_process';
 import type { AppEntry, AppState, ImageOptions, ItemResult } from '../src/types';
@@ -225,25 +224,24 @@ async function writeClipboard({ files, image, text }: { files?: string[]; image?
 }
 
 // Pipelines (spec step 21): the effects the executor asks the app for, and the attached and chosen pipelines.
-let appsCache: { at: number; apps: Promise<AppEntry[]> } | undefined;
-/** Apps Windows knows, from the helper, for at most a minute: listing them walks every running process and the Start menu. */
-function knownApps() {
-  if (!appsCache || Date.now() - appsCache.at > 60_000) appsCache = { at: Date.now(), apps: bridgeReady ? bridge.request({ type: 'apps' }).then(appsReply) : Promise.resolve([]) };
-  return appsCache.apps;
+let appsCache: { at: number; apps: AppEntry[] } | undefined;
+/** Apps Windows knows, from the helper, for at most a minute: listing them walks every running process and the Start menu. A failed or empty list is not kept. */
+async function knownApps() {
+  if (appsCache && Date.now() - appsCache.at <= 60_000) return appsCache.apps;
+  if (!bridgeReady) return [];
+  const apps = appsReply(await bridge.request({ type: 'apps' }));
+  if (apps.length) appsCache = { at: Date.now(), apps };
+  return apps;
 }
-/** The program an App Paths entry names, from the user's then the machine's registry. */
+/** The program an App Paths entry names, from the Windows helper. */
 async function registeredAppPath(exe: string) {
-  for (const hive of ['HKCU', 'HKLM']) {
-    const reg = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'reg.exe');
-    const found = await run(reg, ['query', `${hive}\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\${exe}`, '/ve']).then(reply => appPathFromReg(reply.stdout.toString('utf8')), () => undefined);
-    if (found) return found;
-  }
+  return bridgeReady ? appPathReply(await bridge.request({ type: 'app-path', exe }).catch(() => undefined)) : undefined;
 }
 /** `openWith(app:)`: a packaged app through the helper, a program directly with the file as its argument. */
 async function openWith(file: string, app: string, allowExe: boolean) {
   if (process.platform !== 'win32') throw new Error('Opening a file with an app works on Windows only.');
   const target = await resolveApp(app, { apps: knownApps, appPath: registeredAppPath, isFile, watched: watchedFolders(settings, home), allowExe });
-  if (target.includes('!')) {
+  if (isAumid(target)) {
     if (!bridgeReady) throw new Error('The Windows helper is unavailable, so Clop cannot open this app.');
     await bridge.request({ type: 'open-with', aumid: target, file });
     return;
