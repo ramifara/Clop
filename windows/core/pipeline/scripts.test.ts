@@ -91,17 +91,39 @@ test('a program inside a watched folder is refused', async t => {
   await assert.rejects(w.run([makeStep('runScript', { path: program })], input), /is inside the watched folder .*watched\. A program loads DLLs from its own folder/);
 });
 
-test('a script inside a watched folder is refused, whatever its kind', async t => {
+test('a script inside a watched folder is refused for a file that arrived there, whatever its kind', async t => {
   const w = await pipelineWorkspace(t); if (!w) return;
-  const input = w.file('in.png'), dir = path.join(w.dir, 'watched');
-  await graphic(40, 30).png().toFile(input);
+  const dir = path.join(w.dir, 'watched'), input = path.join(dir, 'in.png');
   await mkdir(dir, { recursive: true });
+  await graphic(40, 30).png().toFile(input);
   w.settings.imageDirs = [dir];
   for (const name of ['fix.ps1', 'fix.bat', 'fix.cmd', 'fix.sh']) {
     const file = path.join(dir, name);
     await writeFile(file, 'echo hi');
-    await assert.rejects(w.run([makeStep('runScript', { path: file })], input), /is inside the watched folder .*watched\. Files arrive there without Windows marking where they came from, so Clop does not run scripts from it/, name);
+    await assert.rejects(w.run([makeStep('runScript', { path: file })], input), /is inside the watched folder .*watched\. Files arrive there without Windows marking where they came from, so Clop does not run a script from the folder a file arrived in/, name);
   }
+});
+
+test('a script kept in a watched folder still runs for a file from elsewhere, or when that folder is not being watched', async t => {
+  const w = await pipelineWorkspace(t); if (!w) return;
+  const dir = path.join(w.dir, 'watched'), input = w.file('in.png'), arrived = path.join(dir, 'in.png');
+  await mkdir(dir, { recursive: true });
+  await graphic(40, 30).png().toFile(input);
+  await graphic(40, 30).png().toFile(arrived);
+  const tool = await script(path.join(dir, 'mark'), "Set-Content -LiteralPath ($env:CLOP_INPUT_FILE + '.ran') -Value x", 'touch "$1.ran"');
+  w.settings.imageDirs = [dir];
+  const ran = async (file: string) => (await readdir(path.dirname(file))).includes(`${path.basename(file)}.ran`);
+  // The user's own clipboard, drop or Explorer pipeline, on a file that is not in the folder.
+  await w.run([makeStep('runScript', { path: tool })], input);
+  assert.equal(await ran(input), true);
+  // Pipelines of the folder itself: its type switched off, or automatic optimisation paused, means nothing is arriving.
+  w.settings.enableAutomaticImageOptimisations = false;
+  await w.run([makeStep('runScript', { path: tool })], arrived);
+  assert.equal(await ran(arrived), true);
+  w.settings.enableAutomaticImageOptimisations = true; w.settings.pauseAutomaticOptimisations = true;
+  await w.run([makeStep('runScript', { path: tool })], arrived);
+  w.settings.pauseAutomaticOptimisations = false;
+  await assert.rejects(w.run([makeStep('runScript', { path: tool })], arrived), /is inside the watched folder/);
 });
 
 test('script paths must be absolute, and runShortcut only runs scripts from Clop\'s scripts folder', async t => {

@@ -108,14 +108,21 @@ export function decodeOutput(stdout: Buffer) {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(stdout); } catch { return new TextDecoder('windows-1252').decode(stdout); }
 }
 
-/** The watched folder (any type) that holds `file`, if one does. */
-function watchedFolderHolding(run: RunState, file: string) {
+/**
+ * The watched folder that holds `file`, if one does. A program counts when any watched folder holds it. A script counts only
+ * when the folder is being watched right now (its type is switched on and automatic optimisations are not paused) and also holds
+ * the file the pipeline is working on, which is the one that just arrived there: a script kept in the Desktop folder still runs
+ * for a clipboard or drop pipeline, or a file that comes from elsewhere.
+ */
+function watchedFolderHolding(run: RunState, file: string, program: boolean) {
   const { settings, home, platform = process.platform } = run.opts.env;
   const fold = (value: string) => platform === 'win32' ? value.toLowerCase() : value;
-  return [...settings.imageDirs, ...settings.videoDirs, ...settings.pdfDirs, ...settings.audioDirs].map(dir => path.resolve(expandHome(dir, home))).find(dir => {
-    const relative = path.relative(fold(dir), fold(path.resolve(file)));
-    return !!relative && !relative.startsWith('..') && !path.isAbsolute(relative);
-  });
+  const inside = (dir: string, target: string) => { const relative = path.relative(fold(dir), fold(path.resolve(target))); return !!relative && !relative.startsWith('..') && !path.isAbsolute(relative); };
+  const dirs = program ? [...settings.imageDirs, ...settings.videoDirs, ...settings.pdfDirs, ...settings.audioDirs]
+    : settings.pauseAutomaticOptimisations ? []
+      : [...settings.enableAutomaticImageOptimisations ? settings.imageDirs : [], ...settings.enableAutomaticVideoOptimisations ? settings.videoDirs : [],
+        ...settings.enableAutomaticPDFOptimisations ? settings.pdfDirs : [], ...settings.enableAutomaticAudioOptimisations ? settings.audioDirs : []];
+  return dirs.map(dir => path.resolve(expandHome(dir, home))).find(dir => inside(dir, file) && (program || inside(dir, run.original)));
 }
 
 async function runFile(run: RunState, script: string | undefined, code: string | undefined, label: string) {
@@ -124,9 +131,9 @@ async function runFile(run: RunState, script: string | undefined, code: string |
   if (script) {
     if (!await isFile(script)) throw new Error(`Script not found: ${script}`);
     // Files arrive in a watched folder unmarked (synced, unzipped, copied from a share), so nothing there runs: a script could be replaced, and a program loads DLLs from its own folder.
-    const watched = watchedFolderHolding(run, script);
-    if (watched && /\.(exe|com)$/i.test(script)) throw new Error(`${script} is inside the watched folder ${watched}. A program loads DLLs from its own folder, so a file arriving there could run inside it. Move the program out of the watched folder.`);
-    if (watched) throw new Error(`${script} is inside the watched folder ${watched}. Files arrive there without Windows marking where they came from, so Clop does not run scripts from it. Move the script out of the watched folder.`);
+    const program = /\.(exe|com)$/i.test(script), watched = watchedFolderHolding(run, script, program);
+    if (watched && program) throw new Error(`${script} is inside the watched folder ${watched}. A program loads DLLs from its own folder, so a file arriving there could run inside it. Move the program out of the watched folder.`);
+    if (watched) throw new Error(`${script} is inside the watched folder ${watched}. Files arrive there without Windows marking where they came from, so Clop does not run a script from the folder a file arrived in. Move the script out of the watched folder.`);
     if (await markedAsDownloaded(script)) throw new Error(`${script} was downloaded from the internet. Check it, then unblock it in its Properties (or with Unblock-File) to run it.`);
   }
   const { command, args, verbatim } = script ? await scriptCommand(script, input) : await inlineCommand(code!, input);
