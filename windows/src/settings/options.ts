@@ -23,7 +23,7 @@ export const ACTION_LABELS: Record<string, string> = {
 /** Actions with nothing behind them on Windows (a shelf app is a Mac thing) are not offered, but one already in a list stays. */
 export const OFFERED_ACTIONS = Object.keys(ACTION_LABELS).filter(name => name !== 'addToShelf');
 
-/** The global shortcuts' action keys, as `KeysSettingsView.swift` lists them. */
+/** The global shortcuts' action keys, as `KeysSettingsView.swift` lists them. Rename (R) is left out: Windows cards have no inline file name to edit, so no shortcut would do anything. */
 export const ACTION_KEYS = [
   { key: '-', name: 'Downscale', description: 'Decrease resolution of the last image or video' },
   { key: 'X', name: 'Speed up video', description: 'Make video playback faster by dropping frames' },
@@ -31,11 +31,11 @@ export const ACTION_KEYS = [
   { key: 'Escape', name: 'Stop and clear all', description: 'Stop running optimisations and clear all floating results' },
   { key: '=', name: 'Bring back', description: 'Bring back the last removed floating result' },
   { key: 'Space', name: 'Preview', description: 'Preview the latest image or video' },
-  { key: 'R', name: 'Rename', description: 'Rename the file of the latest image or video' },
   { key: 'Z', name: 'Restore original', description: 'Revert optimisations and downscaling actions done on the latest image or video' },
   { key: 'P', name: 'Pause optimisations', description: 'Pause or stop automatic optimisations' },
   { key: 'C', name: 'Optimise current clipboard', description: 'Apply optimisations on the copied image, URL or path' },
   { key: 'A', name: 'Optimise aggressively', description: 'Apply aggressive optimisations on the copied image, URL or path' },
+  { key: 'K', name: 'Crop', description: 'Open the crop window for the latest result' },
 ] as const;
 /** `RESIZE_KEYS`: the number keys 1 to 9, each downscaling to that many tenths. */
 export const RESIZE_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9'] as const;
