@@ -4,7 +4,7 @@ import { defaultSettings, parseSettings, type ClopSettings } from '../settings/s
 import { Unreadable, decodePipelines, decodePresetZones, isReadable } from './codec';
 import { seedBuiltinPipelines } from './builtins';
 import { LIMITS, applyCommand, parseCommand, type EditorCommand } from './editor-commands';
-import { editorState, entryKeys, revisionOf, type EditorSettings } from './editor-state';
+import { editorState, entryKeys, revisionOf, type EditorSettings, type PipelineView } from './editor-state';
 import type { Pipeline, PresetZone } from './model';
 import { pipelinesFor } from './triggers';
 
@@ -32,8 +32,7 @@ test('malformed commands are refused whole, whatever the caller sends', () => {
   const bad: unknown[] = [undefined, null, 'attach', [], {}, { type: 'rm -rf' }, { type: 'attach', fileType: 'image', source: 'clipboard' },
     { type: 'attach', fileType: 'gif', source: 'clipboard', pipelineId: 'x' }, { type: 'attach', fileType: 'image', source: 7, pipelineId: 'x' }, { type: 'attach', fileType: 'image', source: '', pipelineId: 'x' },
     { type: 'attach', fileType: 'image', source: 'clipboard', pipelineId: 'x'.repeat(LIMITS.id + 1) },
-    { type: 'pipeline-save', name: 'a', skipOptimisation: false, hideResult: false, view: 'text', text: 1 }, { ...save(), view: 'xml' }, { ...save(), name: '  ' }, { ...save(), name: 'x'.repeat(LIMITS.name + 1) },
-    { ...save(), text: 'x'.repeat(LIMITS.text + 1) }, { ...save(), skipOptimisation: 'yes' }, { ...save(), icon: '../etc' }, { ...save(), icon: 'a b' }, { ...save(), fileType: 'gif' }, { ...save(), id: 5 },
+    { type: 'pipeline-save', name: 'a', skipOptimisation: false, hideResult: false, view: 'text', text: 1 }, { ...save(), view: 'xml' }, { ...save(), name: '  ' },     { ...save(), text: 'x'.repeat(LIMITS.text + 1) }, { ...save(), skipOptimisation: 'yes' }, { ...save(), icon: 7 }, { ...save(), icon: 'x'.repeat(LIMITS.path + 1) }, { ...save(), fileType: 'gif' }, { ...save(), id: 5 },
     { type: 'zone-save', name: 'a', icon: 'photo', pipelineId: {} }, { type: 'zone-move', key: 'a', to: -1 }, { type: 'zone-move', key: 'a', to: 1.5 }, { type: 'zone-move', key: 'a', to: LIMITS.zones }, { type: 'zone-delete', key: 'z' }, { type: 'pipeline-delete', key: 'p' }];
   for (const command of bad) assert.throws(() => applyCommand(fixture(), command), /invalid|Error/, JSON.stringify(command));
   assert.deepEqual(parseCommand({ type: 'zone-delete', key: 'z', base: 'r', extra: 'ignored' }), { type: 'zone-delete', key: 'z', base: 'r' }, 'unknown fields are dropped');
@@ -300,4 +299,45 @@ test('a save of an existing pipeline or zone is refused when the entry changed s
   // A rename that lands on an equal entry is not a conflict: the revision is of the content.
   assert.equal(run(settings, save({ id, base: shown, name: 'Small PNGs', text: 'downscale(factor: 0.5) -> optimise' })).result.conflict, undefined);
   for (const bad of [save({ id }), { type: 'zone-save', id: zoneId, name: 'x', icon: 'photo' }]) assert.throws(() => applyCommand(settings, bad, windows), /invalid revision/);
+});
+
+test('values already stored that Windows would not accept do not block a rename or a flag change, but new ones are held to the limits', () => {
+  const longName = 'N'.repeat(LIMITS.name + 20), longDetails = 'D'.repeat(LIMITS.details + 50), oddIcon = 'icon with spaces';
+  const start = fixture({
+    savedPipelines: [...fixture().savedPipelines, ...decodePipelines([{ id: 'OLD', name: longName, details: longDetails, icon: oddIcon, fileType: 'image', steps: [{ downscale: { factor: 0 } }] }, { id: 'OLD2', name: 'Text one', rawText: 'downscale(factor: 2)' }])!],
+    presetZones: decodePresetZones([{ id: 'ZOLD', name: 'Z'.repeat(LIMITS.zoneName + 10), icon: oddIcon, fileType: 'image' }])!,
+  });
+  assert.ok(named(start, longName), 'the stored pipeline is readable');
+  const base = rev(start, 'OLD'), view = editorState(start, windows).library.find(entry => entry.key === 'OLD')!;
+  assert.ok(view.readable);
+  const json = (view as PipelineView).json;
+  assert.match(json, /factor/);
+  // Same steps, same labels, only a flag changes: the stored name, description, icon and step value pass through.
+  const flag = run(start, save({ id: 'OLD', base, name: longName, details: longDetails, icon: oddIcon, view: 'json', text: json, hideResult: true }));
+  assert.equal(flag.result.issues, undefined, JSON.stringify(flag.result.issues));
+  assert.equal(named(flag.settings, longName).hideResult, true);
+  // The step text as the window shows it saves too.
+  const second = editorState(start, windows).library.find(entry => entry.key === 'OLD2') as PipelineView;
+  assert.match(second.text, /downscale/);
+  const text = run(start, save({ id: 'OLD2', base: second.revision, name: 'Text renamed', text: second.text, skipOptimisation: true, fileType: undefined }));
+  assert.equal(text.result.issues, undefined, JSON.stringify(text.result.issues));
+  assert.ok(named(text.settings, 'Text renamed').skipOptimisation);
+  assert.ok(run(start, save({ id: 'OLD2', base: second.revision, name: 'Text', text: second.text.replace('2', '3'), fileType: undefined })).result.issues!.length > 0, 'a changed value is checked again');
+  // A rename to a name within the limits works while the step keeps its stored value.
+  const renamed = run(start, save({ id: 'OLD', base, name: 'Short', details: longDetails, icon: oddIcon, view: 'json', text: json }));
+  assert.equal(renamed.result.issues, undefined);
+  assert.equal(named(renamed.settings, 'Short').id, 'OLD');
+  // Changing the value to another bad one, or any label to a new over-long one, is refused with a clear message.
+  assert.ok(run(start, save({ id: 'OLD', base, name: longName, details: longDetails, icon: oddIcon, view: 'json', text: json.replace('0', '-1') })).result.issues!.length > 0);
+  assert.match(run(start, save({ id: 'OLD', base, name: longName + 'x', details: longDetails, icon: oddIcon, view: 'json', text: json })).result.issues![0].message, /name can be at most 80 characters; this one has 101/);
+  assert.match(run(start, save({ id: 'OLD', base, name: 'Short', details: longDetails + 'x', icon: oddIcon, view: 'json', text: json })).result.issues![0].message, /description can be at most 300/);
+  assert.match(run(start, save({ id: 'OLD', base, name: 'Short', icon: 'bad icon', view: 'json', text: json })).result.issues![0].message, /icon name uses only letters/);
+  assert.match(run(start, save({ name: longName })).result.issues![0].message, /name can be at most 80/);
+  assert.match(run(start, save({ icon: '../etc' })).result.issues![0].message, /icon name uses only letters/);
+  // The same for a preset zone: a stored long name and odd icon stay while the pipeline changes.
+  const zone = editorState(start, windows).zones[0], zoneBase = zone.revision;
+  const zoneName = (start.presetZones[0] as PresetZone).name;
+  assert.equal(run(start, { type: 'zone-save', id: 'ZOLD', base: zoneBase, name: zoneName, icon: oddIcon, fileType: 'image', pipelineId: 'OLD' }).result.issues, undefined);
+  assert.match(run(start, { type: 'zone-save', id: 'ZOLD', base: zoneBase, name: zoneName + 'x', icon: oddIcon, fileType: 'image' }).result.issues![0].message, /name can be at most 40/);
+  assert.match(run(start, { type: 'zone-save', name: 'New', icon: 'a b' }).result.issues![0].message, /icon name uses only letters/);
 });

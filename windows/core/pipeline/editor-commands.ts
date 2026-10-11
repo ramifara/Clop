@@ -44,7 +44,8 @@ const fileType = (value: unknown) => typeof value === 'string' && (FILE_TYPES as
 const idOf = (value: unknown, what = 'id') => text(value, what, LIMITS.id);
 /** The revision of the entry the window showed (`revisionOf`), which the command acts on only while it is still stored. */
 const revision = (value: unknown) => idOf(value, 'revision');
-const icon = (value: unknown) => typeof value === 'string' && ICON.test(value) ? value : refuse('icon');
+/** Any text up to the largest size, which a value stored by a newer or other version may reach; `checkLabels` holds new values to the real limits. */
+const icon = (value: unknown) => typeof value === 'string' && value.length <= LIMITS.path ? value : refuse('icon');
 
 /** A save of an existing entry (it has an id) names the revision it replaces; a new one has neither. */
 function withBase(c: Record<string, unknown>): { id?: string; base?: string } {
@@ -57,8 +58,8 @@ export function parseCommand(value: unknown): EditorCommand {
   const c = record(value);
   switch (c.type) {
     case 'pipeline-save': return {
-      type: 'pipeline-save', ...withBase(c), name: text(c.name, 'name', LIMITS.name).trim(), fileType: optional(c.fileType, fileType), icon: optional(c.icon, icon),
-      details: optional(c.details, v => text(v, 'description', LIMITS.details, { empty: true }).trim() || undefined), skipOptimisation: flag(c.skipOptimisation, 'setting'), hideResult: flag(c.hideResult, 'setting'),
+      type: 'pipeline-save', ...withBase(c), name: text(c.name, 'name', LIMITS.text).trim(), fileType: optional(c.fileType, fileType), icon: optional(c.icon, icon),
+      details: optional(c.details, v => text(v, 'description', LIMITS.text, { empty: true }).trim() || undefined), skipOptimisation: flag(c.skipOptimisation, 'setting'), hideResult: flag(c.hideResult, 'setting'),
       view: c.view === 'text' || c.view === 'json' ? c.view : refuse('view'), text: text(c.text, 'pipeline text', LIMITS.text, { empty: true }),
     };
     case 'pipeline-fix': return { type: 'pipeline-fix', key: idOf(c.key, 'entry'), base: revision(c.base), json: text(c.json, 'pipeline JSON', LIMITS.text) };
@@ -66,12 +67,24 @@ export function parseCommand(value: unknown): EditorCommand {
     case 'attach': return { type: 'attach', fileType: fileType(c.fileType), source: text(c.source, 'source', LIMITS.path), pipelineId: idOf(c.pipelineId) };
     case 'detach': return { type: 'detach', fileType: fileType(c.fileType), source: text(c.source, 'source', LIMITS.path), key: idOf(c.key, 'entry'), base: revision(c.base) };
     case 'zone-save': return {
-      type: 'zone-save', ...withBase(c), name: text(c.name, 'name', LIMITS.zoneName).trim(), icon: icon(c.icon), fileType: optional(c.fileType, fileType), pipelineId: optional(c.pipelineId, v => idOf(v)),
+      type: 'zone-save', ...withBase(c), name: text(c.name, 'name', LIMITS.text).trim(), icon: icon(c.icon), fileType: optional(c.fileType, fileType), pipelineId: optional(c.pipelineId, v => idOf(v)),
     };
     case 'zone-delete': return { type: 'zone-delete', key: idOf(c.key, 'zone'), base: revision(c.base) };
     case 'zone-move': return { type: 'zone-move', key: idOf(c.key, 'zone'), to: Number.isInteger(c.to) && (c.to as number) >= 0 && (c.to as number) < LIMITS.zones ? c.to as number : refuse('position') };
     default: return refuse('command');
   }
+}
+
+/**
+ * Holds the name, description and icon of a save to their limits, except a value the entry already stores: a pipeline or zone
+ * made by another version or tool may hold a longer name or an icon this window would not accept, and it must stay editable.
+ */
+function checkLabels(c: { name: string; details?: string; icon?: string }, previous: { name?: string; details?: string; icon?: string } | undefined, nameLimit: number): CommandResult | undefined {
+  const kept = (value: string | undefined, before: string | undefined) => value === before;
+  if (c.name.length > nameLimit && !kept(c.name, previous?.name?.trim())) return problem(`The name can be at most ${nameLimit} characters; this one has ${c.name.length}.`);
+  if (c.details !== undefined && c.details.length > LIMITS.details && !kept(c.details, previous?.details?.trim())) return problem(`The description can be at most ${LIMITS.details} characters; this one has ${c.details.length}.`);
+  if (c.icon !== undefined && !ICON.test(c.icon) && !kept(c.icon, previous?.icon)) return problem('An icon name uses only letters, digits, dots, dashes and underscores, and is at most 64 characters.');
+  return undefined;
 }
 
 const none = (issues: PipelineIssue[]): CommandResult => ({ patch: {}, issues });
@@ -102,7 +115,15 @@ function savePipeline(settings: EditorSettings, c: Extract<EditorCommand, { type
   if (c.id !== undefined && (index < 0 || !isReadable(existing))) return problem('That pipeline is no longer in the library. Save it as a new pipeline.');
   if (c.id !== undefined && !unchanged(existing, c.base!)) return changed();
   if (index < 0 && settings.savedPipelines.length >= LIMITS.library) return problem(`The library holds at most ${LIMITS.library} pipelines.`);
-  const parsed = c.view === 'text' ? parsePipelineText(c.text, { fileType: c.fileType, home: context.home }) : parseJsoncSteps(c.text, { fileType: c.fileType });
+  const previous = existing && isReadable(existing) ? existing : undefined;
+  const labels = checkLabels(c, previous, LIMITS.name);
+  if (labels) return labels;
+  let parsed = c.view === 'text' ? parsePipelineText(c.text, { fileType: c.fileType, home: context.home }) : parseJsoncSteps(c.text, { fileType: c.fileType });
+  // Steps the pipeline already has are not held to today's value checks: a stored value Windows rejects must not stop a rename or a flag change.
+  if (previous && parsed.issues.length && c.fileType === previous.fileType) {
+    const stored = c.view === 'text' ? parsePipelineText(c.text, { fileType: c.fileType, home: context.home, checkValues: false }) : parseJsoncSteps(c.text, { fileType: c.fileType, checkValues: false });
+    if (!stored.issues.length && JSON.stringify(stored.steps) === JSON.stringify(previous.steps)) parsed = stored;
+  }
   if (parsed.issues.length) return none(parsed.issues);
   if (!parsed.steps.length) return problem('Add at least one step.');
   if (c.id !== undefined) {
@@ -110,7 +131,6 @@ function savePipeline(settings: EditorSettings, c: Extract<EditorCommand, { type
       ...conflicts.zones.filter(zone => c.fileType && zone.type !== c.fileType).map(zone => `the preset zone ${zone.name}`)];
     if (wrong.length) return problem(`It is attached to ${wrong.join(', ')}. Detach it there before limiting it to ${c.fileType} files.`);
   }
-  const previous = existing && isReadable(existing) ? existing : undefined;
   const rawText = c.view === 'text' ? cleanupPipelineText(c.text, context.home) : parsed.steps.every(canFormat) ? formatSteps(parsed.steps) : undefined;
   const pipeline: Pipeline = { ...previous, id: previous?.id ?? newPipelineId(), steps: parsed.steps, name: c.name, rawText, skipOptimisation: c.skipOptimisation, hideResult: c.hideResult, fileType: c.fileType, icon: c.icon, details: c.details };
   const savedPipelines = [...settings.savedPipelines];
@@ -190,6 +210,8 @@ function saveZone(settings: EditorSettings, c: Extract<EditorCommand, { type: 'z
   if (c.id !== undefined && !unchanged(existing, c.base!)) return changed();
   if (index < 0 && settings.presetZones.length >= LIMITS.zones) return problem(`There is room for ${LIMITS.zones} preset zones.`);
   const previous = existing && isReadable(existing) ? existing : undefined;
+  const labels = checkLabels(c, previous, LIMITS.zoneName);
+  if (labels) return labels;
   let pipeline = previous?.pipeline;
   if (c.pipelineId !== undefined && c.pipelineId !== pipeline?.libraryID) {
     const target = readable(settings.savedPipelines).find(entry => entry.id === c.pipelineId);

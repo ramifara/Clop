@@ -73,7 +73,8 @@ function firstBadOffset(clean: string): number {
  * The steps in a JSON view's text, with every problem: invalid JSON, a step the decoder refuses, and values that do not
  * work here or on `fileType`, each at its line and column. Steps with problems are left out.
  */
-export function parseJsoncSteps(text: string, { fileType }: { fileType?: ClopFileType } = {}): { steps: PipelineStep[]; issues: PipelineIssue[] } {
+/** `checkValues: false` skips the step and file type checks (values Windows would not accept), for steps that are already stored. */
+export function parseJsoncSteps(text: string, { fileType, checkValues = true }: { fileType?: ClopFileType; checkValues?: boolean } = {}): { steps: PipelineStep[]; issues: PipelineIssue[] } {
   const lineStarts = [0, ...[...text.matchAll(/\n/g)].map(match => match.index + 1)];
   const at = (offset: number, length: number, message: string, step?: number): PipelineIssue => {
     let line = lineStarts.length - 1;
@@ -93,7 +94,7 @@ export function parseJsoncSteps(text: string, { fileType }: { fileType?: ClopFil
     const [from, to] = spans[index] ?? [0, text.length];
     try {
       const step = decodeStep(item, index);
-      const problems = [...stepProblems(step), ...(fileType ? typeProblems(step, fileType) : [])];
+      const problems = checkValues ? [...stepProblems(step), ...(fileType ? typeProblems(step, fileType) : [])] : [];
       for (const problem of problems) issues.push(at(from, to - from, problem.message, index));
       if (!problems.length) steps.push(step);
     } catch (error) {
