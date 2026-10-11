@@ -15,7 +15,7 @@ import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ignoredApp, withIgnored } from './apps';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
-import { CursorFollower, FOLLOW_INTERVAL_MS, hideDelay } from './floating-results';
+import { CursorFollower, FOLLOW_INTERVAL_MS, hideDelay, dropZoneShown } from './floating-results';
 import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, copiesFiles, DEFAULT_NAME_TEMPLATE, pausedForPoll, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp, imageDataReply } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
@@ -77,7 +77,7 @@ const views = new Map<string, BrowserWindow>();
 let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false, bridgeStopped = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
-let dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
+let altHeld = false, dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
 /** The files being dragged, and whether Ctrl or Alt is held, as the Windows helper reports them: Ctrl or Alt shows the preset zone tiles. */
 let dragFiles: string[] = [], presetsLatched = false;
 const presetReveal = new PresetReveal();
@@ -147,6 +147,8 @@ const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 const presetsRevealed = () => presetReveal.revealed(settings.onlyShowPresetZonesOnControlTapped);
 /** The preset zone tiles for the files being dragged. */
 function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, draggedType(dragFiles, mediaKind)) }; }
+/** Whether the drop target shows now (see `dropZoneShown`); `dropActive` stays true for a drag whose target is hidden, so a drop still lands. */
+const targetShown = () => dropZoneShown({ expecting: dropActive, dragging, onlyWithAlt: settings.onlyShowDropZoneOnOption, alt: altHeld });
 // With `enableFloatingResults` off Clop runs without a result UI: results stay in the shelf, unseen.
 const visible = () => settings.enableFloatingResults ? engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id)) : [];
 let choices: { saved: ClopSettings['savedPipelines']; list: ReturnType<typeof allPipelineChoices> } | undefined;
@@ -154,7 +156,7 @@ let choices: { saved: ClopSettings['savedPipelines']; list: ReturnType<typeof al
 const pipelineList = () => (choices?.saved === settings.savedPipelines ? choices : choices = { saved: settings.savedPipelines, list: allPipelineChoices(settings) }).list;
 /** How many full cards fit the screen last time the shelf was laid out. */
 let cardFit = 3;
-const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, dropActive, notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList(), ...(settings.finishedOnboarding ? {} : { welcome: true as const }) });
+const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, dropActive: targetShown(), notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList(), ...(settings.finishedOnboarding ? {} : { welcome: true as const }) });
 function broadcast() {
   refreshTrayIcon();
   for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
@@ -197,11 +199,11 @@ function showFloating(focus = false, reposition = false) {
 const compactHeight = (rows: number) => 38 + rows * (settings.showCompactImages ? 58 : 34);
 function syncFloating() {
   if (!floating || floating.isDestroyed()) return;
-  const target = dropActive || settings.keepDropZoneVisible;
+  const target = targetShown() || settings.keepDropZoneVisible;
   const area = floatingArea();
   const items = visible();
   // Room for the tiles stays once they were shown, until the drag ends: a tile under the pointer must not lose its window when Ctrl is let go.
-  const tiles = presetsLatched || presetsRevealed() ? gridHeight(cellCount(presets())) + 8 : 0;
+  const tiles = targetShown() && (presetsLatched || presetsRevealed()) ? gridHeight(cellCount(presets())) + 8 : 0;
   const extra = extraHeight({ tiles, notice: !!notice, welcome: !settings.finishedOnboarding });
   cardFit = cardsThatFit(area.height, target, 170, 60 + extra);
   const compact = compactMode.update(items.map(item => ({ id: item.id, running: item.status === 'processing' })));
@@ -1200,17 +1202,18 @@ else {
       bridge.on('foreground', event => pickup.focus(Number(event.process)));
       bridge.on('drag-start', event => {
         if (!settings.enableDragAndDrop) return;
-        dragging = true; dropActive = true; presetReveal.reset(); presetsLatched = false;
+        dragging = true; dropActive = true; altHeld = false; presetReveal.reset(); presetsLatched = false;
         dragFiles = Array.isArray(event.paths) ? (event.paths as unknown[]).filter((file): file is string => typeof file === 'string').slice(0, 64) : [];
         floating.setIgnoreMouseEvents(false); syncFloating(); broadcast();
       });
       // The helper reads Ctrl and Alt while a drag lasts; holding either shows the preset zone tiles, or tapping it with `onlyShowPresetZonesOnControlTapped`.
       bridge.on('drag-modifiers', event => {
         if (!dragging) return;
+        altHeld = event.alt === true;
         presetReveal.update({ ctrl: event.ctrl === true, alt: event.alt === true }, settings.onlyShowPresetZonesOnControlTapped); presetsLatched ||= presetsRevealed(); syncFloating(); broadcast();
       });
       // The tiles stay for the moment a drop on one needs to land.
-      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; dragFiles = []; presetReveal.reset(); presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
+      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; altHeld = false; dragFiles = []; presetReveal.reset(); presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
       bridge.on('stopped', () => { bridgeReady = false; bridgeStopped = true; pickup.cancel(); startClipboardFallback(); for (const watcher of watchers) watcher.resume(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));

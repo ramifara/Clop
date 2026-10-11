@@ -207,7 +207,7 @@ const rows: Row[] = [
   // dropzone › Drop zone
   { id: 'dropzone.dropzone.enableDragAndDrop', keys: ['enableDragAndDrop'], title: 'Enable drop zone', subtitle: 'Allows dragging files, paths and URLs to a global drop zone for optimisation', keywords: ['drop zone', 'drag', 'drop'], tab: 'dropzone', section: 'Drop zone' },
   { id: 'dropzone.dropzone.keepDropZoneVisible', keys: ['keepDropZoneVisible'], title: 'Keep drop zone visible', subtitle: 'Leave the drop zone on screen without dragging', keywords: ['pinned', 'pin', 'always visible', 'show', 'sticky'], tab: 'dropzone', section: 'Drop zone' },
-  { id: 'dropzone.dropzone.onlyShowDropZoneOnOption', keys: ['onlyShowDropZoneOnOption'], title: 'Require pressing Alt to show drop zone', subtitle: 'Hide the drop zone by default to avoid distractions while dragging files, show it by holding Alt', keywords: ['alt', 'option', 'modifier', 'hold', 'distraction', 'hide'], tab: 'dropzone', section: 'Drop zone', ui: { pending: 'the drop zone does not read it' } },
+  { id: 'dropzone.dropzone.onlyShowDropZoneOnOption', keys: ['onlyShowDropZoneOnOption'], title: 'Require pressing Alt to show drop zone', subtitle: 'Hide the drop zone by default to avoid distractions while dragging files, show it by holding Alt', keywords: ['alt', 'option', 'modifier', 'hold', 'distraction', 'hide'], tab: 'dropzone', section: 'Drop zone' },
   { id: 'dropzone.dropzone.autoCopyToClipboard', keys: ['autoCopyToClipboard'], title: 'Auto Copy optimised files to clipboard', subtitle: 'Copy files resulting from drop zone or file watch optimisation so they can be pasted right after optimisation ends', keywords: [], tab: 'dropzone', section: 'Drop zone' },
 
   // dropzone › Batch mode

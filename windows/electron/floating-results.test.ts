@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultSettings } from '../core/settings/schema';
-import { CursorFollower, hideDelay } from './floating-results';
+import { CursorFollower, dropZoneShown, hideDelay } from './floating-results';
 
 const timing = (more: Partial<ReturnType<typeof defaultSettings>> = {}) => ({ ...defaultSettings(), ...more });
 
@@ -29,4 +29,12 @@ test('the results follow the cursor to another display after three looks, and no
 test('a drag or held button freezes the count instead of resetting it', () => {
   const follower = new CursorFollower(), look = (more: { frozen?: boolean } = {}) => follower.tick({ cursor: 2, current: 1, active: true, ...more });
   assert.deepEqual([look(), look(), look({ frozen: true }), look({ frozen: true }), look()], [undefined, undefined, undefined, undefined, 2]);
+});
+
+test('with onlyShowDropZoneOnOption a dragged-over drop target needs Alt held; without a drag or the setting it does not', () => {
+  const shown = (more: Partial<Parameters<typeof dropZoneShown>[0]>) => dropZoneShown({ expecting: true, dragging: true, onlyWithAlt: false, alt: false, ...more });
+  assert.equal(shown({}), true, 'by default a drag shows it');
+  assert.deepEqual([shown({ onlyWithAlt: true }), shown({ onlyWithAlt: true, alt: true })], [false, true]);
+  assert.equal(shown({ onlyWithAlt: true, dragging: false }), true, 'the tray\'s Show latest results is no drag');
+  assert.equal(shown({ expecting: false, alt: true }), false);
 });

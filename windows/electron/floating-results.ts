@@ -36,3 +36,11 @@ export class CursorFollower {
   }
   reset() { this.pending = undefined; this.ticks = 0; }
 }
+
+/**
+ * Whether the drop target shows. During a drag with `onlyShowDropZoneOnOption` it shows only while Alt is held (macOS toggles it with an
+ * Option tap; the helper reports the held keys, so Windows follows the key); otherwise whenever a drop is expected.
+ */
+export function dropZoneShown({ expecting, dragging, onlyWithAlt, alt }: { expecting: boolean; dragging: boolean; onlyWithAlt: boolean; alt: boolean }) {
+  return expecting && (!dragging || !onlyWithAlt || alt);
+}

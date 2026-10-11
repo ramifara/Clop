@@ -126,7 +126,6 @@ test('name templates apply under Same folder and path templates under Specific f
 const PENDING_KEYS = [
   'audioFormat',
   'defaultLinkExpiration', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnUpload',
-  'onlyShowDropZoneOnOption',
 ];
 
 test('the rows that do nothing yet are exactly the pinned list, each with a reason', () => {
