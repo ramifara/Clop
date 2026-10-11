@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { exists } from './fileops';
-import { Workdir } from './workdir';
+import { stampArrival, Workdir } from './workdir';
 
 async function folder(t: TestContext) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-workdir-'));
@@ -234,4 +234,22 @@ test('repair puts back an original a placement left away from its path, from its
   assert.equal(await readFile(present, 'utf8'), 'still here');
   assert.equal(await exists(path.join(dir, 'planted.txt')), false);
   assert.deepEqual(await readdir(path.join(workdir.root, 'placing')), []);
+});
+
+test('a moved backup that a FAT or exFAT drive left looking old is copied afresh, so the cleaner sees it as just arrived', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-arrival-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'video-1234.mp4'), old = new Date(2020, 0, 1);
+  await writeFile(file, 'the only copy'); await utimes(file, old, old);
+  const before = await stat(file);
+  // As exFAT reports a moved file: every time as old as the file.
+  await stampArrival(file, Date.now(), async () => ({ mtimeMs: old.getTime(), ctimeMs: old.getTime(), birthtimeMs: old.getTime() }));
+  const after = await stat(file);
+  assert.notEqual(after.ino, before.ino, 'a new file under the same name');
+  assert.equal(await readFile(file, 'utf8'), 'the only copy');
+  assert.equal(after.mtimeMs, old.getTime(), 'the modification time that restoring gives back stays');
+  assert.deepEqual((await readdir(dir)), ['video-1234.mp4']);
+  // On NTFS the move itself updates the change time: nothing is copied.
+  await stampArrival(file);
+  assert.equal((await stat(file)).ino, after.ino);
 });

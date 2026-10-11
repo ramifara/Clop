@@ -27,6 +27,18 @@ const within = (parent: string, child: string, platform: NodeJS.Platform = proce
   return samePath(parent, child, platform) || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 };
 
+/**
+ * Makes sure the cleaner sees `file` as just arrived. A move keeps a file's modification and creation times; NTFS still updates its
+ * change time, which the cleaner reads, but FAT and exFAT do not, so there a just-moved backup of an old file would look old enough to
+ * delete. Then the file is copied afresh under its own name (keeping its modification time), which gives it a new creation time.
+ */
+export async function stampArrival(file: string, now = Date.now(), info: (file: string) => Promise<{ mtimeMs: number; ctimeMs: number; birthtimeMs: number }> = stat) {
+  const times = await info(file);
+  if (now - Math.max(times.mtimeMs, times.ctimeMs, times.birthtimeMs) < 60_000) return;
+  const fresh = path.join(path.dirname(file), `.clop-${randomUUID()}.tmp`);
+  try { await copyTo(file, fresh); await moveTo(fresh, file); } finally { await rm(fresh, { force: true }); }
+}
+
 /** Removes files in `dir` that have not changed for longer than `maxAgeMs` (a negative value removes every file, whatever its timestamps), then the folders that are left empty (never `dir` itself). Anything inside a `keep` folder stays. Links (symlinks, junctions) are removed as links when they age out and never followed, and a `dir` that is itself a link is left alone. Returns the number of files removed. */
 export async function sweep(dir: string, maxAgeMs: number, now: number, keep: ReadonlySet<string> = new Set()): Promise<number> {
   let removed = 0;
@@ -126,6 +138,7 @@ export class Workdir {
     await mkdir(this.backups, { recursive: true });
     const target = await this.backupPath(original);
     await (move ? moveTo : copyTo)(original, target, { force });
+    if (move) await stampArrival(target).catch(() => {});
     this.latest.set(path.resolve(original), target);
     return target;
   }
