@@ -7,6 +7,12 @@ import type { ItemResult } from '../src/types';
 import type { ClipboardChange } from './pickup';
 import { ignoredApp } from './apps';
 
+/**
+ * Whether results go on the clipboard as a file list. A single image goes on as pixels, with its file only when `copyImageFilePath` is on;
+ * anything else, several results, or `files` (Share, which puts the file itself on) always carries the files.
+ */
+export const copiesFiles = ({ allImages, count, copyImageFilePath, extra = 0, files = false }: { allImages: boolean; count: number; copyImageFilePath: boolean; extra?: number; files?: boolean }) => files || !allImages || count > 1 || copyImageFilePath || extra > 0;
+
 /** `DEFAULT_NAME_TEMPLATE` in SettingsView.swift, for clipboard images when the custom template is empty. */
 export const DEFAULT_NAME_TEMPLATE = 'clop_%y-%m-%d_%i';
 const MAX_FILES = 64, MAX_PATH = 32_767;

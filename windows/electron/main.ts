@@ -14,7 +14,7 @@ import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ignoredApp, withIgnored } from './apps';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
-import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp } from './clipboard';
+import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, copiesFiles, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
 import { enabledKey, localFile } from './watch-rules';
@@ -333,12 +333,12 @@ async function createWindows() {
 /**
  * Puts results on the clipboard. One image goes on as image data, with its file unless `copyImageFilePath` is off. Other
  * results, and several at once, go on as a file list, with the last image's data when all are images. `text` also puts
- * the paths on as text, for results of a copied path.
+ * the paths on as text, for results of a copied path. `files` puts the file list on whatever `copyImageFilePath` says (Share).
  */
-async function copy(ids: string[], expectedSequence?: number, { text = false, extra = [] }: { text?: boolean; extra?: string[] } = {}) {
+async function copy(ids: string[], expectedSequence?: number, { text = false, extra = [], files: asFiles = false }: { text?: boolean; extra?: string[]; files?: boolean } = {}) {
   const outputs = ids.map(id => engine.output(id)), files = [...outputs, ...extra];
   const images = ids.every(id => engine.get(id).result.kind === 'image');
-  const withFiles = !images || ids.length > 1 || settings.copyImageFilePath || extra.length > 0;
+  const withFiles = copiesFiles({ allImages: images, count: ids.length, copyImageFilePath: settings.copyImageFilePath, extra: extra.length, files: asFiles });
   if (process.platform !== 'win32' && !images) throw new Error('Copying files needs the Windows clipboard helper. Save the result instead.');
   await writeClipboard({ ...(withFiles ? { files } : {}), ...(images ? { image: outputs[outputs.length - 1] } : {}), ...(text ? { text: files.join('\r\n') } : {}) }, expectedSequence);
 }
@@ -871,7 +871,7 @@ async function runSavedPipeline(id: string, pipelineId: unknown) {
 }
 /** The Windows share sheet needs a packaged app, which Clop is not: the file goes on the clipboard and Explorer selects it, where Share is on its ribbon and context menu. */
 async function shareResult(id: string) {
-  await copy([id]);
+  await copy([id], undefined, { files: true });
   shell.showItemInFolder(engine.output(id));
 }
 /** The actions whose menu entry the file's facts can disable or hide; a request for one is checked against them. */

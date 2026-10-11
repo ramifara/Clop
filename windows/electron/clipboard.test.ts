@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { defaultSettings } from '../core/settings/schema';
-import { ClipboardIntake, importClipboardList, replacedClipboardImages, serial, clipboardChange, clipboardFiles, clipboardIntake, copyReply, splitClipboardList, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources } from './clipboard';
+import { ClipboardIntake, importClipboardList, replacedClipboardImages, serial, clipboardChange, clipboardFiles, clipboardIntake, copiesFiles, copyReply, splitClipboardList, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources } from './clipboard';
 
 // The macOS defaults; Windows differs only in optimiseImagePathClipboard, checked below.
 const settings = { ...defaultSettings(), optimiseImagePathClipboard: false };
@@ -262,4 +262,14 @@ test('a queued read that is no longer wanted when its turn comes does nothing', 
   wanted = false;
   await Promise.all([first, second]); await intake.idle();
   assert.equal(reads, 1);
+});
+
+test('a single image goes on the clipboard without its file only when copying the file path is off, and Share always carries the file', () => {
+  const image = { allImages: true, count: 1, copyImageFilePath: false };
+  assert.equal(copiesFiles(image), false);
+  assert.equal(copiesFiles({ ...image, copyImageFilePath: true }), true);
+  assert.equal(copiesFiles({ ...image, files: true }), true, 'Share puts the file itself on');
+  assert.equal(copiesFiles({ ...image, count: 2 }), true);
+  assert.equal(copiesFiles({ ...image, allImages: false }), true);
+  assert.equal(copiesFiles({ ...image, extra: 1 }), true);
 });
