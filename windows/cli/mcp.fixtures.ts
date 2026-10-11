@@ -8,10 +8,13 @@ import { ElicitRequestSchema, type CallToolResult, type ElicitResult } from '@mo
 import { createServer } from './mcp';
 import type { MCPOptions } from './mcp-tools';
 
+/** Removes a test folder, waiting out a program that has not quite let go of it yet (Windows cannot delete what is open). */
+export const removeFolder = (dir: string) => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+
 /** A folder with an app data folder holding `settings`, and no running app, so every tool runs headless. */
 export async function folder(t: TestContext, settings: Record<string, unknown> = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-mcp-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => removeFolder(dir));
   const userData = path.join(dir, 'data'), file = (name: string) => path.join(dir, name);
   const settle = (values: Record<string, unknown>) => writeFile(path.join(userData, 'settings.json'), JSON.stringify(values));
   await mkdir(userData, { recursive: true });

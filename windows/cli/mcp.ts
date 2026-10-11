@@ -43,8 +43,11 @@ export async function serve(options: MCPOptions = {}): Promise<void> {
   console.log = console.info = console.debug = console.error;
   process.stderr.write('[clop-mcp] starting\n');
   const server = createServer(options), transport = new StdioServerTransport();
-  const closed = new Promise<void>(resolve => { server.onclose = resolve; process.stdin.once('end', resolve); });
+  const closed = new Promise<void>(resolve => { server.onclose = resolve; process.stdin.once('end', resolve).once('close', resolve); });
   await server.connect(transport);
   await closed;
   await server.close().catch(() => {});
+  // The client is gone. On Windows a tool it started can keep the event loop (and the folder it ran in) busy, so a
+  // process still alive after a short grace period is ended rather than left holding files open.
+  setTimeout(() => process.exit(process.exitCode ?? 0), 1500).unref();
 }

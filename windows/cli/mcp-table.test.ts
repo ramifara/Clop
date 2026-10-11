@@ -7,7 +7,7 @@ import { GATE, TOOLS } from './mcp-table';
 
 // Drift test: the tool table, the instructions and the question copy read back out of ClopCLI/MCPToolTable.swift.
 
-const swift = readFileSync(path.join(import.meta.dirname, '..', '..', 'ClopCLI', 'MCPToolTable.swift'), 'utf8');
+const swift = readFileSync(path.join(import.meta.dirname, '..', '..', 'ClopCLI', 'MCPToolTable.swift'), 'utf8').replace(/\r\n/g, '\n');  // a Windows checkout may bring CRLF
 
 /** Reads a Swift literal: strings, numbers, booleans, `[…]` arrays and `[k: v]` dictionaries. Anything else is kept as `{ $expr }`. */
 function parseSwift(text: string) {

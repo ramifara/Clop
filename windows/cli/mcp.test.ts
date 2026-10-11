@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { chmod, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -9,36 +10,49 @@ import { fileURL } from '../core/ipc/protocol';
 import { graphic } from '../core/media/image.fixtures';
 import { needTools } from '../core/testing';
 import { DECLINED_PREFIX, INSTRUCTIONS, SMALLER_OPTIONS_TEXT } from './mcp-copy';
-import { connect, folder } from './mcp.fixtures';
+import { connect, folder, removeFolder } from './mcp.fixtures';
 import { TOOLS } from './mcp-table';
 import { annotate, speedSteps, withFrames } from './mcp-tools';
 
-test('stdio: initialize, 23 tools, and clop_optimise headless on a file', async t => {
+// A hung server must fail one test, not run out the CI job.
+const TIMEOUT = 120_000;
+
+test('stdio: initialize, 23 tools, and clop_optimise headless on a file', { timeout: TIMEOUT }, async t => {
   if (!needTools(t, 'pngquant')) return;
   const f = await folder(t, { mcpEnabled: true });
   await graphic(400, 300).png({ compressionLevel: 0 }).toFile(f.file('a.png'));
   const before = (await stat(f.file('a.png'))).size;
-  const tsx = path.join(import.meta.dirname, '..', 'node_modules', 'tsx', 'dist', 'cli.mjs');
-  const transport = new StdioClientTransport({ command: process.execPath, args: [tsx, path.join(import.meta.dirname, 'index.ts'), 'mcp', 'serve'], env: { ...process.env, CLOP_USER_DATA: f.userData } as Record<string, string>, cwd: f.dir, stderr: 'pipe' });
+  // Node with tsx loaded straight into it: the tsx launcher starts the real process as a child, and closing the
+  // transport ends only the launcher, leaving that child holding the folder open (EBUSY on Windows).
+  const tsx = pathToFileURL(path.join(import.meta.dirname, '..', 'node_modules', 'tsx', 'dist', 'loader.mjs')).href;
+  const transport = new StdioClientTransport({ command: process.execPath, args: ['--import', tsx, path.join(import.meta.dirname, 'index.ts'), 'mcp', 'serve'], env: { ...process.env, CLOP_USER_DATA: f.userData } as Record<string, string>, cwd: f.dir, stderr: 'pipe' });
   const client = new Client({ name: 'stdio-test', version: '1' });
-  t.after(() => client.close());
-  await client.connect(transport);
-  assert.deepEqual(client.getServerVersion(), { name: 'clop-mcp', version: '2.0.0' });
-  assert.equal(client.getInstructions(), INSTRUCTIONS);
-  const { tools } = await client.listTools();
-  assert.equal(tools.length, 23);
-  assert.deepEqual(tools.map(tool => tool.name), TOOLS.map(tool => tool.name));
-  assert.deepEqual(tools.find(tool => tool.name === 'clop_crop')?.inputSchema.required, ['paths', 'size']);
-  const result = await client.callTool({ name: 'clop_optimise', arguments: { paths: [f.file('a.png')], smallerBy: 'compression' } }) as CallToolResult;
-  assert.equal(result.isError, undefined, JSON.stringify(result));
-  const json = JSON.parse((result.content[0] as { text: string }).text);
-  assert.equal(json.done.length, 1);
-  assert.equal(json.done[0].forURL, fileURL(f.file('a.png')));
-  assert.ok(json.done[0].newBytes < before, 'the file was optimised');
-  assert.ok((await stat(f.file('a.png'))).size < before);
+  transport.stderr?.on('data', () => {});
+  const exited = new Promise<void>(resolve => { transport.onclose = resolve; });
+  try {
+    await client.connect(transport);
+    assert.deepEqual(client.getServerVersion(), { name: 'clop-mcp', version: '2.0.0' });
+    assert.equal(client.getInstructions(), INSTRUCTIONS);
+    const { tools } = await client.listTools();
+    assert.equal(tools.length, 23);
+    assert.deepEqual(tools.map(tool => tool.name), TOOLS.map(tool => tool.name));
+    assert.deepEqual(tools.find(tool => tool.name === 'clop_crop')?.inputSchema.required, ['paths', 'size']);
+    const result = await client.callTool({ name: 'clop_optimise', arguments: { paths: [f.file('a.png')], smallerBy: 'compression' } }) as CallToolResult;
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const json = JSON.parse((result.content[0] as { text: string }).text);
+    assert.equal(json.done.length, 1);
+    assert.equal(json.done[0].forURL, fileURL(f.file('a.png')));
+    assert.ok(json.done[0].newBytes < before, 'the file was optimised');
+    assert.ok((await stat(f.file('a.png'))).size < before);
+  } finally {
+    // Closes stdin, then ends the server if it does not leave; the folder is removed only once it is gone.
+    await client.close().catch(() => {});
+    await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 10_000).unref())]);
+    await removeFolder(f.dir);
+  }
 });
 
-test('the gate: agents are refused until the user allows them, and can never flip the switches', async t => {
+test('the gate: agents are refused until the user allows them, and can never flip the switches', { timeout: TIMEOUT }, async t => {
   const f = await folder(t);
   await graphic(40, 30).png().toFile(f.file('a.png'));
   const { call } = await connect(t, f);
@@ -60,7 +74,7 @@ test('the gate: agents are refused until the user allows them, and can never fli
   assert.equal((await call('clop_debug_logs', { action: 'status' })).text, 'Debug logs for Clop are not kept');
 });
 
-test('mcpAllowScriptSteps: a pipeline with a script step is refused until the user allows script steps', async t => {
+test('mcpAllowScriptSteps: a pipeline with a script step is refused until the user allows script steps', { timeout: TIMEOUT }, async t => {
   const f = await folder(t, { mcpEnabled: true });
   const { call } = await connect(t, f);
   const steps = 'runScript(code: "echo hi") -> optimise()';
@@ -80,7 +94,7 @@ test('mcpAllowScriptSteps: a pipeline with a script step is refused until the us
   assert.match(JSON.stringify(shown), /runScript/);
 });
 
-test('questions: "make it smaller" asks the user, and without a way to ask returns the options as text', async t => {
+test('questions: "make it smaller" asks the user, and without a way to ask returns the options as text', { timeout: TIMEOUT }, async t => {
   if (!needTools(t, 'pngquant')) return;
   const f = await folder(t, { mcpEnabled: true });
   await graphic(400, 300).png({ compressionLevel: 0 }).toFile(f.file('a.png'));
@@ -100,7 +114,7 @@ test('questions: "make it smaller" asks the user, and without a way to ask retur
   assert.deepEqual(result.newWidthHeight, [200, 150], 'both: downscaled by half and compressed');
 });
 
-test('arguments: required ones are named, unknown tools are refused, start and stop open clop:// links', async t => {
+test('arguments: required ones are named, unknown tools are refused, start and stop open clop:// links', { timeout: TIMEOUT }, async t => {
   const f = await folder(t);
   const opened: string[] = [];
   const { call } = await connect(t, f, { opened });
@@ -120,7 +134,7 @@ test('arguments: required ones are named, unknown tools are refused, start and s
   assert.match(pdf.text, /^Unknown device "Nokia 3310"\.\n\n/, 'the listing replaces the pointer at a flag');
 });
 
-test('the next step is added to a refusal once, and never to a message that already says to ask the user', () => {
+test('the next step is added to a refusal once, and never to a message that already says to ask the user', { timeout: TIMEOUT }, () => {
   const refusal = 'Clop is not accepting changes from agents.';
   assert.match(annotate(refusal), /^Clop is not accepting changes from agents\. Ask the user to allow agent changes in Clop Settings, MCP, or call clop_start_server/);
   assert.equal(annotate(`${refusal} Ask the user to allow it in Clop Settings, MCP.`), `${refusal} Ask the user to allow it in Clop Settings, MCP.`);
@@ -128,7 +142,7 @@ test('the next step is added to a refusal once, and never to a message that alre
   assert.equal(annotate('Script steps are off. Ask the user to allow script steps.'), 'Script steps are off. Ask the user to allow script steps.');
 });
 
-test('a refusal before a question reads once', async t => {
+test('a refusal before a question reads once', { timeout: TIMEOUT }, async t => {
   const f = await folder(t);
   await graphic(40, 30).png().toFile(f.file('a.png'));
   const { call } = await connect(t, f);
@@ -137,14 +151,14 @@ test('a refusal before a question reads once', async t => {
   assert.equal(refused.text.match(/Ask the user/g)?.length, 1, refused.text);
 });
 
-test('video speed-ups get frames: keep or drop written into each changeSpeed step that has none', () => {
+test('video speed-ups get frames: keep or drop written into each changeSpeed step that has none', { timeout: TIMEOUT }, () => {
   assert.equal(withFrames('changeSpeed(factor: 2) -> optimise()', 'drop'), 'changeSpeed(factor: 2, frames: drop) -> optimise()');
   assert.equal(withFrames('changeSpeed( factor: 2 ) -> changeSpeed(factor: 0.5) -> changeSpeed()', 'keep'), 'changeSpeed( factor: 2, frames: keep ) -> changeSpeed(factor: 0.5) -> changeSpeed(frames: keep)');
   assert.equal(withFrames('changeSpeed(factor: 3, frames: keep)', 'drop'), 'changeSpeed(factor: 3, frames: keep)');
   assert.equal(speedSteps('runScript(code: "changeSpeed(factor: 2)")').length, 0, 'quoted text is never rewritten');
 });
 
-test('start and stop open only the app Clop itself runs, never a program a card names', async t => {
+test('start and stop open only the app Clop itself runs, never a program a card names', { timeout: TIMEOUT }, async t => {
   if (process.platform === 'win32') return t.skip('runs a shell script as the app');
   const f = await folder(t);
   const marker = (name: string) => f.file(name), script = (name: string) => `#!/bin/sh\necho "$1" > "${marker(name)}.ran"\n`;
