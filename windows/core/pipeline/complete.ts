@@ -121,11 +121,11 @@ export function commitStep(text: string, cursor: number): Edit | undefined {
   return { text: committed, cursor: committed.length };
 }
 
-/** Tab takes the first suggestion, or closes the step when there is nothing left to add (`handleTab`). Undefined when there is nothing to do. */
-export function completeWithTab(text: string, cursor: number, fileType?: ClopFileType): Edit | undefined {
+/** Tab takes the first suggestion (or the `pick`ed one), or closes the step when there is nothing left to add (`handleTab`). Undefined when there is nothing to do. */
+export function completeWithTab(text: string, cursor: number, fileType?: ClopFileType, pick = 0): Edit | undefined {
   const offered = suggestions(currentStepPrefix(text, cursor), fileType);
   if (!offered.length) return insideParens(text.slice(0, cursor)) ? commitStep(text, cursor) : undefined;
-  const [first] = offered, edit = insertSuggestion(text, cursor, first);
+  const first = offered[Math.min(pick, offered.length - 1)], edit = insertSuggestion(text, cursor, first);
   // After a value, the step closes once every parameter is filled in.
   const value = !first.opensParens && !first.needsQuotes && !first.insertText.endsWith(': ') && !first.templateVariable;
   if (value && !suggestions(currentStepPrefix(edit.text, edit.cursor), fileType).length) return commitStep(edit.text, edit.cursor) ?? edit;

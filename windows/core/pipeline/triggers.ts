@@ -10,7 +10,7 @@ import { resolveRunnable, stepEntry, type ClopFileType, type Pipeline } from './
 export const PIPELINE_SOURCE_KEYS = { image: 'pipelinesToRunOnImage', video: 'pipelinesToRunOnVideo', pdf: 'pipelinesToRunOnPdf', audio: 'pipelinesToRunOnAudio' } as const satisfies Record<ClopFileType, keyof ClopSettings>;
 
 /** A folder key as a comparable path: `~` and `$HOME` expanded, no trailing separator, and on Windows any case and either slash. */
-function sourceKey(source: string, home?: string, platform: NodeJS.Platform = process.platform) {
+export function sourceKey(source: string, home?: string, platform: NodeJS.Platform = process.platform) {
   if (!/[\\/]|^~/.test(source)) return source;
   const p = platform === 'win32' ? path.win32 : path.posix;
   const resolved = p.normalize(resolveHome(source, home, platform)).replace(/(?<=.)[\\/]+$/, '');
