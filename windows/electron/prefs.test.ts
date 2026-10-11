@@ -96,7 +96,7 @@ test('an editor is a program from the picker; on Windows only an .exe', async ()
   h.picks.push('C:\\Missing\\Editor.exe');
   await assert.rejects(h.prefs({ action: 'editor', kind: 'image', op: 'choose' }), /not a file|full path/);
   assert.equal(h.get().editorAppImage, '');
-  const other = harness('linux');
+  const other = harness();
   other.picks.push(exe);
   await other.prefs({ action: 'editor', kind: 'pdf', op: 'choose' });
   assert.equal(other.get().editorAppPDF, exe);

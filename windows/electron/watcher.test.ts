@@ -82,7 +82,8 @@ test('more files at once than the kind\'s limit are all left alone, with a notic
   // After the burst, single files are optimised again.
   await pause(500);
   await image(path.join(dir, 'single.png'));
-  await until(() => state.handled.length === 1, 'a single file after the burst was not optimised');
+  await until(() => state.handled.some(([name]) => name === 'single.png'), 'a single file after the burst was not optimised');
+  assert.ok(!state.cancelled.includes('single.png'));
 });
 test('nothing is watched while paused or disabled, and watching follows settings changes and missing folders', async t => {
   const { root, dir, state, watcher } = await setup(t, { pauseAutomaticOptimisations: true });
