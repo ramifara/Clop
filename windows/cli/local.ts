@@ -5,7 +5,7 @@ import sharp from 'sharp';
 import { findDeviceSize, DEVICE_SIZE_GROUPS } from '../core/data/deviceSizes';
 import { findPaperSize, PAPER_SIZE_GROUPS } from '../core/data/paperSizes';
 import type { CropSizeGroup } from '../core/data/cropSizes';
-import { copyTo, exists, moveTo, samePath } from '../core/fileops';
+import { exists, moveTo, samePath } from '../core/fileops';
 import { factorText } from '../core/ipc/service';
 import { markOptimised } from '../core/marker';
 import { toPNG } from '../core/media/image-codecs';
