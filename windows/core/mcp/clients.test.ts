@@ -157,6 +157,7 @@ test('a JSON file that is not valid JSON is refused whole: nothing is written, n
     ['zed', '{\n  "theme": "One",\n  "context_servers": { "other": { "command": "x" } },\n}} oops\n'],
     ['vscode', '{ "servers": { "other": { "command": "x" } } '],
     ['claude-code', '{ "mcpServers": { "clop": { "command": "old" }, } } {}'],
+    ['cursor', '{ "mcpServers": {} } /* never closed'],
   ];
   for (const [id, content] of cases) {
     const file = configOf(p.client(id)).path;

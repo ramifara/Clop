@@ -29,13 +29,16 @@ export function sanitized(text: string): string {
       continue;
     }
     if (c === '/' && out[i + 1] === '*') {
+      let closed = false;
       while (i < out.length) {
         const end = out[i] === '*' && out[i + 1] === '/';
         // Newlines stay, so line numbers in any parse error still line up.
         if (!isNewline(out[i])) out[i] = ' ';
-        if (end) { out[i + 1] = ' '; i += 2; break; }
+        if (end) { out[i + 1] = ' '; i += 2; closed = true; break; }
         i++;
       }
+      // A comment that never ends is invalid JSONC to the client, whatever came before it.
+      if (!closed) throw new NotAnObjectError('not a JSON object');
       continue;
     }
     switch (c) {
