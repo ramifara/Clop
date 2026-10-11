@@ -104,11 +104,13 @@ export class BatchBackup {
 
   /** Forgets and deletes the copy of `file` made by `keep`, once what it was kept for was undone. */
   async discard(file: string) {
-    const entry = this.entries.get(this.key(file));
-    if (!entry) return;
-    this.entries.delete(this.key(file));
-    await rm(entry.backup, { force: true }).catch(() => {});
-    await this.save().catch(() => {});
+    await this.inTurn(async () => {
+      const entry = this.entries.get(this.key(file));
+      if (!entry) return;
+      this.entries.delete(this.key(file));
+      await rm(entry.backup, { force: true }).catch(() => {});
+      await this.save().catch(() => {});
+    });
   }
 
   /** What was at `file` before Clop moved it aside, if its copy is still there. */
@@ -130,7 +132,7 @@ export class BatchBackup {
   /** Remembers where a result went. When the manifest cannot be written it is not remembered, so a later save does not carry it into the manifest. */
   async recordResult(result: ResultEntry) { await this.remember(this.results, this.key(result.original), result); }
   result(original: string) { return this.results.get(this.key(original)); }
-  async forgetResult(original: string) { this.results.delete(this.key(original)); await this.save(); }
+  async forgetResult(original: string) { await this.inTurn(async () => { this.results.delete(this.key(original)); await this.save(); }); }
 
   /** Removes the batch's folder and everything in it. */
   async delete() {
@@ -143,11 +145,14 @@ export class BatchBackup {
   private changing: Promise<unknown> = Promise.resolve();
   /** Puts `value` in `map` and writes the manifest. When it cannot be written the change is undone, so a later save does not carry it. */
   private remember<T>(map: Map<string, T>, key: string, value: T) {
-    const change = async () => {
+    return this.inTurn(async () => {
       const previous = map.get(key);
       map.set(key, value);
       try { await this.save(); } catch (error) { if (previous) map.set(key, previous); else map.delete(key); throw error; }
-    };
+    });
+  }
+  /** Every change to the manifest's state, with its save, takes its turn: `discard` and `forgetResult` too, or their save could carry a change that is about to be undone. */
+  private inTurn<T>(change: () => Promise<T>): Promise<T> {
     const turn = this.changing.then(change, change);
     this.changing = turn.catch(() => {});
     return turn;
