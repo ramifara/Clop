@@ -98,6 +98,14 @@ test('pipelines macOS stores and runs are kept as written, with warnings for wha
   assert.deepEqual(effectiveCompression({ factor: 'high' } as never), { tier: 'custom', factor: 50 });
 });
 
+test('a compression with a field left out is valid: the missing field takes its default', () => {
+  for (const compression of ['{"factor":40}', '{"tier":"fast"}', '{}', '{"tier":"adaptive","factor":30}']) {
+    const pipeline = decodePipeline(`{"id":"A","steps":[{"optimise":{"compression":${compression}}}],"skipOptimisation":false,"hideResult":false}`);
+    assert.deepEqual(pipelineProblems(pipeline), [], compression);
+  }
+  assert.equal(pipelineProblems(decodePipeline('{"id":"A","steps":[{"optimise":{"compression":{"factor":40.5}}}],"skipOptimisation":false,"hideResult":false}')).length, 1);
+});
+
 test('values a newer macOS adds are kept and written back', () => {
   const text = '{"id":"x","steps":[{"optimise":{"encoder":"medium","adaptive":false,"location":"inPlace","preset":"web"}},{"filterIf":{"_0":{"regex":"a","colour":"red"}}},{"runShortcut":{"_0":{"name":"S","identifier":"I","folder":"F"}}}],"skipOptimisation":false,"hideResult":false,"colour":"teal"}';
   assert.equal(pipelineToJSON(decodePipeline(text)), text);

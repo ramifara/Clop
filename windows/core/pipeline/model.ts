@@ -207,6 +207,11 @@ export const stepProblems = (step: PipelineStep): StepProblem[] => checkStep(ste
  */
 export const blockingProblems = (step: PipelineStep): StepProblem[] => checkStep(step).filter(({ blocking }) => blocking).map(({ problem }) => problem);
 
+/** Whether the tolerant decoder changes a compression value it is given. A field left out takes its default, which is not a problem. */
+const changedByDecoder = (given: CompressionQuality) => {
+  const effective = effectiveCompression(given);
+  return (given.tier !== undefined && given.tier !== effective.tier) || (given.factor !== undefined && given.factor !== effective.factor);
+};
 function checkStep(step: PipelineStep): { problem: StepProblem; blocking: boolean }[] {
   const found: { problem: StepProblem; blocking: boolean }[] = [];
   const problems = { push: (problem: StepProblem, blocking = true) => found.push({ problem, blocking }) };
@@ -219,7 +224,7 @@ function checkStep(step: PipelineStep): { problem: StepProblem; blocking: boolea
     case 'optimise':
       // A stored dpi of 0 means adaptive to the PDF engine, so it runs.
       number('dpi', p.dpi, POSITIVE_INT, p.dpi !== 0);
-      if (p.compression && JSON.stringify(effectiveCompression(p.compression)) !== JSON.stringify({ tier: p.compression.tier, factor: p.compression.factor })) problems.push({ param: 'compression', message: `compression ${JSON.stringify(p.compression)} is not a tier Clop knows with a factor from 0 to 100` }, false);
+      if (p.compression && changedByDecoder(p.compression)) problems.push({ param: 'compression', message: `compression ${JSON.stringify(p.compression)} is not a tier Clop knows with a factor from 0 to 100` }, false);
       break;
     case 'downscale': number('factor', p.factor, { above: 0, max: 1 }); break;
     case 'lowerBitrate': number('kbps', p.kbps, POSITIVE_INT); break;
