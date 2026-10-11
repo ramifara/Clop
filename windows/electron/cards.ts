@@ -40,11 +40,17 @@ export async function runPlan(host: CardHost, id: string, plan: Extract<Plan, { 
     await engine.apply(id, options);
     return;
   }
+  const change = plan.type === 'steps' ? totalChange(plan.steps, entry.result.options) : undefined;
+  if (change && !change.steps.length) return;
+  // A video can't get its pixels back: going up from a smaller size starts again from the original.
+  if (change?.restoreFirst) await engine.restore(id);
+  let ran = false;
   await engine.runPipeline(id, async input => {
     const file = input.optimised ?? await input.fresh();
     if (plan.type === 'steps') {
-      const outcome = await runForApp(host.pipeline, [adHoc(plan.steps)], file, { kind }, input.signal, input.progress);
+      const outcome = await runForApp(host.pipeline, [adHoc(change?.steps ?? plan.steps)], file, { kind }, input.signal, input.progress);
       if (!outcome.anyRan && outcome.warnings.length) throw new Error(outcome.warnings[0].replace(/^Pipeline 1: /, ''));
+      ran = outcome.anyRan;
       return { file: outcome.file, anyRan: outcome.anyRan, warnings: outcome.warnings };
     }
     const output = await runEdit(plan.edit, plan.arg, {
@@ -52,6 +58,31 @@ export async function runPlan(host: CardHost, id: string, plan: Extract<Plan, { 
     });
     return { file: output.path, anyRan: true, warnings: output.warnings ?? [] };
   });
+  if (change?.tracked && ran && engine.get(id).result.status === 'ready') engine.track(id, change.tracked);
+}
+
+/**
+ * The card names a downscale or a playback speed by its total (50%, 2x), but a step works on the file the card has now. For a video's
+ * downscale or a video's or audio file's speed, the steps to run for that total given the `scale` and `speed` the result has had so far,
+ * the totals to note once they have run, and whether a video has to start from its original again (a bigger size than it has now; a
+ * speed is undone by the opposite change). No steps means the result already is at that total. Other plans are left as they are.
+ */
+export function totalChange(steps: PipelineStep[], { scale = 1, speed }: Pick<ImageOptions, 'scale' | 'speed'>): { steps: PipelineStep[]; tracked?: { scale?: number; speed?: number }; restoreFirst?: boolean } | undefined {
+  const [only] = steps, had = speed ?? 1, near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+  if (steps.length !== 1) return undefined;
+  if ('downscale' in only) {
+    const target = only.downscale.factor;
+    if (near(target, scale)) return { steps: [] };
+    if (target < scale) return { steps: [{ downscale: { ...only.downscale, factor: target / scale } }], tracked: { scale: target } };
+    // From the original the speed it had is added again, in the same encode.
+    return { steps: [...(target < 1 ? [{ downscale: only.downscale }] : []), ...(had !== 1 ? [{ changeSpeed: { factor: had } }] : []), ...(target < 1 || had !== 1 ? [] : [{ optimise: {} }])] as PipelineStep[], tracked: { scale: target, speed: had }, restoreFirst: true };
+  }
+  if ('changeSpeed' in only) {
+    const target = only.changeSpeed.factor;
+    if (near(target, had)) return { steps: [] };
+    return { steps: [{ changeSpeed: { ...only.changeSpeed, factor: target / had } }], tracked: { speed: target } };
+  }
+  return undefined;
 }
 
 /** Whether an edit's result becomes a card of its own. */

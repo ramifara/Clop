@@ -16,6 +16,8 @@ export interface ImageOptions {
   mode: 'balanced' | 'aggressive' | 'lossless'; scale: number; maxEdge?: number; format: OutputFormat; crop?: CropSize;
   /** A compression picked from the card's menu (adaptive, or a factor of 5–100), which wins over `mode`. */
   compression?: { tier: 'adaptive' | 'custom'; factor: number };
+  /** Videos and audio: the playback speed the result has had from the card's menu or a shortcut (absent is 1x). A video's downscale is in `scale`. */
+  speed?: number;
 }
 /**
  * A result card's item. Video, PDF and audio items have no pixel size of their own (0 for PDF and audio), keep their

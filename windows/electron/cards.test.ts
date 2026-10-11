@@ -17,7 +17,7 @@ import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { run } from '../core/run';
 import { needTools } from '../core/testing';
 import { Workdir } from '../core/workdir';
-import { coverArtCard, eachResult, editorLabel, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, readyIds, runPlan, savePages, type CardCreation, type CardHost } from './cards';
+import { coverArtCard, eachResult, editorLabel, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, readyIds, runPlan, savePages, totalChange, type CardCreation, type CardHost } from './cards';
 import { ItemEngine } from './items';
 import type { PipelineHost } from './pipelines';
 import type { ItemResult } from '../src/types';
@@ -363,4 +363,44 @@ test('a batch action skips the results it does not fit without a word, reports t
   assert.deepEqual(outcome.failures, ['BROKEN: The encoder failed.'], 'a skip is not a failure');
   const refused = await eachResult(['a'], { name: id => id, skip: async () => { throw new Error('facts unreadable'); }, run: async () => {} });
   assert.deepEqual(refused, { done: [], failures: ['a: facts unreadable'] });
+});
+
+test('a video\'s downscale and speed are totals: 50% then 80% is 80%, and 1x undoes 2x', async t => {
+  const f = await setup(t); if (!f) return;
+  const mp4 = f.file('long.mp4'); await clip(mp4, { width: 640, height: 360, seconds: 2 });
+  const id = await f.add(mp4), video = async () => await probe(f.engine.output(id)) as VideoInfo;
+  assert.equal((await video()).width, 640);
+  await f.act(id, { action: 'downscale', arg: 0.5 });
+  assert.equal((await video()).width, 320);
+  assert.equal(f.engine.get(id).result.options.scale, 0.5);
+  // Bigger than it is now: from the original, not 80% of 50%.
+  await f.act(id, { action: 'downscale', arg: 0.8 });
+  assert.ok(Math.abs((await video()).width - 512) <= 2, `${(await video()).width}`);
+  await f.act(id, { action: 'speed', arg: 2 });
+  const fast = await video();
+  assert.ok(Math.abs(fast.width - 512) <= 2 && fast.durationMs! < 1300, `${fast.width} ${fast.durationMs}`);
+  assert.equal(f.engine.get(id).result.options.speed, 2);
+  // 1x applies the opposite of the 2x it had, and the size stays.
+  await f.act(id, { action: 'speed', arg: 1 });
+  const slow = await video();
+  assert.ok(Math.abs(slow.width - 512) <= 2 && slow.durationMs! > 1700, `${slow.width} ${slow.durationMs}`);
+  // A size bigger than the current one with a speed in place starts again from the original and keeps the speed.
+  await f.act(id, { action: 'speed', arg: 2 });
+  await f.act(id, { action: 'downscale', arg: 1 });
+  const back = await video();
+  assert.ok(back.width === 640 && back.durationMs! < 1300, `${back.width} ${back.durationMs}`);
+  assert.deepEqual([f.engine.get(id).result.options.scale, f.engine.get(id).result.options.speed], [1, 2]);
+});
+
+test('the steps for a total are the change from what the result has had, and none when it is there already', () => {
+  const down = (factor: number) => [{ downscale: { factor } }] as never, speed = (factor: number) => [{ changeSpeed: { factor } }] as never;
+  assert.deepEqual(totalChange(down(0.5), { scale: 1 }), { steps: down(0.5), tracked: { scale: 0.5 } });
+  assert.deepEqual(totalChange(down(0.4), { scale: 0.8 }), { steps: down(0.5), tracked: { scale: 0.4 } });
+  assert.deepEqual(totalChange(down(0.5), { scale: 0.5 }), { steps: [] });
+  assert.deepEqual(totalChange(down(0.8), { scale: 0.5 }), { steps: down(0.8), tracked: { scale: 0.8, speed: 1 }, restoreFirst: true });
+  assert.deepEqual(totalChange(down(1), { scale: 0.5, speed: 2 }), { steps: speed(2), tracked: { scale: 1, speed: 2 }, restoreFirst: true });
+  assert.deepEqual(totalChange(speed(1.5), { scale: 1, speed: 1.25 })?.steps, speed(1.5 / 1.25));
+  assert.deepEqual(totalChange(speed(1), { scale: 1, speed: 2 }), { steps: speed(0.5), tracked: { speed: 1 } });
+  assert.deepEqual(totalChange(speed(1), { scale: 1 }), { steps: [] });
+  assert.equal(totalChange([{ removeAudio: {} }] as never, { scale: 1 }), undefined);
 });

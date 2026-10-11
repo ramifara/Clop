@@ -400,7 +400,7 @@ export class ItemEngine extends EventEmitter {
     e.placedPath = e.placement ? await e.placement.restore() : undefined;
     e.outputPath = e.originalPath;
     Object.assign(e.result, { status: 'ready', width: e.result.originalWidth, height: e.result.originalHeight, outputBytes: e.result.originalBytes,
-      format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, maxEdge: undefined, format: 'auto', crop: undefined, compression: undefined }, restored: true, unchanged: true, error: undefined, notes: undefined });
+      format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, speed: undefined, maxEdge: undefined, format: 'auto', crop: undefined, compression: undefined }, restored: true, unchanged: true, error: undefined, notes: undefined });
     e.shown = true; this.changed(); this.emit('restored', id); this.emit('ready', id);
   }); }
   /**
@@ -427,6 +427,8 @@ export class ItemEngine extends EventEmitter {
     this.entries.set(e.result.id, e); this.changed();
     return e.result.id;
   }
+  /** Notes the downscale and playback speed a result has had, which the next card action goes on from. */
+  track(id: string, tracked: Pick<Partial<ImageOptions>, 'scale' | 'speed'>) { const e = this.get(id); e.result.options = { ...e.result.options, ...tracked }; this.changed(); }
   /** Whether any result is still being optimised; cheaper than listing them (which copies each). */
   processing() { for (const e of this.entries.values()) if (e.result.status === 'processing') return true; return false; }
   /** Stops the running and queued jobs of `ids` (every result by default, and the imports still being read). Each ends with a "Stopped." error; sources stay as they are. */
