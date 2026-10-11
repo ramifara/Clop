@@ -33,14 +33,14 @@ export function Compression({ settingKey }: { settingKey: CompressionKey }) {
   const tier: Tier = video && value.tier === 'custom' ? 'smaller' : value.tier;
   const usesFactor = settingKey === 'audioCompression' || (video ? tier === 'smaller' : tier === 'custom');
   const auto = video && usesFactor && value.factor === 0;
-  const { draft, edit } = useDraft(auto ? 50 : Math.max(5, value.factor), factor => change({ [settingKey]: { tier: video ? 'smaller' : tier, factor } }), 300);
+  const { draft, edit, reset } = useDraft(auto ? 50 : Math.max(5, value.factor), factor => change({ [settingKey]: { tier: video ? 'smaller' : tier, factor } }), 300);
   const hint = tiers.find(choice => choice.tier === tier)?.hint;
   return <div className="compression">
     {tiers.length > 0 && <div className="s-chips" role="group" aria-label="Compression mode">
-      {tiers.map(choice => <Chip key={choice.tier} on={choice.tier === tier} onClick={() => change({ [settingKey]: { tier: choice.tier, factor: value.factor } })}>{choice.label}</Chip>)}
+      {tiers.map(choice => <Chip key={choice.tier} on={choice.tier === tier} onClick={() => { reset(); change({ [settingKey]: { tier: choice.tier, factor: value.factor } }); }}>{choice.label}</Chip>)}
     </div>}
     {usesFactor && <div className="slider-row">
-      {video && <Chip on={auto} title="The encoder chooses the compression factor from the video's contents" onClick={() => change({ [settingKey]: { tier: 'smaller', factor: auto ? Math.max(5, draft) : 0 } })}>Auto</Chip>}
+      {video && <Chip on={auto} title="The encoder chooses the compression factor from the video's contents" onClick={() => { reset(); change({ [settingKey]: { tier: 'smaller', factor: auto ? Math.max(5, draft) : 0 } }); }}>Auto</Chip>}
       <small>Better quality</small>
       <input type="range" min={5} max={100} step={1} aria-label="Compression factor" value={draft} disabled={auto} onChange={event => edit(Number(event.target.value))}/>
       <small>Smaller size</small>
