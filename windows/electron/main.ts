@@ -45,7 +45,7 @@ import { clopURLs, linkInbox, type ClopURL } from './clop-url';
 import { installPortableCLI, isPortable, portableCLIDir, portableCLIInstalled, refreshPortableCLI, removePortableCLI } from './cli-install';
 import { mcpSettings } from './mcp';
 import { setupDebugDump, setupUpdates, setupWatchdog } from './support';
-import { FileCollector } from './file-collector';
+import { FileCollector, quietWindow } from './file-collector';
 import { pipelineMenu } from './pipeline-menu';
 import { installVerbs, portablePaths, removeVerbs, verbsStatus } from './explorer';
 import { explorerVerb, type VerbId } from '../core/shell-verbs';
@@ -119,7 +119,7 @@ const verbCollectors = new Map<VerbId, FileCollector>();
 function collectVerb(verb: VerbId, files: string[]) {
   let collector = verbCollectors.get(verb);
   if (!collector) {
-    collector = new FileCollector(all => { if (!service) collector!.add(all); else void runVerb(verb, all).catch(error => inform(message(error))); });
+    collector = new FileCollector(all => { if (!service) collector!.add(all); else void runVerb(verb, all).catch(error => inform(message(error))); }, quietWindow(verb, isPortable()));
     verbCollectors.set(verb, collector);
   }
   collector.add(files);
@@ -1029,6 +1029,10 @@ else {
     const files = argv.filter(arg => path.isAbsolute(arg) && mediaKind(arg));
     if (files.length) void importFiles(files, 'file').catch(error => inform(message(error)));
   });
+  // The files this launch was started with for an Explorer verb join the other launches' at once: those reach `second-instance` while the app starts,
+  // and the collector waits for the service, so this launch's file must not arrive after them and run on its own.
+  const startupVerb = explorerVerb(process.argv.slice(1));
+  if (startupVerb) collectVerb(startupVerb.verb, startupVerb.files);
   app.whenReady().then(async () => {
     setupWatchdog();
     Menu.setApplicationMenu(null);
@@ -1153,9 +1157,7 @@ else {
     if (isPortable() && (cliInstalled = await portableCLIInstalled())) { updateTray(); void refreshPortableCLI(process.resourcesPath, path.dirname(process.execPath)).catch(error => inform(message(error))); }
     linkQueue.receive(clopURLs(process.argv.slice(1)));
     linkQueue.ready();
-    const picked = explorerVerb(process.argv.slice(1));
-    if (picked) collectVerb(picked.verb, picked.files);
-    else {
+    if (!startupVerb) {
       const files = process.argv.slice(1).filter(arg => path.isAbsolute(arg) && mediaKind(arg));
       if (files.length) await importFiles(files, 'file');
     }

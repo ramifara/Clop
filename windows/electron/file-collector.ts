@@ -3,6 +3,12 @@
  * selected file for a right-click verb, all reaching the one running instance; this turns them back into one selection, so the
  * app asks its question (which pipeline) once.
  */
+/**
+ * How long a verb's launches may be apart and still be one selection. A portable launch unpacks the whole app before it reaches the running
+ * one, and fifteen do so at once, so the gaps are wider; "Run pipeline" asks a question per selection, so it waits longest.
+ */
+export function quietWindow(verb: string, portable: boolean) { return portable ? (verb === 'run-pipeline' ? 3000 : 1500) : 600; }
+
 export class FileCollector {
   private files = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | undefined;
