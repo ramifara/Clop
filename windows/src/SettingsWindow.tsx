@@ -42,7 +42,7 @@ export function SettingsWindow({ state, refresh }: { state: AppState; refresh():
   const run = useCallback(async (task: () => Promise<unknown>, success?: string) => {
     try { await task(); await refresh(); if (success) say(success); return true; } catch (error) { say(clean(error), true); return false; }
   }, [refresh, say]);
-  // `change`, `prefs` and `ask` keep their identity across state broadcasts, so controls that call them in effects do not run again after every setting change.
+  // Only `ask` is stable: `change` and `prefs` follow `run` and so `refresh`, which App passes as a new function on each render. `ask` is what effects depend on (the template preview), so they do not run again after every setting change.
   const change = useCallback((partial: Parameters<SettingsEnv['change']>[0]) => { void run(() => api.settings(partial)); }, [run]);
   const prefs = useCallback(async (request: PrefsRequest) => {
     let reply: PrefsReply | undefined;
