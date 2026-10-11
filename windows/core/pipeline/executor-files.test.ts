@@ -65,6 +65,22 @@ test('filters stop the pipeline quietly when they do not match', async t => {
   assert.deepEqual(w.effects.trashed, []);
 });
 
+test('an agent\'s copy, move and rename may not replace a file that is already there, while a person\'s are backed up first', async t => {
+  const w = await pipelineWorkspace(t); if (!w) return;
+  const input = w.file('a.png');
+  await graphic(40, 30).png().toFile(input);
+  await writeFile(w.file('victim.png'), 'precious');
+  const agent = { refuseExisting: {} };
+  for (const step of ['copy(to: "victim.png")', 'move(to: "victim.png")', 'rename(to: "victim.png")']) {
+    await assert.rejects(w.run(step, input, agent), /already exists/, step);
+    assert.equal(await readFile(w.file('victim.png'), 'utf8'), 'precious', step);
+  }
+  assert.deepEqual(await w.backups(), []);
+  assert.equal((await w.run('copy(to: "fresh.png")', input, agent)).file, w.file('fresh.png'));
+  await w.run('copy(to: "victim.png")', input);
+  assert.equal((await w.backups()).length, 1, 'the person\'s run kept the file it replaced');
+});
+
 test('a stored step with a value out of range or empty is refused before it runs', async t => {
   const w = await pipelineWorkspace(t); if (!w) return;
   const input = w.file('keep.png');
