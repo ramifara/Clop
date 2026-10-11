@@ -86,6 +86,15 @@ export function oriented(size: Size, orientation: CropOrientation, source: Size)
   return orientationOf(size) === want || size.width === size.height ? { width: size.width, height: size.height } : { width: size.height, height: size.width };
 }
 
+/**
+ * The locked aspect after the orientation changes to `next`: a forced one turns the current aspect, and adaptive turns the chosen
+ * preset (`adaptive`) back to the source's own orientation. Undefined when adaptive has no preset to go back to.
+ */
+export function reorientedAspect(locked: number, next: CropOrientation, source: Size, adaptive?: Size): number | undefined {
+  if (next === 'adaptive') { if (!adaptive) return undefined; const size = oriented(adaptive, next, source); return size.width / size.height; }
+  return next === 'landscape' ? Math.max(locked, 1 / locked) : Math.min(locked, 1 / locked);
+}
+
 /** `CropRect.computedSize(from:)`: the selection's size in the source's pixels (points for a PDF). */
 export const selectionSize = (r: CropRect, space: Size): Size => ({ width: r.width * space.width, height: r.height * space.height });
 
