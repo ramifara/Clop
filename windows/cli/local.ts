@@ -7,9 +7,9 @@ import { findPaperSize, PAPER_SIZE_GROUPS } from '../core/data/paperSizes';
 import type { CropSizeGroup } from '../core/data/cropSizes';
 import { exists, moveTo, samePath } from '../core/fileops';
 import { factorText } from '../core/ipc/service';
-import { markOptimised } from '../core/marker';
+import { markOptimised, OptimisedMarker } from '../core/marker';
 import { toPNG } from '../core/media/image-codecs';
-import { stripExifFile } from '../core/media/strip-copy';
+import { stripExifFile, type StripKeep } from '../core/media/strip-copy';
 import { cropPDF, extendPDF, uncropPDF } from '../core/media/pdf';
 import { run } from '../core/run';
 import { expandPathTemplate, expandTemplate, type Counter } from '../core/template';
@@ -133,17 +133,19 @@ const stripExif: ClopCommand = {
     await gate(ctx, undefined, list(v, 'files'));
     const first = await stat(given[0]).catch(() => undefined);
     const files = first?.isDirectory() ? await folderFiles(given[0], on(v, 'recursive'), chosenTypes(list(v, 'types'), list(v, 'excludeTypes'))) : given;
-    const results = await Promise.all(files.map(file => strip(ctx, file)));
+    // Originals go to the work folder's backups, as for every write over a file, and stripped files are marked as Clop's.
+    const keep = { workdir: await openWorkdir((await readSettings(ctx)).workdir, ctx.options), marker: new OptimisedMarker(path.join(ctx.options.userData, 'optimised.json')) };
+    const results = await Promise.all(files.map(file => strip(ctx, file, keep)));
     if (files.length && !results.some(Boolean)) throw new ExitCode(1);
   },
 };
 
 /** `StripExif.strip`: exiftool writes a stripped copy, which then replaces the file; resolution, orientation and colour stay. */
-async function strip(ctx: Context, file: string): Promise<boolean> {
+async function strip(ctx: Context, file: string, keep: StripKeep): Promise<boolean> {
   if (!await exists(file)) { ctx.io.err(`${ERROR_X()} ${underline(file)} does not exist\n`); return false; }
   if (path.extname(file).toLowerCase() === '.pdf') { ctx.io.err(`${EXCLAMATION()} ${underline(file)} is a PDF and \`strip-exif\` does not work on this type of file\n`); return false; }
   try {
-    await stripExifFile(file);
+    await stripExifFile(file, keep);
     ctx.io.out(`${dim(`${CHECKMARK()} ${underline(file)} done`)}\n`);
     return true;
   } catch (error) {

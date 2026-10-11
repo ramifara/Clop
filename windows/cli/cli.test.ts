@@ -10,6 +10,7 @@ import sharp from 'sharp';
 import { graphic, photo } from '../core/media/image.fixtures';
 import { run } from '../core/run';
 import { needTools } from '../core/testing';
+import { OptimisedMarker } from '../core/marker';
 import { validateItems } from './items';
 import { main } from './main';
 
@@ -192,10 +193,17 @@ test('strip-exif removes GPS but keeps the orientation', async t => {
   const file = c.file('gps.jpg');
   await photo(64, 48).jpeg().toFile(file);
   await run('exiftool', ['-overwrite_original', '-GPSLatitude=51.5', '-GPSLatitudeRef=N', '-Orientation#=6', '-Artist=Someone', file]);
+  const original = await readFile(file);
   assert.equal(await c.clop('strip-exif', 'gps.jpg'), 0, c.err());
   assert.match(c.out(), /✓ .*gps\.jpg done/);
   const tags = JSON.parse((await run('exiftool', ['-j', '-n', '-GPSLatitude', '-Artist', '-Orientation', file])).stdout.toString())[0];
   assert.deepEqual([tags.GPSLatitude, tags.Artist, tags.Orientation], [undefined, undefined, 6]);
+  // The original is kept in the work folder's backups, as every write over a file is, and the stripped file is marked as Clop's.
+  const workdir = (await c.settings().catch(() => ({}))).workdir ?? path.join(c.userData, 'work'), backups = path.join(workdir, 'backups');
+  const kept = await readdir(backups);
+  assert.equal(kept.length, 1);
+  assert.ok(original.equals(await readFile(path.join(backups, kept[0]))), 'the backup is the original');
+  assert.equal(await new OptimisedMarker(path.join(c.userData, 'optimised.json')).isOptimised(file), true);
   assert.equal(await c.clop('strip-exif', 'missing.jpg'), 1);
 });
 

@@ -643,7 +643,7 @@ async function runVerb(verb: VerbId, files: string[]) {
   if (verb === 'run-pipeline') return choosePipeline(files);
   const { use, skipped } = usableFiles(verb, await expandFolders(files));
   if (!use.length) { inform(skippedNote(skipped)); return; }
-  if (verb === 'strip-exif') { inform(stripSummary(await stripAll(use, stripExifFile), skipped)); return; }
+  if (verb === 'strip-exif') { inform(stripSummary(await stripAll(use, file => stripExifFile(file, { workdir, marker })), skipped)); return; }
   const failures: string[] = [], done: string[] = [];
   await service!.optimise(explorerRequest(verb, use, randomUUID()), reply => {
     if (reply.kind === 'error') failures.push(`${failureName(reply.error.forURL)}: ${reply.error.error}`);
