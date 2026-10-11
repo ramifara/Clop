@@ -62,7 +62,7 @@ import { setupBatch } from './batch-window';
 import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
 import { expandHome } from '../core/settings/paths';
 import { menuTemplate } from './card-menu';
-import { coverArtCard, eachResult, editorLabel, editorProgram, makesNewCard, mediaFacts, openWithDialog, pageCard, readyIds, runPlan, savePages, startProgram, type CardCreation, type CardHost } from './cards';
+import { coverArtCard, eachResult, editorLabel, editorProgram, makesNewCard, mediaFacts, openWithDialog, pageCard, readyIds, runPlan, savePages, startProgram, thenCopyBack, type CardCreation, type CardHost } from './cards';
 import { CompactMode, cardsThatFit, extraHeight } from './compact';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -895,6 +895,8 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
     const failures: string[] = [], applies = ids.filter(id => ACTION_KINDS[action as ActionId].includes(engine.get(id).result.kind));
     if (!applies.length) throw new Error('This action does not work on the selected results.');
     // A result whose facts the action cannot use (an SDR video for HDR to SDR, a bitrate its format lacks) is skipped, not reported; only the ones the action ran on go back on the clipboard.
+    // Read before the work: a long encode must not put its results over something copied meanwhile.
+    const sequence = await currentSequence().catch(() => undefined);
     const batch = await eachResult(applies, {
       name: id => engine.has(id) ? engine.get(id).result.name : 'A result',
       skip: async id => {
@@ -905,7 +907,7 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
     });
     failures.push(...batch.failures);
     const back = batch.done.filter(id => engine.has(id) && isReady(id) && copiesBack(id));
-    if (action !== 'dismiss' && back.length) await copy(back).catch(error => failures.push(message(error)));
+    if (action !== 'dismiss' && back.length) await copy(back, sequence).catch(error => failures.push(message(error)));
     if (failures.length) inform(failures.join('\n'));
     return;
   }
@@ -916,9 +918,10 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
   }
   if (plan.type !== 'ui') {
     if (makesNewCard(plan)) { await coverArtCard(creation(), id); return; }
-    await runPlan(cardHost(), id, plan);
-    shortcutRunner.noted(id, invocation);
-    if (copyBack && isReady(id) && copiesBack(id)) await copy([id]);
+    await thenCopyBack(currentSequence, () => runPlan(cardHost(), id, plan), async sequence => {
+      shortcutRunner.noted(id, invocation);
+      if (copyBack && isReady(id) && copiesBack(id)) await copy([id], sequence);
+    });
     return;
   }
   const file = () => engine.output(id);

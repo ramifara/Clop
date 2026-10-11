@@ -144,6 +144,15 @@ export async function editorProgram(editor: string, { platform = process.platfor
   if (platform === 'win32' && await marked(program)) throw new Error(`Windows marked ${name} as downloaded from the internet. Unblock it in its file properties first.`);
   return program;
 }
+/**
+ * Runs `action`, then `back` with the clipboard sequence read before `action` began: a result that goes back on the clipboard after a long
+ * encode must not overwrite what was copied meanwhile (`copy` skips the write when the clipboard moved on).
+ */
+export async function thenCopyBack<T>(sequence: () => Promise<number | undefined>, action: () => Promise<T>, back: (sequence: number | undefined) => Promise<unknown>): Promise<T> {
+  const before = await sequence().catch(() => undefined), result = await action();
+  await back(before);
+  return result;
+}
 /** The selected results that are finished: saving or copying a selection leaves out one still processing or failed, and says so when none is ready. */
 export function readyIds(engine: Pick<ItemEngine, 'has' | 'get'>, ids: readonly string[]) {
   const ready = ids.filter(id => engine.has(id) && engine.get(id).result.status === 'ready');

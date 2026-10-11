@@ -17,7 +17,7 @@ import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { run } from '../core/run';
 import { needTools } from '../core/testing';
 import { Workdir } from '../core/workdir';
-import { coverArtCard, eachResult, editorLabel, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, readyIds, runPlan, savePages, totalChange, type CardCreation, type CardHost } from './cards';
+import { coverArtCard, eachResult, editorLabel, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, readyIds, runPlan, savePages, thenCopyBack, totalChange, type CardCreation, type CardHost } from './cards';
 import { ItemEngine } from './items';
 import type { PipelineHost } from './pipelines';
 import type { ItemResult } from '../src/types';
@@ -422,4 +422,15 @@ test('saving PDF pages keeps what the folder holds and writes the pages that cou
   f.state.settings = { ...f.state.settings, imageCompression: { tier: 'lossless', factor: 5 } };
   const again = await savePages(f.creation, await f.add(pdf), 'png', path.join(f.root, 'lossless'));
   for (const file of again) assert.ok((await stat(file)).size > 100 && path.dirname(file) === path.join(f.root, 'lossless'), file);
+});
+
+test('a result goes back on the clipboard with the sequence read before the work began', async () => {
+  let clipboard = 5;
+  const given: (number | undefined)[] = [];
+  const result = await thenCopyBack(async () => clipboard, async () => { clipboard = 6; return 'done'; }, async sequence => { given.push(sequence); });
+  assert.deepEqual([result, given], ['done', [5]], 'a copy made during the work is newer than the sequence the write expects');
+  await assert.rejects(thenCopyBack(async () => clipboard, async () => { throw new Error('encoder failed'); }, async sequence => { given.push(sequence); }), /encoder failed/);
+  assert.equal(given.length, 1, 'a failed action puts nothing back');
+  assert.deepEqual(await thenCopyBack(async () => { throw new Error('no helper'); }, async () => 1, async sequence => { given.push(sequence); }), 1);
+  assert.deepEqual(given, [5, undefined], 'without a helper the write has no sequence to check');
 });
