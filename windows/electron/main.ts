@@ -50,7 +50,7 @@ import { pipelineMenu } from './pipeline-menu';
 import { installVerbs, portablePaths, removeVerbs, verbsStatus } from './explorer';
 import { explorerVerb, type VerbId } from '../core/shell-verbs';
 import { stripExifFile } from '../core/media/strip-copy';
-import { explorerRequest, skippedNote, stripAll, stripSummary, usableFiles } from './verbs';
+import { expandFolders, explorerRequest, failureName, skippedNote, stripAll, stripSummary, usableFiles, verbNotes } from './verbs';
 import { mirrorConsoleToFile } from './debug-log';
 import { newPipePath, type OptimisationRequest } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
@@ -631,12 +631,15 @@ async function toggleExplorer() {
 /** What each Explorer verb does once its launches are gathered. All of it happens in this one app: nothing else is started. */
 async function runVerb(verb: VerbId, files: string[]) {
   if (verb === 'run-pipeline') return choosePipeline(files);
-  const { use, skipped } = usableFiles(verb, files);
+  const { use, skipped } = usableFiles(verb, await expandFolders(files));
   if (!use.length) { inform(skippedNote(skipped)); return; }
   if (verb === 'strip-exif') { inform(stripSummary(await stripAll(use, stripExifFile), skipped)); return; }
-  const failures: string[] = [];
-  await service!.optimise(explorerRequest(verb, use, randomUUID()), reply => { if (reply.kind === 'error') failures.push(`${path.basename(reply.error.forURL)}: ${reply.error.error}`); });
-  const notes = [...failures.slice(0, 3), ...(failures.length > 3 ? [`${failures.length - 3} more failed.`] : []), ...(skipped ? [skippedNote(skipped)] : [])];
+  const failures: string[] = [], done: string[] = [];
+  await service!.optimise(explorerRequest(verb, use, randomUUID()), reply => {
+    if (reply.kind === 'error') failures.push(`${failureName(reply.error.forURL)}: ${reply.error.error}`);
+    else if (reply.kind === 'response') done.push(reply.response.path);
+  });
+  const notes = verbNotes({ verb, done, failures, skipped });
   if (notes.length) inform(notes.join('\n'));
 }
 /** "Run pipeline..." from Explorer: asks which saved pipeline with a menu at the pointer, then runs it on the files that pipeline works on. */

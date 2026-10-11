@@ -1,4 +1,6 @@
-import { fileURL, type OptimisationRequest } from '../core/ipc/protocol';
+import { readdir, stat } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURL, urlPath, type OptimisationRequest } from '../core/ipc/protocol';
 import type { MediaKind } from '../core/media/types';
 import type { VerbId } from '../core/shell-verbs';
 import { mediaKind } from './clipboard';
@@ -17,6 +19,37 @@ export const EXPLORER_DOWNSCALE = 0.5;
 export function usableFiles(verb: Exclude<VerbId, 'run-pipeline'>, files: readonly string[]): { use: string[]; skipped: number } {
   const use = files.filter(file => { const kind = mediaKind(file); return kind && TYPES[verb].includes(kind); });
   return { use, skipped: files.length - use.length };
+}
+
+/**
+ * A folder in the selection (Send To takes folders) stands for its media files, one level down, as `clop optimise` expands a folder; anything
+ * else stays as it is. A folder that cannot be read is left in, and then counts among the files left out.
+ */
+export async function expandFolders(files: readonly string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const file of files) {
+    if (!(await stat(file).catch(() => undefined))?.isDirectory()) { out.push(file); continue; }
+    const names = await readdir(file, { withFileTypes: true }).catch(() => undefined);
+    if (!names) { out.push(file); continue; }
+    for (const name of names.map(entry => entry.isFile() ? entry.name : '').filter(name => name && mediaKind(name)).sort()) out.push(path.join(file, name));
+  }
+  return out;
+}
+
+/** The name a notice shows for the file a reply is about: its file name, not the percent-encoded end of its `file:` URL. */
+export function failureName(forURL: string) {
+  const file = urlPath(forURL);
+  if (file !== undefined) return path.basename(file);
+  try { return decodeURIComponent(path.posix.basename(new URL(forURL).pathname)) || forURL; } catch { return forURL; }
+}
+
+/** What the user is told after an optimise, aggressive or downscale verb: the first failures, a downscale of video or audio (no card shows for those), and files left out. */
+export function verbNotes({ verb, done, failures, skipped }: { verb: 'optimise' | 'aggressive' | 'downscale'; done: readonly string[]; failures: readonly string[]; skipped: number }) {
+  const quiet = verb === 'downscale' ? done.filter(file => { const kind = mediaKind(file); return kind === 'video' || kind === 'audio'; }).length : 0;
+  return [
+    ...(quiet ? [`Downscaled ${quiet} video or audio file${quiet === 1 ? '' : 's'}.`] : []),
+    ...failures.slice(0, 3), ...(failures.length > 3 ? [`${failures.length - 3} more failed.`] : []), ...(skipped ? [skippedNote(skipped)] : []),
+  ];
 }
 
 /** The request for optimise, aggressive and downscale: in place, with a card, like `clop <verb> --gui`. */

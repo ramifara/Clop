@@ -234,9 +234,11 @@ try {
   const pipelineCopy = await until(async () => { const [result] = (await externalClipboard.request({ type: 'read' })).paths; return result?.endsWith('.webp') && result; }, 'The clipboard did not get the pipeline\'s WebP');
   assert.equal((await sharp(pipelineCopy).metadata()).format, 'webp');
   // Explorer's right-click verbs (spec step 39): Explorer starts the app once per selected file. Every launch reaches the running app,
-  // which gathers them and optimises them in place; the files may be named like options, and no other process does the work.
+  // which gathers them and optimises them in place, and no other process does the work. This proves the routing while the app is running (the warm
+  // path); that a file named like an option stays a file comes from the `--` before the files, which the unit tests of `explorerVerb` pin. Nothing here
+  // covers a verb launched while the app is not running yet (the cold start).
   const verbFiles = [];
-  for (const name of ['--clop-downscale first.png', 'second verb.png']) {
+  for (const name of ['first verb.png', 'second verb.png']) {
     const file = path.join(profile, name);
     await sharp({ create: { width: 900, height: 600, channels: 3, background: '#3a7bd5' } }).composite([{ input: Buffer.from('<svg width="900" height="600"><circle cx="450" cy="300" r="250" fill="#f5a623"/></svg>') }]).png({ compressionLevel: 0 }).toFile(file);
     verbFiles.push([file, (await stat(file)).size]);
