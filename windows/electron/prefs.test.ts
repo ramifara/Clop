@@ -164,6 +164,16 @@ test('template previews run the real template on an example file without moving 
   assert.equal(h.get().lastAutoIncrementingNumber, 0);
 });
 
+test('a blank template previews the name Clop gives when it finds the setting empty', async () => {
+  const h = harness('win32');
+  const win = path.win32, preview = async (key: string) => (await h.prefs({ action: 'template', key, template: ' ' })).preview!.output;
+  assert.equal(await preview('sameFolderNameTemplateAudio'), 'Voice memo-optimised.wav');
+  assert.equal(win.normalize(await preview('specificFolderNameTemplateAudio')), 'C:\\Users\\You\\Pictures\\optimised\\Voice memo.wav');
+  assert.equal(await preview('convertedSameFolderNameTemplateAudio'), 'Voice memo.m4a');
+  assert.equal(win.normalize(await preview('convertedSpecificFolderNameTemplateImage')), 'C:\\Users\\You\\Pictures\\optimised\\Screenshot.jpeg');
+  assert.match(await preview('customNameTemplateForClipboardImages'), /^clop_\d{4}-\d{2}-\d{2}_1\.png$/);
+});
+
 test('template previews are only for template settings and reasonable lengths', async () => {
   const h = harness();
   assert.equal(TEMPLATE_KEYS.length, 15);

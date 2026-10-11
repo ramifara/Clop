@@ -36,6 +36,8 @@ export interface PlacedOutput { path: string; backup?: string; originalRemoved: 
 
 // Templates are stored portable (`~/Pictures/%f`), so a specific-folder template is expanded before anything treats it as a real path.
 const DEFAULT_SAME_FOLDER = '%f-optimised', DEFAULT_SPECIFIC_FOLDER = '%P/optimised/%f';
+/** What an empty template falls back to when a file is named, so a preview can say the same (`templateOf`). */
+export const emptyTemplate = (folder: 'same' | 'specific', converted: boolean) => folder === 'same' ? converted ? '%f' : DEFAULT_SAME_FOLDER : DEFAULT_SPECIFIC_FOLDER;
 const SUFFIX: Record<FileType, string> = { image: 'Image', video: 'Video', audio: 'Audio', pdf: 'PDF' };
 // PDFs have no conversion settings, so conversions follow the optimise ones.
 const hasConversionKeys = (type: FileType) => type !== 'pdf';
@@ -57,7 +59,7 @@ function templateOf(env: PlacementEnv, type: FileType, kind: OutputKind, folder:
   const stored = kind === 'optimised' ? s[`${folder === 'same' ? 'sameFolder' : 'specificFolder'}NameTemplate${suffix}`]
     : hasConversionKeys(type) ? s[`converted${word}NameTemplate${suffix}`] : undefined;
   // Audio's templates are empty by default; an empty template names nothing.
-  const template = stored || (folder === 'same' ? kind === 'optimised' ? DEFAULT_SAME_FOLDER : '%f' : DEFAULT_SPECIFIC_FOLDER);
+  const template = stored || emptyTemplate(folder, kind !== 'optimised');
   return folder === 'same' ? template : resolveHome(template, env.home, env.platform);
 }
 

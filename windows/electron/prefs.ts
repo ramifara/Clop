@@ -1,11 +1,13 @@
 import { access, constants, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { MediaName } from '../core/settings/entries';
+import { emptyTemplate } from '../core/placement';
 import { settingsMeta } from '../core/settings/meta';
 import { expandHome, portablePath } from '../core/settings/paths';
 import type { ClopSettings, SettingKey } from '../core/settings/schema';
 import { expandPathTemplate, expandTemplate } from '../core/template';
 import type { AppEntry, PrefsReply, PrefsRequest } from '../src/types';
+import { DEFAULT_NAME_TEMPLATE } from './clipboard';
 
 // The Settings window's actions that need the main process (the policy in `electron/settings.ts`): the folder and program pickers,
 // the lists whose entries must be real, and the template preview. Each action is checked here, whatever the window sent.
@@ -190,10 +192,11 @@ export function createPrefs(host: PrefsHost) {
     const folderOf = windows ? 'C:\\Users\\You\\Pictures' : '/home/you/Pictures';
     const ext = converted ? target : path.extname(input).slice(1);
     const from = p.join(folderOf, input), made = p.join(folderOf, `${p.parse(input).name}.${ext}`);
-    const defaults = host.defaults()[key as keyof ClopSettings] as string, effective = value.trim() ? value : defaults;
+    // An empty template names files as the naming code does when it finds one: the clipboard image default, or the placement fallback for the setting.
+    const effective = value.trim() ? value : match ? emptyTemplate(specific ? 'specific' : 'same', converted) : DEFAULT_NAME_TEMPLATE;
     const counter = { value: host.settings().lastAutoIncrementingNumber };
     const ctx = { path: made, counter, platform, home: host.home };
-    const output = specific ? expandPathTemplate(effective, ctx) : expandTemplate(effective || '%f', ctx);
+    const output = specific ? expandPathTemplate(effective, ctx) : expandTemplate(effective, ctx);
     return { preview: { input: p.basename(from), output: specific ? output : p.basename(output) } };
   }
 
