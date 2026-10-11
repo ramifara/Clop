@@ -118,6 +118,8 @@ const literal = (text: string, first: boolean) => {
   const drive = first ? /^[A-Za-z]:/.exec(text)?.[0] ?? '' : '';
   return drive + text.slice(drive.length).replace(/[\\:{}<>*|?$#&^;'"`\x00-\x1F]/g, '_');
 };
+/** The trailing dot and space rule `expandTemplate` applies to a name and to each folder: it ends the template or a component, but not `.` or `..`. */
+const fixEnds = (text: string, first: boolean, last: boolean) => text.split('/').map((piece, i, all) => (i < all.length - 1 || last) && !((first || i > 0) && (piece === '.' || piece === '..')) ? fixTrailing(piece) : piece).join('/');
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
 /** Port of `nameMatchesTemplate`: whether `name` could have come out of `template`, so a template is never applied twice to one file. On Windows both sides are compared with `/` separators and ignoring case. */
@@ -129,7 +131,7 @@ export function nameMatchesTemplate(name: string, template: string, { allowPathP
   const parts = template.split(/(%.)/);
   for (const [index, part] of parts.entries()) {
     const token = /^%(.)$/.exec(part)?.[1];
-    pattern += token && TOKEN_PATTERNS[token] ? `(?:${TOKEN_PATTERNS[token]})` : escape(literal(part, index === 0 && windows));
+    pattern += token && TOKEN_PATTERNS[token] ? `(?:${TOKEN_PATTERNS[token]})` : escape(fixEnds(literal(part, index === 0 && windows), index === 0, index === parts.length - 1));
   }
   return new RegExp(`${pattern}$`, windows ? 'iu' : 'u').test(name);
 }
