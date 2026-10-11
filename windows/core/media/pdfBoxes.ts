@@ -3,21 +3,16 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { retryBusy } from '../run';
 import type { CropSize } from '../settings/schema';
-import { clampRect, cutLandscape, cutPortrait, isFullFrame } from './crop-size';
+import { clampRect, cropToAspectRatio, extendToAspectRatio, isFullFrame, type PageBox, type PageFit } from './crop-size';
 import type { MediaOutput } from './types';
+
+export { cropToAspectRatio, extendToAspectRatio, type PageBox, type PageFit };
 
 // Page box edits from Shared/PaperSizes.swift (the PDFDocument extension) with the size helpers from Shared.swift.
 // Cropping only sets the CropBox, so the MediaBox keeps the original page and uncropping restores it.
 
-/** A page box in PDF points, with the bottom-left origin PDF uses. */
-export interface PageBox { x: number; y: number; width: number; height: number }
 /** A normalised (0–1) region with a top-left origin, relative to the displayed page. */
 type CropRect = NonNullable<CropSize['cropRect']>;
-export interface PageFit {
-  /** Width over height, or short over long side with the page's own orientation (as `cropTo(aspectRatio:)` takes it). */
-  aspectRatio: number;
-  alwaysPortrait?: boolean; alwaysLandscape?: boolean;
-}
 export interface PDFEditOptions { /** Output file name without extension; the input's name when omitted. */ name?: string }
 
 /** `CropRect.rotated(by:)`: maps a rect from displayed (rotated) page space into unrotated MediaBox space for a page's /Rotate. */
@@ -28,25 +23,6 @@ export function rotateCropRect(r: CropRect, degrees: number): CropRect {
     case 270: return { x: 1 - r.y - r.height, y: r.x, width: r.height, height: r.width };
     default: return r;
   }
-}
-
-const isPortrait = (width: number, height: number, { alwaysPortrait, alwaysLandscape }: PageFit) => !!alwaysPortrait || (!alwaysLandscape && !(width > height));
-
-/** The largest centred box of the aspect ratio inside `width` × `height` (NSSize.cropTo in Shared.swift). */
-export function cropToAspectRatio(width: number, height: number, fit: PageFit): PageBox {
-  const size = (isPortrait(width, height, fit) ? cutPortrait : cutLandscape)(width, height, fit.aspectRatio);
-  return { x: (width - size.width) / 2, y: (height - size.height) / 2, ...size };
-}
-
-/** The smallest centred box of the aspect ratio containing `width` × `height`; the origin can go negative (NSSize.extendTo). */
-export function extendToAspectRatio(width: number, height: number, fit: PageFit): PageBox {
-  const { aspectRatio } = fit, portrait = isPortrait(width, height, fit);
-  if (portrait ? width / height > aspectRatio : height / width <= aspectRatio) {
-    const h = portrait ? width / aspectRatio : width * aspectRatio;
-    return { x: 0, y: (height - h) / 2, width, height: h };
-  }
-  const w = portrait ? height * aspectRatio : height / aspectRatio;
-  return { x: (width - w) / 2, y: 0, width: w, height };
 }
 
 const rotation = (page: PDFPage) => ((page.getRotation().angle % 360) + 360) % 360;
