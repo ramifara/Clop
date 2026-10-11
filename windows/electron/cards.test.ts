@@ -4,7 +4,7 @@ import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
-import { ACTION_KINDS, batchMenu, buttonsFor, itemMenu, parseInvocation, planFor, submenu, type CardItem, type Facts, type Invocation, type MenuNode, MENUS } from '../core/cards/actions';
+import { ACTION_KINDS, batchMenu, BATCH_ACTIONS, buttonsFor, itemMenu, parseInvocation, planFor, refuseUnavailable, submenu, type CardItem, type Facts, type Invocation, type MenuNode, MENUS } from '../core/cards/actions';
 import { photo } from '../core/media/image.fixtures';
 import { coverImage, tone } from '../core/media/audio.fixtures';
 import { audioMetadata } from '../core/media/audio';
@@ -17,7 +17,7 @@ import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { run } from '../core/run';
 import { needTools } from '../core/testing';
 import { Workdir } from '../core/workdir';
-import { checkedEditor, makesNewCard, openWithDialog, runPlan, type CardHost } from './cards';
+import { coverArtCard, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, type CardCreation, type CardHost } from './cards';
 import { ItemEngine } from './items';
 import type { PipelineHost } from './pipelines';
 import type { ItemResult } from '../src/types';
@@ -43,7 +43,8 @@ async function setup(t: TestContext, settings: Partial<ClopSettings> = {}, ...to
     await runPlan(host, id, plan as Parameters<typeof runPlan>[2]);
     return engine.get(id).result;
   };
-  return { root, engine, host, add, act, file, state };
+  const creation: CardCreation = { engine, settings: () => state.settings, defaults: () => balanced, makeRoom: async () => {}, scratchRoot: root };
+  return { root, engine, host, add, act, file, state, creation };
 }
 
 /** Every action in a menu; `all` also takes the disabled ones. */
@@ -81,6 +82,12 @@ test('each action a kind\'s menu offers does its work on a real file', async t =
     'image:downscale': (before, after) => assert.deepEqual([after.width, after.height], [Math.round(before.width * .9), Math.round(before.height * .9)]),
     'image:fitUnder': (_, after) => assert.ok(after.outputBytes <= 500_000, `${after.outputBytes}`),
     'image:convert': (_, after) => assert.equal(after.format, 'jpeg'),
+    'image:aggressive': (_, after) => assert.equal(after.options.mode, 'aggressive'),
+    'video:convert': (_, after) => assert.equal(after.format, 'mp4'),
+    'video:compression': (before, after) => assert.ok(after.outputBytes > 0 && after.kind === before.kind),
+    'audio:convert': (_, after) => assert.equal(after.format, 'm4a'),
+    'audio:normalise': async (_, __, file) => assert.ok(((await audioMetadata(file)).durationMs ?? 0) > 1500),
+    'audio:aggressive': (_, after) => assert.equal(after.format, 'm4a'),
     'image:compression': (_, after) => assert.deepEqual(after.options.compression, { tier: 'adaptive', factor: 5 }),
     'video:removeAudio': async (_, __, file) => assert.equal((await probe(file) as VideoInfo).hasAudio, false),
     'video:downscale': async (_, __, file) => assert.ok(Math.abs((await probe(file) as VideoInfo).width - 288) <= 2),
@@ -217,11 +224,98 @@ test('Open with uses the Windows chooser by its System32 path with the file as o
   await assert.rejects(openWithDialog('relative.png', 'win32', async () => {}), /no longer there/);
 });
 
-test('Edit with refuses launchers and programs Windows marked as downloaded, and fails closed when it cannot tell', async () => {
-  const clean = async () => false;
-  assert.equal(await checkedEditor('"C:\\Program Files\\GIMP\\gimp.exe"', { platform: 'win32', marked: clean }), 'C:\\Program Files\\GIMP\\gimp.exe');
-  for (const launcher of ['C:\\Windows\\System32\\cmd.exe', 'powershell', 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', 'C:\\Windows\\explorer.exe', 'node.exe', 'wscript']) await assert.rejects(checkedEditor(launcher, { platform: 'win32', marked: clean }), /runs other programs/, launcher);
-  await assert.rejects(checkedEditor('C:\\Users\\me\\Downloads\\editor.exe', { platform: 'win32', marked: async () => true }), /downloaded from the internet/);
-  await assert.rejects(checkedEditor('C:\\Apps\\editor.exe', { platform: 'win32', marked: async () => { throw new Error('could not check'); } }), /could not check/);
-  await assert.rejects(checkedEditor('  ', { platform: 'win32', marked: clean }), /No editor app/);
+const clean = async () => false, exists = async () => true;
+test('Edit with fails closed: only the full path of an existing .exe that passes every check is started, and that exact path comes back', async () => {
+  const win = { platform: 'win32' as const, marked: clean, isFile: exists };
+  assert.equal(await editorProgram('"C:\\Program Files\\GIMP\\gimp.exe"', win), 'C:\\Program Files\\GIMP\\gimp.exe');
+  // A name is never looked up: no Start menu, no App Paths, nothing relative.
+  for (const name of ['gimp', 'gimp.exe', 'Editor', '..\\editor.exe', '.\\editor.exe', 'C:editor.exe', 'Microsoft.Paint_8wekyb3d8bbwe!App', 'C:\\Apps\\editor', 'C:\\Apps\\editor.bat', 'C:\\Apps\\editor.exe.lnk', 'https://example.com/x.exe']) {
+    await assert.rejects(editorProgram(name, win), /full path of a \.exe/, name);
+    assert.equal(isEditorPath(name), false, name);
+  }
+  assert.equal(isEditorPath('"C:\\Apps\\Editor.EXE"'), true);
+  await assert.rejects(editorProgram('C:\\Apps\\missing.exe', { ...win, isFile: async () => false }), /was not found/);
+  for (const launcher of ['C:\\Windows\\System32\\cmd.exe', 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', 'C:\\Windows\\explorer.exe', 'C:\\Windows\\System32\\rundll32.exe', 'C:\\Tools\\node.exe', 'C:\\Windows\\System32\\wscript.exe']) await assert.rejects(editorProgram(launcher, win), /runs other programs/, launcher);
+  await assert.rejects(editorProgram('C:\\Users\\me\\Downloads\\editor.exe', { ...win, marked: async () => true }), /downloaded from the internet/);
+  await assert.rejects(editorProgram('C:\\Apps\\editor.exe', { ...win, marked: async () => { throw new Error('Clop could not check whether it was downloaded'); } }), /could not check/);
+  await assert.rejects(editorProgram('C:\\Users\\me\\Desktop\\editor.exe', { ...win, watched: ['C:\\Users\\me\\Desktop'] }), /inside the watched folder/);
+  assert.equal(await editorProgram('C:\\Users\\me\\Desktopper\\editor.exe', { ...win, watched: ['C:\\Users\\me\\Desktop'] }), 'C:\\Users\\me\\Desktopper\\editor.exe');
+});
+
+test('a window that asks for Edit with when the menu hides it is refused the same way', async () => {
+  const win = { platform: 'win32' as const, marked: clean };
+  // The menu shows the entry only for an existing .exe path (`cardFacts`); the main process runs `editorProgram` on the same setting.
+  for (const [setting, exists_, reason] of [['', true, /No editor app/], ['gimp', true, /full path/], ['C:\\Apps\\gone.exe', false, /was not found/], ['C:\\Windows\\System32\\cmd.exe', true, /runs other programs/]] as const) {
+    await assert.rejects(editorProgram(setting, { ...win, isFile: async () => exists_ }), reason, setting);
+    assert.equal(itemMenu({ kind: 'image', status: 'ready', format: 'png', animated: false, options: balanced }, { native: true }).some(node => 'label' in node && node.label.startsWith('Edit with')), false);
+  }
+});
+
+test('the table refuses what the menu disables, and values the menu never offers', () => {
+  const video = { kind: 'video' as const }, audio = { kind: 'audio' as const };
+  assert.match(refuseUnavailable(video, { action: 'removeAudio' }, { native: true, hasAudio: false })!, /no audio/);
+  assert.equal(refuseUnavailable(video, { action: 'removeAudio' }, { native: true, hasAudio: true }), undefined);
+  assert.match(refuseUnavailable(video, { action: 'hdrToSdr' }, { native: true, hdr: false })!, /not HDR/);
+  assert.match(refuseUnavailable(video, { action: 'hdrToSdr' }, { native: true })!, /not HDR/);
+  assert.equal(refuseUnavailable(video, { action: 'hdrToSdr' }, { native: true, hdr: true }), undefined);
+  assert.match(refuseUnavailable(audio, { action: 'coverArt' }, { native: true, hasCoverArt: false })!, /no cover art/);
+  assert.match(refuseUnavailable(audio, { action: 'bitrate', arg: 96 }, { native: true, bitrates: [64, 128] })!, /no such bitrate/);
+  assert.equal(refuseUnavailable(audio, { action: 'bitrate', arg: 128 }, { native: true, bitrates: [64, 128] }), undefined);
+  assert.throws(() => parseInvocation('video', { action: 'compression', arg: 'adaptive' }), /does not take that value/);
+  assert.deepEqual(parseInvocation('image', { action: 'compression', arg: 'adaptive' }), { action: 'compression', arg: 'adaptive' });
+  assert.throws(() => parseInvocation('audio', { action: 'bitrate', arg: 33 }), /does not take that value/);
+  assert.throws(() => parseInvocation('audio', { action: 'downscale', arg: 0.5 }), /does not work on audio/);
+});
+
+test('the batch menu offers what works on several results and the batch actions are the ones it names', () => {
+  const card = (kind: CardItem['kind']): CardItem => ({ kind, status: 'ready', format: 'x', animated: false, options: balanced });
+  const labels = (nodes: MenuNode[]): string[] => nodes.flatMap(node => 'label' in node ? [node.label] : []);
+  const all = labels(batchMenu([card('image'), card('video'), card('audio'), card('pdf')], { native: true, hdr: true, bitrates: [64, 96] }));
+  for (const wanted of ['Save all to folder…', 'Copy to clipboard', 'Restore all', 'Downscale', 'Change bitrate', 'Change playback speed', 'Aggressive optimisation', 'Convert HDR to SDR', 'Strip EXIF metadata', 'Dismiss']) assert.ok(all.includes(wanted), wanted);
+  const pdfs = labels(batchMenu([card('pdf'), card('audio')], { native: true }));
+  assert.ok(!pdfs.includes('Strip EXIF metadata') && !pdfs.includes('Downscale') && !pdfs.includes('Convert HDR to SDR'));
+  const invoked = new Set<string>();
+  const walk = (nodes: MenuNode[]) => { for (const node of nodes) if ('label' in node) { if (node.invoke) invoked.add(node.invoke.action); if (node.submenu) walk(node.submenu); } };
+  walk(batchMenu([card('image'), card('video'), card('audio')], { native: true, hdr: true, bitrates: [64] }));
+  for (const action of invoked) assert.ok(BATCH_ACTIONS.includes(action as never), action);
+});
+
+test('every offered value of an action works, not just the first', async t => {
+  const f = await setup(t); if (!f) return;
+  const jpeg = f.file('p.jpg'), mp4 = f.file('v.mp4'), m4a = f.file('a.m4a');
+  await photo(1200, 800).jpeg({ quality: 95 }).toFile(jpeg); await clip(mp4, { seconds: 1 }); await tone(m4a, { seconds: 1, codec: ['-c:a', 'aac', '-b:a', '256k'] });
+  const image = await f.add(jpeg);
+  for (const arg of [0.9, 0.5, 0.1]) { const r = await f.act(image, { action: 'downscale', arg }); assert.equal(r.width, Math.round(1200 * arg)); }
+  for (const arg of ['adaptive', 'lossless', 10, 90] as const) assert.equal((await f.act(image, { action: 'compression', arg })).status, 'ready', String(arg));
+  assert.equal((await f.act(image, { action: 'aggressive' })).options.mode, 'aggressive');
+  for (const [arg, format] of [['webp', 'webp'], ['png', 'png'], ['gif', 'gif'], ['avif', 'avif'], ['jpeg', 'jpeg']] as const) assert.equal((await f.act(image, { action: 'convert', arg })).format, format, arg);
+  const video = await f.add(mp4);
+  for (const arg of [0.5, 1.25, 10]) assert.equal((await f.act(video, { action: 'speed', arg })).status, 'ready', String(arg));
+  for (const arg of ['fast', 'slowHighQuality', 'visuallyLossless']) assert.equal((await f.act(video, { action: 'encoder', arg })).status, 'ready', arg);
+  for (const arg of ['lossless', 50] as const) assert.equal((await f.act(video, { action: 'compression', arg })).status, 'ready', String(arg));
+  assert.equal((await f.act(video, { action: 'convert', arg: 'mov' })).format, 'mov');
+  const audio = await f.add(m4a);
+  for (const arg of [64, 96, 128]) assert.equal((await f.act(audio, { action: 'bitrate', arg })).status, 'ready', String(arg));
+  for (const lufs of [-12, -14, -16, -19, -23]) assert.equal((await f.act(audio, { action: 'normalise', arg: lufs })).status, 'ready', String(lufs));
+  assert.equal((await f.act(audio, { action: 'convert', arg: 'mp3' })).format, 'mp3');
+  assert.equal((await f.act(audio, { action: 'aggressive' })).status, 'ready');
+});
+
+test('cover art and PDF pages become cards of their own, and facts come from the file', async t => {
+  const f = await setup(t); if (!f) return;
+  const m4a = f.file('song.m4a'), mp4 = f.file('clip.mp4'), pdf = f.file('doc.pdf'), one = f.file('one.pdf');
+  await coverImage(f.file('c.jpg'), 300, 300); await tone(m4a, { cover: f.file('c.jpg'), codec: ['-c:a', 'aac'] });
+  await clip(mp4, { seconds: 1 }); await writeFile(pdf, await photoPDF({ pages: 3 })); await writeFile(one, await photoPDF({ pages: 1 }));
+  const song = await f.add(m4a);
+  const cover = await coverArtCard(f.creation, song);
+  assert.notEqual(cover, song);
+  assert.deepEqual([f.engine.get(cover).result.kind, f.engine.get(cover).result.status, f.engine.get(song).result.kind], ['image', 'ready', 'audio']);
+  const page = await pageCard(f.creation, await f.add(one), 'png');
+  assert.deepEqual([f.engine.get(page).result.kind, f.engine.get(page).result.format], ['image', 'png']);
+  const folder = path.join(f.root, 'pages'), written = await savePages(f.creation, await f.add(pdf), 'jpeg', folder);
+  assert.equal(written.length, 3);
+  for (const file of written) assert.ok((await stat(file)).size > 0 && file.startsWith(folder));
+  assert.deepEqual(await mediaFacts(f.engine.output(song), 'audio').then(x => [x.hasCoverArt, x.bitrates!.includes(128)]), [true, true]);
+  assert.deepEqual(await mediaFacts(f.engine.output(await f.add(mp4)), 'video').then(x => [x.hasAudio, x.hdr]), [true, false]);
+  assert.deepEqual(await mediaFacts(pdf, 'pdf'), {});
 });

@@ -78,7 +78,7 @@ export interface ClopApi {
   /** The saved pipelines the card can run on a result, and running one of them. */
   pipelines(id: string): Promise<PipelineChoice[]>; runPipeline(id: string, pipelineId: string): Promise<void>;
   mcp(request: McpRequest): Promise<McpState>;
-  window(action: 'hide' | 'close' | 'main' | 'float' | 'quit' | 'minimize' | 'interactive' | 'passthrough' | 'dismiss-notice' | 'editor' | 'presets'): Promise<void>;
+  window(action: 'hide' | 'close' | 'main' | 'float' | 'quit' | 'minimize' | 'interactive' | 'passthrough' | 'dismiss-notice' | 'editor' | 'presets' | 'select' | 'unselect'): Promise<void>;
   /** Opens (or brings forward) a result's crop, compare or preview window. */
   openCrop(id: string): Promise<void>; openCompare(id: string): Promise<void>; openPreview(id: string): Promise<void>;
   /** Pops up the right-click menu of results (the batch menu for several), or one of its submenus by name, at the pointer. */

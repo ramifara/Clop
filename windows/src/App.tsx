@@ -36,6 +36,9 @@ export function App() {
   // The tiles stay once the pointer is on them, so letting go of Ctrl or Alt to drop does not take them away.
   useEffect(() => { if (!targetShown) { setPinned(false); setHeldKeys(false); } }, [targetShown]);
   useEffect(() => () => { if (notification.current) clearTimeout(notification.current); }, []);
+  // A selection in the compact list holds back clearing it, and goes with the results it named.
+  useEffect(() => { if (state && selection.some(id => !state.items.some(item => item.id === id))) setSelection(selection.filter(id => state.items.some(item => item.id === id))); }, [state, selection]);
+  useEffect(() => { if (state?.native) void api.window(selection.length ? 'select' : 'unselect'); }, [state?.native, selection.length]);
   const run: Run = useCallback(async (task, success) => {
     setError('');
     try {

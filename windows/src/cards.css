@@ -1,4 +1,4 @@
-/* Progress bars, the extension chip, the compact list, menus rendered as HTML, the preview window and the results settings. */
+/* Progress bars, the extension chip, the compact list, menus rendered as HTML and the preview window. */
 .progress-bar{display:inline-block;width:92px;height:5px;border-radius:3px;background:#ffffff33;overflow:hidden;vertical-align:middle}
 .progress-bar>span{display:block;height:100%;background:#ffc46e;border-radius:3px;transition:width .2s}
 .card-progress{flex-direction:column;gap:5px}
@@ -64,6 +64,4 @@
 .flat{border:0;background:transparent;color:#e1dce4;padding:2px 6px;border-radius:4px}
 .flat:hover:not(:disabled){background:#ffffff22}
 
-.results-settings{border:0;border-top:1px solid #d3cbc4;margin:14px 0 0;padding:8px 0 0}
-.results-settings legend{font-size:12px;font-weight:600;padding:0 6px 0 0}
 .corner-card:has(.format-picker .format-bar) .filename-chip{display:none}

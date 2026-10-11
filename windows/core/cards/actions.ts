@@ -55,6 +55,8 @@ export const TARGET_SIZES: readonly { label: string; bytes: number }[] = [
   { label: '500 KB', bytes: 500_000 }, { label: '1 MB', bytes: 1_000_000 }, { label: '2 MB', bytes: 2_000_000 }, { label: '5 MB', bytes: 5_000_000 },
   { label: '8 MB (Discord)', bytes: 8_000_000 }, { label: '10 MB', bytes: 10_000_000 }, { label: '25 MB', bytes: 25_000_000 }, { label: '50 MB', bytes: 50_000_000 },
 ];
+/** Every bitrate (kbps) an audio format's menu offers (`allowedBitrates` in core/media/audioFormat.ts); the format's own list is checked in the main process. */
+export const AUDIO_BITRATES = [32, 48, 56, 64, 80, 96, 128, 160, 192, 256, 320] as const;
 export const PDF_RESOLUTIONS = [300, 250, 200, 150, 100, 72, 48] as const;
 export const VIDEO_ENCODERS: readonly { id: string; name: string }[] = [
   { id: 'fast', name: 'Fast, battery efficient, larger file' }, { id: 'slowHighQuality', name: 'Slow, high quality, smaller file' }, { id: 'visuallyLossless', name: 'Visually lossless' },
@@ -70,7 +72,7 @@ const ALL: readonly MediaKind[] = ['image', 'video', 'pdf', 'audio'];
 /** The kinds each action applies to. */
 export const ACTION_KINDS: Record<ActionId, readonly MediaKind[]> = {
   stop: ALL, dismiss: ALL, restore: ALL, reoptimise: ALL, preview: ALL, compare: ALL, saveAs: ALL, copy: ALL, reveal: ALL, openDefault: ALL, openWith: ALL, editWith: ALL, share: ALL, pipeline: ALL, fitUnder: ALL, menu: ALL,
-  crop: ['image', 'video', 'pdf'], stripExif: ['image', 'video'], downscale: ['image', 'video', 'audio'], resolution: ['pdf'], aggressive: ['image', 'pdf', 'audio'], compression: ['image', 'video'], convert: ['image', 'video', 'audio'],
+  crop: ['image', 'video', 'pdf'], stripExif: ['image', 'video'], downscale: ['image', 'video'], resolution: ['pdf'], aggressive: ['image', 'pdf', 'audio'], compression: ['image', 'video'], convert: ['image', 'video', 'audio'],
   removeAudio: ['video'], hdrToSdr: ['video'], speed: ['video', 'audio'], toGif: ['video'], encoder: ['video'], bitrate: ['audio'], normalise: ['audio'], coverArt: ['audio'], coverDownscale: ['audio'], pagesToImages: ['pdf'],
 };
 
@@ -83,12 +85,12 @@ function validArg(kind: MediaKind, action: ActionId, arg: unknown): boolean {
     case 'fitUnder': return typeof arg === 'number' && TARGET_SIZES.some(size => size.bytes === arg);
     case 'downscale': return numberIn([1, ...DOWNSCALE_FACTORS], arg);
     case 'resolution': return numberIn(PDF_RESOLUTIONS, arg);
-    case 'compression': return arg === 'adaptive' || arg === 'lossless' || numberIn(COMPRESSION_FACTORS, arg);
+    case 'compression': return arg === 'lossless' || (arg === 'adaptive' && kind === 'image') || numberIn(COMPRESSION_FACTORS, arg);
     case 'convert': return typeof arg === 'string' && kind !== 'pdf' && CONVERSIONS[kind].some(c => c.to === arg);
     case 'speed': return numberIn([1, ...SPEED_UP, ...SLOW_DOWN], arg);
     case 'toGif': { const m = typeof arg === 'string' ? GIF.exec(arg) : null; return !!m && numberIn(GIF_WIDTHS, +m[1]) && numberIn(GIF_FPS, +m[2]); }
     case 'encoder': return typeof arg === 'string' && VIDEO_ENCODERS.some(e => e.id === arg);
-    case 'bitrate': return typeof arg === 'number' && Number.isInteger(arg) && arg >= 8 && arg <= 512;
+    case 'bitrate': return numberIn(AUDIO_BITRATES, arg);
     case 'normalise': return typeof arg === 'number' && LOUDNESS_TARGETS.some(t => t.lufs === arg);
     case 'coverDownscale': return numberIn([1, ...DOWNSCALE_FACTORS], arg);
     case 'pagesToImages': return arg === 'jpeg' || arg === 'png';
@@ -112,6 +114,18 @@ export function parseInvocation(kind: MediaKind, value: unknown): Invocation {
   if (!ACTION_KINDS[id].includes(kind)) throw new Error(`This action does not work on ${kind === 'pdf' ? 'PDFs' : `${kind}s`}.`);
   if (!validArg(kind, id, arg)) throw new Error('This action does not take that value.');
   return arg === undefined ? { action: id } : { action: id, arg: arg as string | number };
+}
+
+/**
+ * Why an invocation must not run on this file even though the table accepts it, or undefined: the menu disables or hides these entries
+ * (`facts` is what the main process learned from the file), so a request for one is refused the same way.
+ */
+export function refuseUnavailable(item: Pick<CardItem, 'kind'>, { action, arg }: Invocation, facts: Facts): string | undefined {
+  if (action === 'removeAudio' && facts.hasAudio === false) return 'This video has no audio to remove.';
+  if (action === 'hdrToSdr' && !facts.hdr) return 'This video is not HDR.';
+  if ((action === 'coverArt' || action === 'coverDownscale') && facts.hasCoverArt === false) return 'This file has no cover art.';
+  if (action === 'bitrate' && item.kind === 'audio' && !facts.bitrates?.includes(arg as number)) return 'This format has no such bitrate.';
+  return undefined;
 }
 
 /** What running an invocation does. `steps` run through the pipeline executor on the card's current file, `apply` re-optimises an image from its original, `edit` is a direct media operation (core/cards/edits.ts), `ui` is the app's part. */
@@ -253,15 +267,27 @@ export function itemMenu(item: CardItem, facts: Facts): MenuNode[] {
   return nodes;
 }
 
-/** The menu over a selection of results (`BatchRightClickMenuView`): what works on several at once. */
-export function batchMenu(items: CardItem[]): MenuNode[] {
-  const some = (kinds: MediaKind[]) => items.some(item => kinds.includes(item.kind));
-  return [
+/** The actions the batch menu applies to a selection, each to the results it works on. */
+export const BATCH_ACTIONS: readonly ActionId[] = ['saveAs', 'copy', 'restore', 'stripExif', 'dismiss', 'downscale', 'speed', 'aggressive', 'bitrate', 'hdrToSdr'];
+/**
+ * The menu over a selection of results (`BatchRightClickMenuView`): what works on several at once. `facts` is for the first video (HDR) and
+ * the first audio file (its format's bitrates), as macOS looks at the first one too. macOS also offers QuickLook, sending and shelf apps,
+ * which have no counterpart here (Preview opens one window per result and is left out).
+ */
+export function batchMenu(items: CardItem[], facts: Facts = { native: true }): MenuNode[] {
+  const of = (...kinds: MediaKind[]) => items.filter(item => kinds.includes(item.kind));
+  const sized = of('image', 'video'), nodes: MenuNode[] = [
     label('Save all to folder…', { action: 'saveAs' }), label('Copy to clipboard', { action: 'copy' }), sep,
     label('Restore all', { action: 'restore' }, { enabled: items.some(item => !item.restored) }), sep,
-    ...(some(['image', 'video']) ? [label('Strip EXIF metadata', { action: 'stripExif' }, { enabled: some(['image', 'video']) })] : []),
-    label('Dismiss', { action: 'dismiss' }),
   ];
+  if (sized.length) nodes.push(sub('Downscale', 'downscale', sized[0], facts, { enabled: sized.some(item => item.kind !== 'image' || item.options.scale > 0.1) }));
+  if (of('audio').length && facts.bitrates?.length) nodes.push(sub('Change bitrate', 'bitrate', of('audio')[0], facts));
+  if (of('video', 'audio').length) nodes.push(sub('Change playback speed', 'speed', of('video', 'audio')[0], facts));
+  if (of('image', 'pdf', 'audio').length) nodes.push(label('Aggressive optimisation', { action: 'aggressive' }, { enabled: of('image', 'pdf', 'audio').some(item => !(item.kind === 'image' && item.options.mode === 'aggressive')) }));
+  if (of('video').length && facts.hdr) nodes.push(label('Convert HDR to SDR', { action: 'hdrToSdr' }));
+  if (sized.length) nodes.push(sep, label('Strip EXIF metadata', { action: 'stripExif' }));
+  nodes.push(sep, label('Dismiss', { action: 'dismiss' }));
+  return nodes;
 }
 
 // Corner buttons.

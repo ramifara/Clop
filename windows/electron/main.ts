@@ -1,6 +1,6 @@
 import { app, BrowserWindow, clipboard, ClipboardItem, dialog, globalShortcut, ipcMain, Menu, nativeImage, protocol, screen, shell, Tray } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFile, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ItemEngine, message, type ImportExtra, type ItemAutomation } from './items';
@@ -44,15 +44,10 @@ import { MEDIA_SCHEME, MediaFiles } from './media-files';
 import { applyCrop, cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
 import { compareSources, parseCompareView } from './compare';
 import { setupBatch } from './batch-window';
-import { batchMenu, itemMenu, MENUS, parseInvocation, planFor, submenu, type Facts } from '../core/cards/actions';
-import { AUDIO_FORMATS, audioFormatForExtension } from '../core/media/audioFormat';
-import { extractAudioCoverArt } from '../core/media/audio';
-import { probe, type AudioInfo, type VideoInfo } from '../core/media/detect';
-import { optimiseImage } from '../core/media/image';
-import { renderPDFPages } from '../core/media/pdf';
+import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
 import { expandHome } from '../core/settings/paths';
 import { menuTemplate } from './card-menu';
-import { checkedEditor, makesNewCard, openWithDialog, runPlan, type CardHost } from './cards';
+import { coverArtCard, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, startProgram, type CardCreation, type CardHost } from './cards';
 import { CompactMode, cardsThatFit } from './compact';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -64,14 +59,14 @@ const views = new Map<string, BrowserWindow>();
 let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
-let dropActive = false, dragging = false, importsRunning = 0, hovered = false;
+let dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
 /** The files being dragged, and whether Ctrl or Alt is held, as the Windows helper reports them: Ctrl or Alt shows the preset zone tiles. */
 let dragFiles: string[] = [], dragModifiers = { ctrl: false, alt: false }, presetsLatched = false;
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
 const compactMode = new CompactMode({
   always: () => settings.alwaysShowCompactResults, seconds: () => settings.autoClearAllCompactResultsAfter, fit: () => cardFit, clear: ids => hideResults(ids),
-  paused: () => hovered || dragging,
+  paused: () => hovered || dragging || selecting,
   switched: compact => { if (compact) { for (const timer of hideTimers.values()) clearTimeout(timer); hideTimers.clear(); } },
 });
 let clipboardTimer: NodeJS.Timeout | undefined;
@@ -666,15 +661,22 @@ function cardIds(value: unknown) {
   if (!Array.isArray(value) || !value.length || value.length > 40) throw new Error('Choose a result.');
   return [...new Set(value.map(itemId))].map(id => { engine.get(id); return id; });
 }
-/** What a menu needs from the file and the settings: the editor app, and for video and audio what ffprobe says. */
+/** What a menu needs from the file and the settings: the editor app (only when it is the full path of an existing .exe), and for video and audio what ffprobe says. */
 async function cardFacts(id: string): Promise<Facts> {
   const { result } = engine.get(id), editor = editorFor(result.kind);
   const facts: Facts = { native: true, pipelines: pipelineChoices(settings, result.kind) };
-  if (editor && await isFile(editor)) facts.editor = path.win32.basename(editor).replace(/\.exe$/i, '');
-  if (result.status !== 'ready' || (result.kind !== 'video' && result.kind !== 'audio')) return facts;
-  const file = engine.output(id), info = await probe(file).catch(() => undefined) as VideoInfo | AudioInfo | undefined;
-  if (info?.kind === 'video') Object.assign(facts, { hasAudio: info.hasAudio, hdr: info.hdr });
-  if (info?.kind === 'audio') Object.assign(facts, { hasCoverArt: info.hasCoverArt, bitrates: AUDIO_FORMATS[audioFormatForExtension(path.extname(file).slice(1))].allowedBitrates });
+  if (isEditorPath(editor) && await isFile(editor)) facts.editor = path.win32.basename(editor).replace(/\.exe$/i, '');
+  if (result.status === 'ready') Object.assign(facts, await mediaFacts(engine.output(id), result.kind));
+  return facts;
+}
+const creation = (): CardCreation => ({ engine, settings: () => settings, defaults: () => defaults(), makeRoom, scratchRoot: workdir.temp });
+/** For the batch menu: the first video's HDR flag and the first audio file's bitrates, as macOS looks at the first result. */
+async function batchFacts(ids: string[]): Promise<Facts> {
+  const facts: Facts = { native: true };
+  for (const kind of ['video', 'audio'] as const) {
+    const id = ids.find(candidate => engine.get(candidate).result.kind === kind && engine.get(candidate).result.status === 'ready');
+    if (id) Object.assign(facts, await mediaFacts(engine.output(id), kind));
+  }
   return facts;
 }
 /** Pops up a result's right-click menu, a submenu of it (from a corner button), or the batch menu for several results, at the pointer. */
@@ -682,7 +684,7 @@ async function cardMenu(sender: Electron.WebContents, ids: string[], name?: unkn
   if (name !== undefined && (typeof name !== 'string' || !(MENUS as readonly string[]).includes(name))) throw new Error('Choose a menu.');
   const items = ids.map(id => engine.get(id).result);
   if (items.length > 1 && name !== undefined) throw new Error('Choose one result for this menu.');
-  const nodes = items.length > 1 ? batchMenu(items) : name ? submenu(name as string, items[0], await cardFacts(ids[0])) : itemMenu(items[0], await cardFacts(ids[0]));
+  const nodes = items.length > 1 ? batchMenu(items, await batchFacts(ids)) : name ? submenu(name as string, items[0], await cardFacts(ids[0])) : itemMenu(items[0], await cardFacts(ids[0]));
   if (!nodes.length) return;
   const window = BrowserWindow.fromWebContents(sender) ?? undefined;
   Menu.buildFromTemplate(menuTemplate(nodes, invocation => { void runCard(sender, ids, invocation).catch(error => inform(message(error))); })).popup({ window });
@@ -708,33 +710,15 @@ async function saveResults(window: BrowserWindow | undefined, ids: string[]) {
 }
 /** Renders a PDF's pages as images: one page becomes a card of its own, several are saved, optimised, in a folder the user picks. */
 async function pagesToImages(window: BrowserWindow | undefined, id: string, format: 'jpeg' | 'png') {
-  const { result } = engine.get(id), file = engine.output(id), pages = result.pages ?? 1, stem = path.parse(result.name).name;
-  const scratch = await mkdtemp(path.join(workdir.temp, 'pages-'));
-  try {
-    if (pages === 1) {
-      const [page] = await renderPDFPages(file, scratch, { format, scale: 2, name: stem });
-      await makeRoom();
-      await engine.importPath(page.path, 'file', defaults());
-      return;
-    }
-    const picked = window ? await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'], buttonLabel: 'Save pages', message: `Choose a folder to save ${pages} pages as optimised ${format === 'png' ? 'PNGs' : 'JPEGs'}` })
-      : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], buttonLabel: 'Save pages' });
-    const folder = picked.filePaths[0];
-    if (picked.canceled || !folder) return;
-    const rendered = await renderPDFPages(file, scratch, { format, scale: 2, name: stem });
-    for (const page of rendered) await optimiseImage(page.path, folder, { compression: settings.imageCompression, stripMetadata: settings.stripMetadata, preserveColorMetadata: settings.preserveColorMetadata, name: path.parse(page.path).name });
-    inform(`Saved ${rendered.length} pages in ${folder}.`);
-    void shell.openPath(folder);
-  } finally { await rm(scratch, { recursive: true, force: true }); }
-}
-/** The audio file's cover picture becomes a card of its own. */
-async function coverArtCard(id: string) {
-  const scratch = await mkdtemp(path.join(workdir.temp, 'cover-'));
-  try {
-    const cover = await extractAudioCoverArt(engine.output(id), scratch);
-    await makeRoom();
-    await engine.importPath(cover.path, 'file', defaults());
-  } finally { await rm(scratch, { recursive: true, force: true }); }
+  const pages = engine.get(id).result.pages ?? 1;
+  if (pages === 1) { await pageCard(creation(), id, format); return; }
+  const options = { properties: ['openDirectory', 'createDirectory'] as ('openDirectory' | 'createDirectory')[], buttonLabel: 'Save pages', message: `Choose a folder to save ${pages} pages as optimised ${format === 'png' ? 'PNGs' : 'JPEGs'}` };
+  const picked = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+  const folder = picked.filePaths[0];
+  if (picked.canceled || !folder) return;
+  const written = await savePages(creation(), id, format, folder);
+  inform(`Saved ${written.length} pages in ${folder}.`);
+  void shell.openPath(folder);
 }
 /** A saved pipeline run on a result from the card's "Pass file through pipeline" menu or a pipeline button. */
 async function runSavedPipeline(id: string, pipelineId: unknown) {
@@ -753,15 +737,15 @@ async function runSavedPipeline(id: string, pipelineId: unknown) {
 async function shareResult(id: string) {
   await copy([id]);
   shell.showItemInFolder(engine.output(id));
-  if (compactMode.compact ? settings.dismissCompactResultOnUpload : settings.dismissFloatingResultOnUpload) await dismiss(id);
 }
-const BATCH_ACTIONS: readonly string[] = ['saveAs', 'copy', 'restore', 'stripExif', 'dismiss'];
-/** Runs an action the renderer or a menu asked for on one result, or on a selection (save, copy, restore, strip metadata, dismiss). */
-async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown) {
+/** The actions whose menu entry the file's facts can disable or hide; a request for one is checked against them. */
+const FACT_ACTIONS: readonly string[] = ['removeAudio', 'hdrToSdr', 'coverArt', 'coverDownscale', 'bitrate'];
+/** Runs an action the renderer or a menu asked for on one result, or on a selection (save, copy, restore, downscale, speed, bitrate, aggressive, HDR, strip metadata, dismiss). */
+async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown, { copyBack = true } = {}) {
   const window = BrowserWindow.fromWebContents(sender) ?? undefined;
   if (ids.length > 1) {
     const action = (raw as { action?: unknown } | null)?.action;
-    if (typeof action !== 'string' || !BATCH_ACTIONS.includes(action)) throw new Error('This action works on one result at a time.');
+    if (typeof action !== 'string' || !(BATCH_ACTIONS as readonly string[]).includes(action)) throw new Error('This action works on one result at a time.');
     if (action === 'saveAs') return saveResults(window, ids);
     if (action === 'copy') return copy(ids);
     if (action === 'restore') {
@@ -771,22 +755,27 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
       if (failures.length) inform(failures.join('\n'));
       return;
     }
-    const failures: string[] = [];
-    for (const id of ids) {
-      try {
-        const { result } = engine.get(id);
-        if (action === 'dismiss') await dismiss(id);
-        else if (result.kind === 'image' || result.kind === 'video') await runCard(sender, [id], raw);
-      } catch (error) { failures.push(`${engine.has(id) ? engine.get(id).result.name : 'A result'}: ${message(error)}`); }
+    // Each result on its own: those the action does not work on are skipped, a failure does not stop the rest, and the clipboard is written once at the end.
+    const failures: string[] = [], applies = ids.filter(id => ACTION_KINDS[action as ActionId].includes(engine.get(id).result.kind));
+    if (!applies.length) throw new Error('This action does not work on the selected results.');
+    for (const id of applies) {
+      try { if (action === 'dismiss') await dismiss(id); else await runCard(sender, [id], raw, { copyBack: false }); }
+      catch (error) { failures.push(`${engine.has(id) ? engine.get(id).result.name : 'A result'}: ${message(error)}`); }
     }
+    const back = applies.filter(id => engine.has(id) && isReady(id) && copiesBack(id));
+    if (action !== 'dismiss' && back.length) await copy(back).catch(error => failures.push(message(error)));
     if (failures.length) inform(failures.join('\n'));
     return;
   }
   const id = ids[0], item = engine.get(id).result, invocation = parseInvocation(item.kind, raw), plan = planFor(item, invocation);
+  if (FACT_ACTIONS.includes(invocation.action)) {
+    const refusal = refuseUnavailable(item, invocation, { native: true, ...await mediaFacts(engine.output(id), item.kind) });
+    if (refusal) throw new Error(refusal);
+  }
   if (plan.type !== 'ui') {
-    if (makesNewCard(plan)) return coverArtCard(id);
+    if (makesNewCard(plan)) { await coverArtCard(creation(), id); return; }
     await runPlan(cardHost(), id, plan);
-    if (isReady(id) && copiesBack(id)) await copy([id]);
+    if (copyBack && isReady(id) && copiesBack(id)) await copy([id]);
     return;
   }
   const file = () => engine.output(id);
@@ -802,7 +791,7 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
     case 'reveal': shell.showItemInFolder(file()); return;
     case 'openDefault': { const error = await shell.openPath(file()); if (error) throw new Error(error); return; }
     case 'openWith': await openWithDialog(file()); return;
-    case 'editWith': await openWith(file(), await checkedEditor(editorFor(item.kind)), true); return;
+    case 'editWith': await startProgram(await editorProgram(editorFor(item.kind), { watched: watchedFolders(settings, home), isFile }), file()); return;
     case 'share': await shareResult(id); return;
     case 'pipeline': await runSavedPipeline(id, plan.arg); return;
     case 'pagesToImages': await pagesToImages(window, id, plan.arg as 'jpeg' | 'png'); return;
@@ -854,6 +843,8 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
         case 'presets': await openEditor('zones'); break;
         case 'float': showLatest(); break;
         case 'interactive': hovered = true; floating.setIgnoreMouseEvents(false); break;
+        case 'select': selecting = true; break;
+        case 'unselect': selecting = false; break;
         case 'passthrough': hovered = false; if (!dropActive) floating.setIgnoreMouseEvents(true, { forward: true }); break;
         case 'dismiss-notice': notice = undefined; syncFloating(); broadcast(); break;
         case 'quit': app.quit(); break;
