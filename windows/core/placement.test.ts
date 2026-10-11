@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { exists, samePath } from './fileops';
 import { OptimisedMarker } from './marker';
-import { effectiveBehaviour, executePlacement, isTemplatedCopy, placeOutput, planPlacement, type FileBehaviour, type PlacementEnv, type PlacementOverride } from './placement';
+import { destinationPath, effectiveBehaviour, executePlacement, isTemplatedCopy, placeOutput, planPlacement, type FileBehaviour, type PlacementEnv, type PlacementOverride } from './placement';
 import { defaultSettings, type ClopSettings } from './settings/schema';
 import { Workdir } from './workdir';
 
@@ -301,4 +301,14 @@ test('samePath ignores case on Windows only and resolves relative segments', () 
   assert.equal(samePath(upper, lower, 'win32'), true);
   assert.equal(samePath(upper, lower, 'linux'), false);
   assert.equal(samePath(path.resolve('a', 'b', '..', 'b', 'shot.png'), lower, 'linux'), true);
+});
+
+test('a chosen folder holds a nested original only at the templated place, never by %f spanning folders', async t => {
+  const { env, source } = await setup(t, behaviour('specificFolder'));
+  const nested = path.join(source, 'trip', 'photo.png'), overrides = { specificFolderRoot: source, specificFolderTemplate: '%f' };
+  assert.equal(await destinationPath(env, 'image', 'optimised', nested, overrides), path.join(source, 'photo.png'), 'a nested original goes to the folder\'s top');
+  const top = path.join(source, 'photo.png');
+  assert.equal(await destinationPath(env, 'image', 'optimised', top, overrides), top, 'one already there stays');
+  const inSub = { ...overrides, specificFolderTemplate: 'sub/%f' };
+  assert.equal(await destinationPath(env, 'image', 'optimised', path.join(source, 'sub', 'photo.png'), inSub), path.join(source, 'sub', 'photo.png'));
 });

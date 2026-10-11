@@ -108,10 +108,10 @@ export function isAbsoluteTemplate(template: string, ctx: Pick<TemplateContext, 
   return /^%[PF]/.test(template) || pathApi(ctx.platform).isAbsolute(resolveHome(template, ctx.home, ctx.platform));
 }
 
-// `%n` takes any text without a separator: month names across locales contain spaces, hyphens, apostrophes,
+// `%f` is one file name, so it never spans a folder. `%n` takes any text without a separator: month names across locales contain spaces, hyphens, apostrophes,
 // commas, `#`, ZWNJ and calendar marks (vi "Tháng 3", gd "An t-Ògmhios", as "মে’", he "אדר א׳").
 const TOKEN_PATTERNS: Record<string, string> = {
-  y: '\\d{4}', m: '\\d{2}', d: '\\d{2}', H: '\\d{2}', M: '\\d{2}', S: '\\d{2}', n: '[^/]+', w: '\\d', p: 'AM|PM', r: '[a-z]{5}', i: '\\d+', e: '[^./]+', f: '.+', P: '.+', F: '.+',
+  y: '\\d{4}', m: '\\d{2}', d: '\\d{2}', H: '\\d{2}', M: '\\d{2}', S: '\\d{2}', n: '[^/]+', w: '\\d', p: 'AM|PM', r: '[a-z]{5}', i: '\\d+', e: '[^./]+', f: '[^/]+', P: '.+', F: '.+',
 };
 /** Literal template text as `expandTemplate` leaves it: unsafe characters become `_`. A separator stays one, and so does the colon of a leading drive letter. */
 const literal = (text: string, first: boolean) => {
