@@ -239,6 +239,21 @@ test('a pipeline that makes a video a GIF gives the card the GIF\'s kind, so its
   assert.equal(f.engine.get(id).result.status, 'ready', f.engine.get(id).result.error);
 });
 
+test('pipelines attached to the drop zone run on a dropped file, and a drop is still optimised when none of them did anything', async t => {
+  const f = await setup(t); if (!f) return;
+  const settings = { ...f.state.settings, pipelinesToRunOnImage: { dropZone: [pipeline('WEBP', 'convert(to: webp)')], clipboard: [pipeline('HALF', 'downscale(factor: 0.5)')] } };
+  assert.deepEqual(attachedPipelines('image', 'dropZone', settings).map(p => p.id), ['WEBP'], 'not the clipboard\'s');
+  const dropped = attachedAutomation(attachedPipelines('image', 'dropZone', settings), { host: f.host, context: { kind: 'image' }, fallback: true })!;
+  assert.equal(dropped.skipOptimisation, true, 'a drop skips the usual optimisation when every pipeline does');
+  const id = await f.engine.importPath(await f.image('shot.png', 600, 400), 'drop', balanced, undefined, { automation: dropped });
+  assert.equal(path.extname(f.engine.output(id)), '.webp');
+  const skipped = attachedAutomation([pipeline('NEVER', 'if(regex: "^nothing")\nconvert(to: webp)')], { host: f.host, context: { kind: 'image' }, fallback: true })!;
+  const plain = await f.engine.importPath(await f.image('plain.png', 600, 400), 'drop', balanced, undefined, { automation: skipped });
+  const result = f.engine.get(plain).result;
+  assert.deepEqual([result.status, result.unchanged, path.extname(f.engine.output(plain))], ['ready', false, '.png'], result.error);
+  assert.ok(result.outputBytes < result.originalBytes, 'optimised anyway');
+});
+
 test('a copied video, PDF or audio file is optimised before its pipelines even when they all skip optimisation', async t => {
   const f = await setup(t); if (!f) return;
   const convert = [pipeline('WEBP', 'convert(to: webp)')];

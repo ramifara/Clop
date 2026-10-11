@@ -330,7 +330,9 @@ async function importPaths(files: unknown, source: ItemResult['source'], { aggre
 /** Dropped and opened files; their results go on the clipboard with `autoCopyToClipboard`. */
 async function importFiles(files: unknown, source: ItemResult['source'], aggressive = false) {
   const sequence = await currentSequence();
-  const ids = await importPaths(files, source, { aggressive });
+  // Pipelines attached to the drop zone run on drops, but not on a ⌘-drop's explicit aggressive optimisation (`wantsPipelineLookup`).
+  const extra = source === 'drop' && !aggressive ? (file: string) => attachedExtra(mediaKind(file) ?? 'image', 'dropZone', 'drop') : undefined;
+  const ids = await importPaths(files, source, { aggressive, extra });
   if (settings.autoCopyToClipboard && ids.length) await copy(ids, sequence);
 }
 /**
