@@ -130,19 +130,22 @@ export class FolderResults {
   private cancelled = new Set<string>();
   constructor(private host: FolderHost) {}
   private key(file: string) { const resolved = path.resolve(file); return process.platform === 'win32' ? resolved.toLowerCase() : resolved; }
-  /** The watcher's `handle`: optimises `file` from the watched folder `dir`. Resolves with where its result went. */
-  async optimise(file: string, kind: MediaKind, dir: string): Promise<string | undefined> {
+  /**
+   * The watcher's `handle`: optimises `file` from the watched folder `dir`. Resolves with where its result went. `automation` replaces the
+   * folder's attached pipelines, for a pipeline chosen for this file (Explorer's "Run pipeline...").
+   */
+  async optimise(file: string, kind: MediaKind, dir: string, automation = this.host.automation): Promise<string | undefined> {
     const { engine } = this.host, key = this.key(file);
     this.pending.add(key);
     try {
       const hide = hidesResult(dir, this.host.settings(), this.host.home);
       let staged: string | undefined;
-      const automation = this.host.automation?.(file, kind, dir, () => staged);
+      const attached = automation?.(file, kind, dir, () => staged);
       await this.host.makeRoom();
       if (this.cancelled.has(key)) return;
       // Watched files are optimised in their own format; converting is left to the card.
       const id = await engine.importPath(file, 'folder', { ...this.host.options(), format: 'auto' }, undefined, {
-        placement: folderPlacement(file, kind, this.host.env, this.host.saved), automation,
+        placement: folderPlacement(file, kind, this.host.env, this.host.saved), automation: attached,
         staged: id => {
           staged = id;
           this.ids.set(key, id);

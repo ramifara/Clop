@@ -280,3 +280,14 @@ test('a conversion run on a watched file from its card moves the placement with 
   assert.equal((await readFile(file)).equals(original), true, 'the original is back where it was');
   assert.equal(await exists(converted), false, 'and the converted file is gone');
 });
+test('a pipeline chosen for a file runs on that file where it is, not on a copy in the shelf', async t => {
+  const f = await setup(t); if (!f) return;
+  const file = path.join(f.dir, 'shot.png'), original = await sampleImage();
+  await writeFile(file, original);
+  const ran: string[] = [];
+  // A pipeline that skips optimisation works on the file it is given, as `attachedAutomation` does with the `source` it is given.
+  const automation = (source: string) => ({ skipOptimisation: true, fallback: false, run: async (input: { optimised?: string }) => { const target = input.optimised ?? source; ran.push(target); await appendFile(target, 'edited'); return { file: target, anyRan: true, warnings: [], started: target }; } });
+  assert.equal(await f.folders.optimise(file, 'image', f.dir, automation), file);
+  assert.deepEqual(ran, [file]);
+  assert.equal((await readFile(file)).subarray(original.length).toString(), 'edited', 'the selected file itself was changed');
+});

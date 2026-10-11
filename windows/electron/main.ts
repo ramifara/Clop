@@ -654,12 +654,16 @@ async function choosePipeline(files: string[]) {
     const pipeline = allPipelineChoices(settings).find(choice => choice.id === id);
     const usable = supported.filter(file => !pipeline?.fileType || mediaKind(file) === pipeline.fileType);
     if (usable.length < supported.length) inform(`${pipeline?.name ?? 'That pipeline'} works on ${pipeline?.fileType} files, so ${supported.length - usable.length} other file${supported.length - usable.length === 1 ? ' was' : 's were'} left out.`);
+    // On the selected files themselves, placed back by the optimised-file settings as a watched folder's are, and not on copies in the shelf.
     void (async () => {
-      // importPaths takes up to 20 files at a time; a larger selection goes in turns.
-      for (let at = 0; at < usable.length; at += 20) {
-        await importPaths(usable.slice(at, at + 20), 'drop', { extra: file => { const kind = mediaKind(file) ?? 'image'; return sourceAutomation(kind, 'dropZone', 'drop', undefined, [chosenPipeline(settings, kind, id)]); } });
+      for (const file of usable) {
+        const kind = mediaKind(file) ?? 'image';
+        const automation: ConstructorParameters<typeof FolderResults>[0]['automation'] = (source, fileKind, _dir, staged) => attachedAutomation([chosenPipeline(settings, fileKind, id)], {
+          host: pipelineHost, context: { kind: fileKind }, fallback: true, source, done: outcome => afterPipelines(staged(), outcome, 'folder'),
+        });
+        await folders.optimise(file, kind, path.dirname(file), automation).catch(error => inform(`${path.basename(file)}: ${message(error)}`));
       }
-    })().catch(error => inform(message(error)));
+    })();
   });
   if (!menu.length) { inform('No saved pipeline works on those files. Add one in the pipeline editor.'); return; }
   const built = Menu.buildFromTemplate(menu);
