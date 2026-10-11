@@ -237,6 +237,19 @@ test('an older card leaves alone a file the user edited and Clop optimised again
   assert.match(f.engine.get(older.id).result.error ?? '', /shot\.png changed after Clop optimised it/);
   assert.ok(edit.equals(await readFile(file)), 'a card action does not write over the edit either');
 });
+test('a card action on a watched result that was moved away does not put a new copy where it was', async t => {
+  const f = await setup(t); if (!f) return;
+  const file = path.join(f.dir, 'shot.png');
+  await writeFile(file, await sampleImage());
+  await f.folders.optimise(file, 'image', f.dir);
+  const [item] = f.engine.list();
+  // As a "Sort screenshots" pipeline, or the user, moves it.
+  await mkdir(path.join(f.root, 'Sorted'));
+  await rename(file, path.join(f.root, 'Sorted', 'shot.png'));
+  await f.engine.apply(item.id, { ...balanced, scale: 0.5 });
+  assert.match(f.engine.get(item.id).result.error ?? '', /shot\.png was moved or deleted after Clop optimised it, so Clop does not put a new copy where it was/);
+  assert.deepEqual(await readdir(f.dir), []);
+});
 test('watching and optimising together optimise each file exactly once, in place, beside it or converted', async t => {
   const f = await setup(t, { minImageSizeKB: 0, maxImageFileCount: 10, optimisedFileProtectionMs: 300 }); if (!f) return;
   const handled: string[] = [];

@@ -62,8 +62,10 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
       if (!placed && staged && await changedSince(file, staged)) throw new Error(`${path.basename(file)} changed since Clop read it, so Clop left it as it is.`);
       // A result that is not smaller is the original itself.
       if (output.unchanged) { if (placed) return (await restore())!; await mark(file); return file; }
-      // A card action places again over its earlier result; one the user changed since is theirs now, and stays.
-      if (placed && await exists(placed) && await edited(placed)) throw new Error(`${path.basename(placed)} changed after Clop optimised it, so Clop left it as it is.`);
+      // A card action places again over its earlier result; one the user changed since is theirs now, and stays. One moved away (a pipeline
+      // that sorts files, or the user) is not followed: a new copy would appear where the user's file was moved from.
+      if (placed && !await exists(placed)) throw new Error(`${path.basename(placed)} was moved or deleted after Clop optimised it, so Clop does not put a new copy where it was.`);
+      if (placed && await edited(placed)) throw new Error(`${path.basename(placed)} changed after Clop optimised it, so Clop left it as it is.`);
       const e = env(), before = e.counter.value;
       // A result in another format is a conversion, placed by the settings for converted files: the card's format menu by the manual ones.
       const converted = placedExtension(output.path, file) !== path.extname(file);
