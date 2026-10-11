@@ -31,12 +31,10 @@
 .compact-sizes .old{color:#ff6f8a}.compact-sizes strong{font-weight:600}.compact-sizes .larger{color:#ff335b}
 .compact-facts{color:#bdb3c0}
 .compact-error{color:#ff8da2;display:block}
-.compact-actions{display:flex;gap:2px;flex-shrink:0;align-items:center}
-.compact-actions button{border:0;background:transparent;color:#e1dce4;width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;padding:0;opacity:0}
-.compact-row:hover .compact-actions button,.compact-actions button:focus-visible,.compact-row.selected .compact-actions button{opacity:1}
+.compact-actions{display:none;gap:2px;flex-shrink:0;align-items:center}
+.compact-row:hover .compact-actions,.compact-row:focus-within .compact-actions,.compact-row.selected .compact-actions{display:flex}
+.compact-actions button{border:0;background:transparent;color:#e1dce4;width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;padding:0}
 .compact-actions button:hover{background:#ffffff24}
-.compact-row .compact-actions{position:absolute;right:28px;top:50%;transform:translateY(-50%);background:linear-gradient(90deg,#26212800,#262128 22%);padding-left:16px;opacity:0;pointer-events:none}
-.compact-row:hover .compact-actions,.compact-row:focus-within .compact-actions{opacity:1;pointer-events:auto}
 .compact-close{border:0;background:transparent;color:#e1dce4;width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;margin-left:2px}
 .compact-close:hover{background:#ffffff24}
 
@@ -68,3 +66,4 @@
 
 .results-settings{border:0;border-top:1px solid #d3cbc4;margin:14px 0 0;padding:8px 0 0}
 .results-settings legend{font-size:12px;font-weight:600;padding:0 6px 0 0}
+.corner-card:has(.format-picker .format-bar) .filename-chip{display:none}
