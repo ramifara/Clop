@@ -59,6 +59,11 @@ export function BatchView() {
       <p>This batch can still be reverted. Starting a new one keeps its backups, and you can open it again with Open previous batch to give its originals back.</p>
       <div className="sheet-actions"><button type="button" autoFocus onClick={() => void run(() => api.cancelAdd())}>Keep this batch</button><button type="button" className="primary" onClick={() => void run(() => api.confirmAdd())}>Start new batch</button></div>
     </Sheet>}
+    {state.pendingReopen !== undefined && <Sheet label="Open the previous batch?" onClose={() => void run(() => api.cancelAdd())}>
+      <h2>Open the previous batch and drop the {plural(state.pendingReopen, 'prepared file')}?</h2>
+      <p>The files you prepared here are removed from the window. You can drop them again afterwards.</p>
+      <div className="sheet-actions"><button type="button" autoFocus onClick={() => void run(() => api.cancelAdd())}>Keep these files</button><button type="button" className="primary" onClick={() => void run(() => api.confirmAdd())}>Open previous batch</button></div>
+    </Sheet>}
     {error && <div className="batch-error" role="alert"><span>{error}</span><button type="button" aria-label="Dismiss message" onClick={() => setError('')}><Icon name="close" size={12}/></button></div>}
   </div>;
 }

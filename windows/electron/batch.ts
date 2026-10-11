@@ -42,8 +42,8 @@ export class BatchHost {
   private cloud = 0;
   private aggressive?: boolean;
   private batch?: Batch;
-  /** A drop onto a finished batch that can still be reverted, waiting for the window to say it should replace it. */
-  private pending?: { files: string[]; aggressive?: boolean };
+  /** A drop onto a finished batch that can still be reverted, or a request to open an earlier batch over prepared files, waiting for the window to say it should replace them. */
+  private pending?: { files: string[]; aggressive?: boolean } | { reopen: string };
   /** The newest earlier batch that can still be reverted, which the window can open again. */
   private previous?: { id: string; files: number };
   /** Folders the user picked in the folder chooser; results go only to these, never to a path the window names on its own. */
@@ -55,7 +55,7 @@ export class BatchHost {
     const settings = this.options.settings();
     return {
       files: this.files, scanning: this.scans > 0, notices: this.notices(), batch: this.batch?.snapshot(), native: this.options.native ?? true,
-      ...(this.pending ? { pendingAdd: this.pending.files.length } : {}), ...(this.previous ? { previous: this.previous } : {}),
+      ...(this.pending && 'files' in this.pending ? { pendingAdd: this.pending.files.length } : {}), ...(this.pending && 'reopen' in this.pending ? { pendingReopen: this.files.length } : {}), ...(this.previous ? { previous: this.previous } : {}),
       defaults: defaultBatchParams(settings, this.aggressive), cropSizes: settings.savedCropSizes,
       audioFormats: BATCH_AUDIO_FORMATS.map(format => { const spec = AUDIO_FORMATS[format]; return { format, name: spec.name, lossless: spec.lossless, coverArt: spec.coverArt, ...(spec.bitrateRange ? { bitrates: spec.bitrateRange } : {}) }; }),
     };
@@ -97,13 +97,17 @@ export class BatchHost {
     await this.scan(files, aggressive);
   }
 
-  /** Replaces the finished batch with the files of the drop that asked. The finished batch stays on disk and can be opened again (`previous`). */
+  /**
+   * Answers yes to what the window was asked: replaces the finished batch with the files of the drop that asked (it stays on
+   * disk and can be opened again, see `previous`), or opens the earlier batch over the prepared files.
+   */
   async confirmAdd() {
     const pending = this.pending;
     if (!pending) throw new Error('Nothing is waiting to be added.');
     if (this.running) throw new Error('A batch is running. Wait for it to finish or cancel it before adding files.');
     this.pending = undefined;
-    await this.scan(pending.files, pending.aggressive);
+    if ('reopen' in pending) await this.open(pending.reopen);
+    else await this.scan(pending.files, pending.aggressive);
   }
   cancelAdd() { this.pending = undefined; this.publish(); }
 
@@ -131,11 +135,19 @@ export class BatchHost {
     this.previous = latest && { id: latest.id, files: latest.results };
   }
 
-  /** Opens an earlier batch again from its manifest, so its originals can be given back. */
+  /** Opens an earlier batch again from its manifest, so its originals can be given back. Prepared files or a batch in the window are only given up once the window confirms (`confirmAdd`). */
   async reopen(id: unknown) {
     if (this.running) throw new Error('Wait for the batch to finish or cancel it first.');
     if (this.scans) throw new Error('Wait until the files are read first.');
     if (!isId(id) || this.previous?.id !== id) throw new Error('That batch is no longer available.');
+    if (this.files.length || this.batch?.revertable) { this.pending = { reopen: id }; this.publish(); return; }
+    await this.open(id);
+  }
+
+  private async open(id: string) {
+    if (this.running) throw new Error('Wait for the batch to finish or cancel it first.');
+    if (this.scans) throw new Error('Wait until the files are read first.');
+    if (this.previous?.id !== id) throw new Error('That batch is no longer available.');
     const batch = await Batch.restore(id, this.options.env());
     if (!batch) throw new Error('That batch is no longer available.');
     this.reset();

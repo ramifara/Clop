@@ -311,6 +311,23 @@ test('a result whose manifest write failed is not remembered, so it never reache
   assert.deepEqual(JSON.parse(await readFile(path.join(batch.backup.dir, 'manifest.json'), 'utf8')).results.map((r: { original: string }) => r.original), [b]);
 });
 
+test('a placement that fails before it wrote anything does not rewrite the original it only copied', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { files, env, params } = await setup(t);
+  const a = await write(path.join(files, 'a.jpg'), await jpeg(320, 240, 1));
+  const before = await stat(a, { bigint: true }), bytes = await digest(a);
+  const batch = await batchOf(env, [a], params());
+  const keep = batch.backup.keep.bind(batch.backup);
+  // The original is copied into the backup, then the result to be placed disappears, so nothing can be written over it.
+  mock.method(batch.backup, 'keep', async (file: string, options?: Parameters<typeof keep>[1]) => { const entry = await keep(file, options); await rm((batch as unknown as { workDir: string }).workDir, { recursive: true, force: true }); return entry; });
+  await batch.run();
+  assert.deepEqual(statuses(batch), ['failed']);
+  const after = await stat(a, { bigint: true });
+  assert.equal(await digest(a), bytes);
+  assert.equal(after.ino, before.ino, 'the original was not replaced by a copy of itself');
+  assert.deepEqual(batch.backup.allResults(), []);
+});
+
 test('a file that changed while the batch ran is left as it is', async t => {
   if (!needTools(t, 'jpegoptim', 'exiftool')) return;
   const { files, env, params } = await setup(t);

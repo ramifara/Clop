@@ -61,6 +61,9 @@ function overrides(output: BatchOutput): PlacementOverride {
   return { optimised: 'specificFolder', autoConvert: 'specificFolder', manualConvert: 'specificFolder', specificFolderRoot: output.folder, specificFolderTemplate: output.template };
 }
 
+/** Whether `file` is still what a backup entry kept: present with the same size and time (a copy is stamped to whole milliseconds). */
+const isAsKept = (file: string, kept: { size: number; mtimeMs: number }) => stat(file).then(info => info.size === kept.size && Math.abs(info.mtimeMs - kept.mtimeMs) < 1, () => false);
+
 /** What a media job produced, before it is placed. */
 interface Produced { output: MediaOutput; converted: boolean; allowLarger: boolean; oldSize?: Dimensions; oldDetail?: number; newDetail?: number }
 
@@ -267,13 +270,14 @@ export class Batch extends EventEmitter {
     try {
       if (!over) {
         // A file of the user's at the destination is copied, not moved, so the result replaces it atomically.
-        if (await exists(dest)) { const kept = await this.backup.keep(dest, { copy: true }); undo.push(async () => { await copyTo(kept.backup, dest); await this.backup.discard(dest); }); }
+        if (await exists(dest)) { const kept = await this.backup.keep(dest, { copy: true }); undo.push(async () => { if (!await isAsKept(dest, kept)) await copyTo(kept.backup, dest); await this.backup.discard(dest); }); }
         else undo.push(() => rm(dest, { force: true }));
       }
       if (removes) {
         // An original the result replaces in its own path is copied, so the path is never empty; one that goes under another name is moved.
         const kept = await this.backup.keep(original, { copy: over, before });
-        undo.push(async () => { await copyTo(kept.backup, original); await this.backup.discard(original); });
+        // A copy leaves the original where it is, so it is only given back if the result had already replaced it.
+        undo.push(async () => { if (!over || !await isAsKept(original, kept)) await copyTo(kept.backup, original); await this.backup.discard(original); });
       }
       await copyTo(produced, dest);
       await env.marker.markOptimised(dest).catch(() => {});

@@ -170,7 +170,14 @@ test('dropping onto a finished batch asks first, and the earlier batch can be op
   assert.ok(states.some(state => state.previous), 'and the window heard of it');
 
   await assert.rejects(host.reopen('00000000-0000-4000-8000-000000000000'), /no longer available/);
+  // Prepared files are not discarded without asking: the window is asked, and only a yes opens the earlier batch.
   await host.reopen(first.id);
+  assert.deepEqual([host.state().pendingReopen, host.state().batch, host.state().files.map(f => f.path)], [1, undefined, [b]]);
+  host.cancelAdd();
+  assert.deepEqual([host.state().pendingReopen, host.state().batch, host.state().files.map(f => f.path), host.state().previous?.id], [undefined, undefined, [b], first.id]);
+  await host.reopen(first.id);
+  await host.confirmAdd();
+  assert.equal(host.state().pendingReopen, undefined);
   const reopened = host.state().batch!;
   assert.deepEqual([reopened.id, reopened.phase, reopened.items.map(item => [item.name, item.status])], [first.id, 'finished', [['a.jpg', 'done']]]);
   assert.deepEqual(host.state().files, [], 'the prepared files give way');
