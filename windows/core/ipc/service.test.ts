@@ -141,6 +141,16 @@ test('stopping a request also cancels the files no worker has taken yet', async 
   assert.equal(messages.at(-1)?.kind, 'done');
 });
 
+test('the same file twice in one request is worked on one pass after the other', async t => {
+  let active = 0, most = 0;
+  const s = await setup(t, { async withCard() { most = Math.max(most, ++active); await new Promise(resolve => setTimeout(resolve, 50)); active--; throw new Error('done with it'); } });
+  const file = s.file('a.png');
+  await graphic(20, 20).png().toFile(file);
+  const messages = answers(await s.send({ urls: [fileURL(file), fileURL(file)], hideFloatingResult: false }));
+  assert.equal(most, 1);
+  assert.equal(messages.filter(m => m.kind === 'error').length, 2);
+});
+
 test('only the user\'s own pipelines may open a program by path; an agent without script permission opens apps by name', async t => {
   if (!needTools(t, 'pngquant')) return;
   const seen: boolean[] = [];

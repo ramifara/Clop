@@ -61,7 +61,8 @@ export async function validateItems(items: string[], { recursive, skipErrors, ty
     else if (types.includes(extension(file))) urls.push(fileURL(file));
   }
   for (const folder of folders) urls.push(...(await folderFiles(folder, recursive, types)).map(fileURL));
-  return urls;
+  // A file named twice, or named and inside a folder, is worked on once.
+  return [...new Set(urls)];
 }
 
 /** `normalizeRelativeOutput`: an output path or template made absolute against the working folder. */

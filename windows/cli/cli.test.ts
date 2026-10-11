@@ -10,6 +10,7 @@ import sharp from 'sharp';
 import { graphic, photo } from '../core/media/image.fixtures';
 import { run } from '../core/run';
 import { needTools } from '../core/testing';
+import { validateItems } from './items';
 import { main } from './main';
 
 /** A folder of files and an empty app data folder; `clop` runs headless in this process with captured output. */
@@ -43,6 +44,13 @@ test('optimise works headless: results as JSON, exit 0 unless every file failed,
   assert.match(c.err(), /^Error: File .*nope\.png does not exist\nUsage: clop optimise files/);
   assert.equal(await c.clop('optimise', 'nope.png', '--skip-errors', '--json'), 0);
   assert.deepEqual(JSON.parse(c.out()), { done: [], failed: [] });
+});
+
+test('a file named twice, or named and inside a named folder, is sent once', async t => {
+  const c = await cli(t);
+  await graphic(20, 20).png().toFile(c.file('a.png'));
+  const urls = await validateItems(['a.png', 'a.png', '.'], { recursive: false, skipErrors: false, types: ['png'], cwd: c.dir });
+  assert.equal(urls.length, 1);
 });
 
 test('result lines are coloured as Colorize.swift colours them when stdout is a terminal', async t => {

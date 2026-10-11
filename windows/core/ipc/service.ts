@@ -161,6 +161,8 @@ export class ClopService {
   private readonly running = new Map<string, Set<AbortController>>();
   /** The files of each request that no worker has taken yet, so a stop reaches them too. */
   private readonly waiting = new Set<{ queue: [number, string][]; stopped: (index: number, url: string) => void }>();
+  /** `takeCLITurn`: requests on one file, from one request or several, run one after the other. */
+  private readonly turns = new Map<string, Promise<void>>();
   constructor(private readonly deps: ServiceDeps) {}
 
   /** The pipe server's handler. */
@@ -216,7 +218,13 @@ export class ClopService {
     const controller = new AbortController(), { signal } = controller, { deps } = this;
     const controllers = this.running.get(url) ?? new Set();
     this.running.set(url, controllers.add(controller));
+    const previous = this.turns.get(url);
+    let release!: () => void;
+    const turn = new Promise<void>(resolve => { release = resolve; });
+    this.turns.set(url, turn);
     try {
+      await previous;
+      signal.throwIfAborted();
       const input = urlPath(url) ?? await download(url, deps.workdir, signal);
       if (!await exists(input)) throw new Error(`File not found: ${input}`);
       if (!(await stat(input)).isFile()) throw new Error(`Not a file: ${input}`);
@@ -260,6 +268,8 @@ export class ClopService {
       progress(1);
       return response;
     } finally {
+      release();
+      if (this.turns.get(url) === turn) this.turns.delete(url);
       controllers.delete(controller);
       if (!controllers.size) this.running.delete(url);
     }
