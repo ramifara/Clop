@@ -57,7 +57,20 @@ export class Watchdog {
   sample(at: number): WatchdogAction[] {
     const previous = this.lastSample;
     this.lastSample = at;
-    if (previous === undefined) return [];
+    return [...this.reoffers(at), ...(previous === undefined ? [] : this.blocked(at, previous))];
+  }
+  /** A window that is still hung once the cooldown after "wait" is over is offered a reload again. */
+  private reoffers(at: number): WatchdogAction[] {
+    const actions: WatchdogAction[] = [];
+    for (const [id, hang] of this.hung) {
+      const waitedAt = this.waited.get(id);
+      if (hang.offered || (waitedAt !== undefined && at - waitedAt < this.cooldown)) continue;
+      hang.offered = true;
+      actions.push({ kind: 'offer-reload', window: id });
+    }
+    return actions;
+  }
+  private blocked(at: number, previous: number): WatchdogAction[] {
     const late = at - previous - this.interval;
     if (late < this.lag || at - this.lastLag < this.logEvery) return [];
     this.lastLag = at;

@@ -92,14 +92,16 @@ export function setupWatchdog() {
     for (const action of actions) {
       if (action.kind === 'log') { (action.level === 'warn' ? console.warn : console.log)(action.text); continue; }
       if (action.kind === 'withdraw-offer') { offers.get(action.window)?.abort(); continue; }
-      if (!window || window.isDestroyed()) continue;
+      // A re-offer comes from the timer, which names the window by its id.
+      const target = window ?? BrowserWindow.getAllWindows().find(other => String(other.id) === action.window);
+      if (!target || target.isDestroyed()) continue;
       const id = action.window, abort = new AbortController();
       offers.set(id, abort);
       dialog.showMessageBox({ type: 'warning', buttons: ['Reload window', 'Keep waiting'], defaultId: 0, cancelId: 1, title: 'Clop', message: 'A Clop window is not responding', detail: 'Reload it to get going again. Other windows are not affected.', signal: abort.signal })
         .then(({ response }) => {
           // A withdrawn offer (the window recovered or closed) answers like "Keep waiting", but nobody chose it.
           if (abort.signal.aborted) return;
-          if (response === 0 && !window.isDestroyed()) { dog.closed(id); window.webContents.forcefullyCrashRenderer(); window.webContents.reload(); } else dog.declined(id, Date.now());
+          if (response === 0 && !target.isDestroyed()) { dog.closed(id); target.webContents.forcefullyCrashRenderer(); target.webContents.reload(); } else dog.declined(id, Date.now());
         }, () => {}).finally(() => { if (offers.get(id) === abort) offers.delete(id); });
     }
   };
