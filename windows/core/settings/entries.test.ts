@@ -105,3 +105,21 @@ test('name templates apply under Same folder and path templates under Specific f
     assert.deepEqual(entry.ui!.when, expected.map(key => [key, wanted]), entry.id);
   }
 });
+
+/**
+ * Settings the window edits that nothing in Clop for Windows reads yet. The rows say so. This list is pinned on purpose: when a
+ * change wires a setting, remove it here and from the row's `ui.pending`; a new row that does nothing must be added here knowingly.
+ */
+const PENDING_KEYS = [
+  'allowClopToAppearInScreenshots', 'alwaysShowCompactResults', 'autoClearAllCompactResultsAfter', 'autoHideClipboardResultAfter', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter',
+  'batchModeFileCountThreshold', 'compactResultActions', 'convertHDRToSDR', 'defaultLinkExpiration', 'dismissCompactResultOnDrop', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnDrop',
+  'dismissFloatingResultOnUpload', 'enableFloatingResults', 'enabledKeys', 'floatingResultActions', 'followCursorScreen', 'formatPickerStyle', 'formatsToConvertToJPEG', 'formatsToConvertToMP4',
+  'formatsToConvertToOutputAudio', 'formatsToConvertToPNG', 'hideFloatingResultTooltips', 'keyComboModifiers', 'onlyShowDropZoneOnOption', 'onlyShowPresetZonesOnControlTapped', 'optimiseHEICAVIFClipboard',
+  'optimiseTIFF', 'quickResizeKeys', 'showCompactImages', 'showCopyClearButtons', 'showMenubarIcon', 'useBatchModeForFolders',
+];
+
+test('the rows that do nothing yet are exactly the pinned list, each with a reason', () => {
+  const pending = SETTING_ENTRIES.filter(entry => entry.ui?.pending);
+  for (const entry of pending) assert.match(entry.ui!.pending!, /\w{4}/, entry.id);
+  assert.deepEqual([...new Set(pending.flatMap(entry => entry.keys))].sort(), [...PENDING_KEYS].sort());
+});

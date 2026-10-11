@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SettingMeta } from '../core/settings/controls';
-import { SETTING_ENTRIES, hostRow, settingsTarget, type SettingEntry } from '../core/settings/entries';
+import { PENDING_NOTE, SETTING_ENTRIES, hostRow, settingsTarget, type SettingEntry } from '../core/settings/entries';
 import { searchSettings } from '../core/settings/search';
 import { SETTINGS_TABS, TAB_GROUPS, TAB_ORDER, type SettingsTab } from '../core/settings/tabs';
 import { settingsTab } from '../electron/clop-url';
@@ -79,7 +79,12 @@ export function SettingsWindow({ state, refresh }: { state: AppState; refresh():
   const results = useMemo(() => query.trim() ? searchSettings(query) : undefined, [query]);
   const sections = useMemo(() => {
     const rows = SETTING_ENTRIES.filter(entry => entry.tab === tab), order = [...new Set(rows.map(entry => entry.section))];
-    return order.map(section => ({ section, rows: rows.filter(entry => entry.section === section) }));
+    return order.map(section => {
+      const own = rows.filter(entry => entry.section === section), shown = own.filter(entry => entry.ui?.control !== 'embedded');
+      // A section where nothing works yet says so once, over the rows, instead of on each.
+      const pending = shown.length > 1 && shown.every(entry => entry.ui?.pending) ? [...new Set(shown.map(entry => entry.ui!.pending))] : undefined;
+      return { section, rows: own, banner: pending && (pending.length === 1 ? `${PENDING_NOTE}: ${pending[0]}.` : `${PENDING_NOTE}.`) };
+    });
   }, [tab]);
 
   return <div className="settings-window">
@@ -99,9 +104,10 @@ export function SettingsWindow({ state, refresh }: { state: AppState; refresh():
     <main className="pane" aria-label={SETTINGS_TABS[tab]}>
       <h1>{SETTINGS_TABS[tab]}</h1>
       {env ? <SettingsContext.Provider value={env}>
-        {sections.map(({ section, rows }) => <section key={section || 'main'} aria-label={section || SETTINGS_TABS[tab]}>
+        {sections.map(({ section, rows, banner }) => <section key={section || 'main'} aria-label={section || SETTINGS_TABS[tab]}>
           {section && <h2>{section}</h2>}
-          <div className="group">{rows.map(entry => <EntryRow key={entry.id} entry={entry} flash={flash === entry.id}/>)}</div>
+          {banner && <p className="pending-banner" role="note">{banner}</p>}
+          <div className="group">{rows.map(entry => <EntryRow key={entry.id} entry={entry} flash={flash === entry.id} note={!banner}/>)}</div>
         </section>)}
       </SettingsContext.Provider> : <p className="loading">Loading…</p>}
     </main>

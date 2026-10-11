@@ -105,3 +105,5 @@
 .settings-window .mcp-settings{margin:0}
 .settings-window .mcp-settings p{margin-top:6px}
 .settings-window :focus-visible{outline:2px solid #d9822b;outline-offset:1px}
+.settings-window .pending{display:block;color:#9a5b12;background:#fff3dc;border-radius:4px;padding:1px 6px;font-size:10px;width:fit-content;margin:0!important}
+.settings-window .pending-banner{margin:0 0 8px;padding:6px 10px;border-radius:7px;background:#fff3dc;color:#7a4a10;font-size:11px}

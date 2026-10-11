@@ -104,3 +104,10 @@ test('preset zones show their name, type and pipeline', () => {
   assert.match(html, /Unreadable zone/);
   assert.match(text(render(<PresetZones/>)), /No preset zones yet/);
 });
+
+test('a row nothing reads yet says so, and a working one does not', () => {
+  const html = (key: string) => render(<EntryRow entry={SETTING_ENTRIES.find(row => row.keys[0] === key)!} flash={false}/>);
+  assert.match(html('followCursorScreen'), /Not used by Clop for Windows yet/);
+  assert.doesNotMatch(html('stripMetadata'), /Not used by Clop/);
+  assert.doesNotMatch(render(<EntryRow entry={SETTING_ENTRIES.find(row => row.keys[0] === 'followCursorScreen')!} flash={false} note={false}/>), /Not used by Clop/);
+});

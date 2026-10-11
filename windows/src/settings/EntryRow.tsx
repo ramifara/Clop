@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { controlFor } from '../../core/settings/controls';
-import type { Control, SettingEntry } from '../../core/settings/entries';
+import { PENDING_NOTE, type Control, type SettingEntry } from '../../core/settings/entries';
 import { McpInstall, McpSwitch } from '../McpSettings';
 import { rowDomId, useSettings, type SettingsEnv } from './context';
 import { FormatSelect, NameTemplateField, NumberField, Switch, TextField } from './inputs';
@@ -63,16 +63,17 @@ function body(entry: SettingEntry, control: Control, env: SettingsEnv): ReactNod
 }
 
 /** One row of a tab: the label and subtitle from the index, the control the schema or the row's `ui` calls for. Dimmed and disabled while its condition does not hold. */
-export function EntryRow({ entry, flash }: { entry: SettingEntry; flash: boolean }) {
+export function EntryRow({ entry, flash, note = true }: { entry: SettingEntry; flash: boolean; note?: boolean }) {
   const env = useSettings();
   const control = controlFor(entry, env.metas);
   if (!control || control === 'embedded') return null;
   const enabled = !entry.ui?.when || entry.ui.when.some(([key, expected]) => env.settings[key] === expected);
   const beside = BESIDE.has(control);
   // A row that is all of its section says its name once, in the section heading.
+  const pending = note && entry.ui?.pending ? <small className="pending" title={entry.ui.pending}>{PENDING_NOTE}</small> : null;
   const showTitle = entry.title.toLowerCase() !== entry.section.toLowerCase() && control !== 'about' && control !== 'updates';
   return <div className={`s-row ${beside ? '' : 'stacked'} ${enabled ? '' : 'inactive'} ${flash ? 'flash' : ''}`} id={rowDomId(entry.id)} data-row={entry.id}>
-    {showTitle ? <div className="s-label"><strong>{entry.title}</strong>{entry.subtitle && <small>{entry.subtitle}</small>}</div> : control !== 'about' && control !== 'updates' && entry.subtitle ? <div className="s-label"><small>{entry.subtitle}</small></div> : null}
+    {showTitle ? <div className="s-label"><strong>{entry.title}</strong>{entry.subtitle && <small>{entry.subtitle}</small>}{pending}</div> : control !== 'about' && control !== 'updates' && entry.subtitle ? <div className="s-label"><small>{entry.subtitle}</small>{pending}</div> : null}
     <fieldset className="s-control" disabled={!enabled}>{body(entry, control, env)}</fieldset>
   </div>;
 }
