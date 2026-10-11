@@ -8,7 +8,9 @@ import { OptimisedMarker } from '../core/marker';
 import { defaultPaths } from '../core/settings/paths';
 import { SettingsStore } from '../core/settings/store';
 import { watchedFolders } from '../core/pipeline/app-resolve';
+import { run } from '../core/run';
 import { shellEffects } from '../core/shell-effects';
+import { regExe } from '../core/shell-verbs';
 import { Workdir } from '../core/workdir';
 
 // Where a command's work happens: in the running app over the pipe, so results show up there and settings changes
@@ -22,6 +24,25 @@ export interface Backend {
   queue(request: OptimisationRequest): Promise<void>;
   stop(request: StopOptimisationRequest): Promise<void>;
   settings(request: SettingsRequest): Promise<SettingsResponse>;
+}
+
+const SHELL_FOLDERS = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders';
+/** The Desktop a `reg query` of Explorer's `User Shell Folders` names, its `%VARIABLES%` expanded; undefined when it names none or one is unknown. */
+export function registryDesktop(output: string, env: NodeJS.ProcessEnv): string | undefined {
+  const value = /^\s*Desktop\s+REG_(?:EXPAND_)?SZ\s+(.*?)\s*$/mi.exec(output)?.[1];
+  if (!value) return undefined;
+  const lookup = (name: string) => env[name] ?? Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
+  const expanded = value.replace(/%([^%]+)%/g, (whole, name: string) => lookup(name) ?? whole);
+  return /%[^%]+%/.test(expanded) || !path.win32.isAbsolute(expanded) ? undefined : expanded;
+}
+/**
+ * The Desktop the app's defaults use (`app.getPath('desktop')`), which Known Folder Move puts under OneDrive: read from Explorer's
+ * `User Shell Folders` on Windows, so a settings file the command line creates watches the same folder the app would.
+ */
+export async function desktopFolder(home: string, platform: NodeJS.Platform = process.platform, query = () => run(regExe(), ['query', SHELL_FOLDERS, '/v', 'Desktop'], { timeoutMs: 5000 }).then(result => result.stdout.toString('utf8'))): Promise<string> {
+  const fallback = path.join(home, 'Desktop');
+  if (platform !== 'win32') return fallback;
+  return registryDesktop(await query().catch(() => ''), process.env) ?? fallback;
 }
 
 export interface BackendOptions {
@@ -64,7 +85,7 @@ class HeadlessBackend implements Backend {
   private loadStore() {
     const { userData, home } = this.options;
     return this.store ??= (async () => {
-      const store = new SettingsStore(path.join(userData, 'settings.json'), { home, desktop: path.join(home, 'Desktop'), userData }, true);
+      const store = new SettingsStore(path.join(userData, 'settings.json'), { home, desktop: await desktopFolder(home), userData }, true);
       await store.load();
       return store;
     })();
