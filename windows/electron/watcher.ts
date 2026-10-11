@@ -66,6 +66,8 @@ export class FolderWatcher {
   private recent = new Map<string, { file: string; dir: string; timer?: NodeJS.Timeout }>();
   private cancelled = new Set<string>();
   private running = new Set<string>();
+  /** Files saved again while their optimisation ran: looked at once more when it ends, unless its result is the file. */
+  private queued = new Set<string>();
   /** Files waiting for their writes to finish: when they were first reported, and whether they have new content. */
   private settling = new Map<string, { timer?: NodeJS.Timeout; content: boolean; at: number }>();
   /** Size and file id of files seen settled, so a replaced file's new content shows even when it keeps an old modification time. */
@@ -189,7 +191,7 @@ export class FolderWatcher {
   private reset() {
     for (const { timer } of this.settling.values()) clearTimeout(timer);
     for (const { timer } of this.recent.values()) clearTimeout(timer);
-    this.settling.clear(); this.recent.clear(); this.cancelled.clear(); clearTimeout(this.held); clearTimeout(this.cleaner);
+    this.settling.clear(); this.recent.clear(); this.cancelled.clear(); this.queued.clear(); clearTimeout(this.held); clearTimeout(this.cleaner);
   }
 
   /** Stops watching for good. */
@@ -206,7 +208,8 @@ export class FolderWatcher {
 
   private async event(file: string) {
     const s = this.host.settings(), w = watchSettings(this.kind, s), id = this.id(file);
-    if (!w.enabled || s.pauseAutomaticOptimisations || this.protectedFiles.has(id) || this.running.has(id)) return;
+    if (!w.enabled || s.pauseAutomaticOptimisations || this.protectedFiles.has(id)) return;
+    if (this.running.has(id)) { this.queued.add(id); return; }
     const dir = matchingWatchedDir(file, w.dirs, this.host.home);
     if (!dir || !await qualifies(this.kind, file, s, this.host)) return;
     // One save can change a file several times; the first change handles it.
@@ -259,9 +262,16 @@ export class FolderWatcher {
   private dispatch(file: string, dir: string) {
     const id = this.id(file);
     this.running.add(id);
-    void Promise.resolve().then(() => this.host.handle(file, dir)).catch(() => undefined).then(placed => {
-      this.running.delete(id); this.protect(file);
+    void Promise.resolve().then(() => this.host.handle(file, dir)).catch(() => undefined).then(async placed => {
+      this.running.delete(id);
+      // Saved again meanwhile: unless the file now is Clop's own result, the new content is optimised in its turn.
+      const again = this.queued.delete(id) && !this.closed && !await this.host.isOptimised(file).catch(() => true);
+      if (!again) this.protect(file);
       if (placed) this.protect(placed);
+      if (again) {
+        clearTimeout(this.recent.get(id)?.timer); this.recent.delete(id);
+        this.event(file).catch(() => {});
+      }
     });
   }
 }

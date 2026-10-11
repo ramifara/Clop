@@ -1,11 +1,12 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { OptimisedMarker } from '../core/marker';
 import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { needTools } from '../core/testing';
+import { exists } from '../core/fileops';
 import { Workdir } from '../core/workdir';
 import { clip } from '../core/media/video.fixtures';
 import { FolderResults, LastBatch, folderPlacement, restoreAll, type FolderEnv } from './automation';
@@ -86,6 +87,23 @@ test('a result that is not smaller leaves the file alone and marks it', async t 
   assert.equal(await readFile(file, 'utf8'), 'png bytes');
   assert.equal(await f.marker.isOptimised(file), true);
   assert.equal(await placement.restore(), undefined);
+});
+test('a file saved again while its result was made is left as it is, and one that did not change gets its result', async t => {
+  const f = await setup(t); if (!f) return;
+  const file = path.join(f.dir, 'saved.png'), staged = path.join(f.root, 'staged.png'), result = path.join(f.root, 'result.png');
+  await writeFile(file, 'first save'); await writeFile(result, 'small');
+  const info = await stat(file);
+  // The shelf's copy keeps the size and modification time of the file when it was read.
+  await copyFile(file, staged); await utimes(staged, info.atime, info.mtime);
+  const output = { path: result, bytes: 5, format: 'png' };
+  assert.equal(await folderPlacement(file, 'image', f.env).place(output, staged), file);
+  assert.equal(await readFile(file, 'utf8'), 'small');
+  await writeFile(file, 'second save, longer'); await writeFile(result, 'small');
+  await assert.rejects(folderPlacement(file, 'image', f.env).place(output, staged), /saved\.png changed while Clop was optimising it/);
+  assert.equal(await readFile(file, 'utf8'), 'second save, longer');
+  await rm(file);
+  await assert.rejects(folderPlacement(file, 'image', f.env).place(output, staged), /changed while/);
+  assert.equal(await exists(file), false, 'a deleted file is not brought back');
 });
 test('folders in the hidden-results list keep their results quiet, and cancelled files are stopped and removed', async t => {
   const f = await setup(t); if (!f) return;

@@ -1,4 +1,4 @@
-import { rm } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { copyTo, exists, samePath } from '../core/fileops';
 import type { OptimisedMarker } from '../core/marker';
@@ -50,7 +50,9 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
     return target;
   }
   return {
-    async place(output: MediaOutput) {
+    async place(output: MediaOutput, staged?: string) {
+      // A file saved again while its result was made would go to the backups and be replaced by this out-of-date result. The shelf's copy keeps the size and modification time the file had when it was read.
+      if (!placed && staged && await changedSince(file, staged)) throw new Error(`${path.basename(file)} changed while Clop was optimising it, so Clop left it as it is.`);
       // A result that is not smaller is the original itself.
       if (output.unchanged) { if (placed) return (await restore())!; await mark(file); return file; }
       const e = env(), before = e.counter.value;
@@ -69,6 +71,12 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
     },
     restore,
   };
+}
+
+/** Whether `file` no longer has the size and modification time (within the millisecond or two that setting a time rounds by) of `staged`, the copy made when it was read. A missing file counts as changed. */
+async function changedSince(file: string, staged: string) {
+  const [now, then] = await Promise.all([stat(file).catch(() => undefined), stat(staged)]);
+  return !now || now.size !== then.size || Math.abs(now.mtimeMs - then.mtimeMs) >= 2;
 }
 
 /** Restores each result on its own, so one that cannot be restored does not stop the rest. Returns the ids restored and a message for each failure. */

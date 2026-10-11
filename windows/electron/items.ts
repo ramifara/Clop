@@ -30,8 +30,8 @@ const PIXELS = 60_000_000;
 const LOCAL_ERRORS = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY', 'EISDIR']);
 /** Where a result goes besides the shelf: a watched file's result goes back in its folder. */
 export interface ItemPlacement {
-  /** Places a finished result; resolves with where it now is. */
-  place(output: MediaOutput): Promise<string>;
+  /** Places a finished result; resolves with where it now is. `staged` is the shelf's copy of the original, to tell whether the file changed meanwhile. */
+  place(output: MediaOutput, staged?: string): Promise<string>;
   /** Puts the original back; resolves with where it now is, or undefined when the shelf's own copy is the original. */
   restore(): Promise<string | undefined>;
 }
@@ -243,7 +243,7 @@ export class ItemEngine extends EventEmitter {
       if (e.placement) {
         // Once placing starts it finishes, even if the item is dismissed meanwhile, and the item stays restorable.
         e.placing = true;
-        try { e.placedPath = await e.placement.place(output); e.shown = true; } finally { e.placing = false; }
+        try { e.placedPath = await e.placement.place(output, e.originalPath); e.shown = true; } finally { e.placing = false; }
       }
       if (!output.unchanged) e.revision++;
       // Keep earlier results until the session ends: other apps may still be pasting or dragging them.

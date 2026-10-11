@@ -266,3 +266,13 @@ test('pausing while a file settles stops it from being optimised', async t => {
   await pause(600);
   assert.deepEqual(state.handled, []);
 });
+test('a file saved again while it is being optimised is optimised again afterwards', async t => {
+  let first = true;
+  const { dir, state, watcher } = await setup(t, {}, { handle: async file => { state.handled.push([path.basename(file), dir]); if (first) { first = false; await pause(400); } return undefined; } });
+  await watcher.update();
+  const shot = path.join(dir, 'shot.png');
+  await image(shot);
+  await until(() => state.handled.length === 1, 'the image was not optimised');
+  await pause(100); await image(shot);
+  await until(() => state.handled.length === 2, 'the second save was dropped');
+});
