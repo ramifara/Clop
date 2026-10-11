@@ -276,3 +276,29 @@ test('a file saved again while it is being optimised is optimised again afterwar
   await pause(100); await image(shot);
   await until(() => state.handled.length === 2, 'the second save was dropped');
 });
+
+test('files that change while the Windows helper starts are looked at once it is ready', async t => {
+  let helper: 'ready' | 'starting' | 'stopped' = 'starting';
+  const { dir, state, watcher, names } = await setup(t, {}, { helper: () => helper });
+  await watcher.update();
+  await image(path.join(dir, 'early.png'));
+  await pause(500);
+  assert.deepEqual(state.handled, [], 'nothing is optimised before the helper can say whether the file is local');
+  helper = 'ready'; watcher.resume();
+  await until(() => state.handled.length === 1, 'the early file was dropped');
+  assert.deepEqual(names(), ['early.png']);
+  await image(path.join(dir, 'later.png'));
+  await until(() => state.handled.length === 2, 'a file after the helper was ready was not optimised');
+});
+test('with the Windows helper stopped, watched files are left alone with one notice, and optimised again once it is back', async t => {
+  let helper: 'ready' | 'starting' | 'stopped' = 'stopped';
+  const { dir, state, watcher } = await setup(t, {}, { helper: () => helper });
+  await watcher.update();
+  await image(path.join(dir, 'a.png')); await pause(300); await image(path.join(dir, 'b.png'));
+  await pause(500);
+  assert.deepEqual([state.handled, state.notices.length], [[], 1]);
+  assert.match(state.notices[0], /helper is not running/);
+  helper = 'ready'; watcher.resume();
+  await image(path.join(dir, 'c.png'));
+  await until(() => state.handled.length === 1, 'a file after the helper came back was not optimised');
+});

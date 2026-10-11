@@ -68,7 +68,7 @@ protocol.registerSchemesAsPrivileged([{ scheme: MEDIA_SCHEME, privileges: { stan
 let main: BrowserWindow, floating: BrowserWindow, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray | undefined, engine: ItemEngine, media: MediaFiles;
 /** Open crop, compare and preview windows, by `crop:<id>`, `compare:<id>` and `preview:<id>`. */
 const views = new Map<string, BrowserWindow>();
-let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false;
+let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false, bridgeStopped = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
 let dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
@@ -1090,7 +1090,7 @@ else {
     watchers = (['image', 'video', 'pdf', 'audio'] as const).map(kind => new FolderWatcher(kind, {
       // The stream hint moves with a renamed file, which the cache keyed by path cannot follow; it counts while the size is unchanged.
       settings: () => settings, home, firstLaunch, owns: file => workdir.owns(file), isOptimised: async file => await marker.isOptimised(file) || await marker.hintMatches(file),
-      isLocal: isLocal(true),
+      isLocal: isLocal(true), helper: () => bridgeReady || process.platform !== 'win32' ? 'ready' : bridgeStopped ? 'stopped' : 'starting',
       handle: (file, dir) => folders.optimise(file, kind, dir), cancel: files => folders.cancel(files), notice: inform,
       disable: () => toggleSetting({ [enabledKey(kind)]: false }),
     }));
@@ -1110,7 +1110,7 @@ else {
     shortcuts = new ShortcutRegistry(globalShortcut, action => guarded(() => runShortcut(action), reportFailure));
     applyWindowSettings();
     if (process.platform === 'win32') {
-      bridge.on('ready', () => { bridgeReady = true; void bridge.request(nativeSettings()).then(() => { if (settings.enableClipboardOptimiser) void optimiseClipboard(); }).catch(error => inform(message(error))); });
+      bridge.on('ready', () => { bridgeReady = true; bridgeStopped = false; for (const watcher of watchers) watcher.resume(); void bridge.request(nativeSettings()).then(() => { if (settings.enableClipboardOptimiser) void optimiseClipboard(); }).catch(error => inform(message(error))); });
       bridge.on('clipboard', event => {
         const change = clipboardChange(event);
         if (change && (change.owner || change.aumid)) lastCopier = { owner: change.owner, aumid: change.aumid };
@@ -1133,7 +1133,7 @@ else {
       // The tiles stay for the moment a drop on one needs to land.
       bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; dragFiles = []; dragModifiers = { ctrl: false, alt: false }; presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
-      bridge.on('stopped', () => { bridgeReady = false; pickup.cancel(); startClipboardFallback(); });
+      bridge.on('stopped', () => { bridgeReady = false; bridgeStopped = true; pickup.cancel(); startClipboardFallback(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));
     } else startClipboardFallback();
     // Requests can change settings, which updates the tray and the windows, so the pipe opens once they exist.

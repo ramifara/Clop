@@ -15,6 +15,11 @@ export interface WatcherHost {
   isOptimised: (file: string) => Promise<boolean>;
   /** Whether a file's content is on this computer, rather than a cloud placeholder that reading would download. */
   isLocal?: (file: string) => Promise<boolean>;
+  /**
+   * The Windows helper that says whether a file is a cloud placeholder: `starting` files wait until `resume`, and while it is
+   * `stopped` (it is never restarted) they are left alone, with one notice. Anything but `ready` is Windows only.
+   */
+  helper?: () => 'ready' | 'starting' | 'stopped';
   /** Optimises a file from the watched folder `dir` (as stored in settings). Resolves when done, with where the result went. */
   handle: (file: string, dir: string) => Promise<string | undefined>;
   /** Stops optimising files that turned out to be part of too large a batch. */
@@ -32,6 +37,8 @@ export interface WatcherHost {
 export const TIMING = { stabilityMs: 1000, checkMs: 100, pollMs: 5000, settleMs: 300, windowMs: 1000, safeMs: 30_000, safeDelayMs: 3000 };
 const NOUN = { image: 'image', video: 'video', pdf: 'PDF', audio: 'audio file' } as const;
 const SPURIOUS = 5;
+/** The most files remembered while the helper starts. */
+const MAX_DEFERRED = 500;
 /** The longest wait between attempts to watch a folder that keeps failing. */
 const MAX_BACKOFF = 5 * 60_000;
 /**
@@ -68,6 +75,9 @@ export class FolderWatcher {
   private running = new Set<string>();
   /** Files saved again while their optimisation ran: looked at once more when it ends, unless its result is the file. */
   private queued = new Set<string>();
+  /** Files that changed before the helper was ready, by id. */
+  private deferred = new Map<string, string>();
+  private toldStopped = false;
   /** Files waiting for their writes to finish: when they were first reported, and whether they have new content. */
   private settling = new Map<string, { timer?: NodeJS.Timeout; content: boolean; at: number }>();
   /** Size and file id of files seen settled, so a replaced file's new content shows even when it keeps an old modification time. */
@@ -191,7 +201,14 @@ export class FolderWatcher {
   private reset() {
     for (const { timer } of this.settling.values()) clearTimeout(timer);
     for (const { timer } of this.recent.values()) clearTimeout(timer);
-    this.settling.clear(); this.recent.clear(); this.cancelled.clear(); this.queued.clear(); clearTimeout(this.held); clearTimeout(this.cleaner);
+    this.settling.clear(); this.recent.clear(); this.cancelled.clear(); this.queued.clear(); this.deferred.clear(); clearTimeout(this.held); clearTimeout(this.cleaner);
+  }
+
+  /** The helper is ready: looks at the files that changed while it started. */
+  resume() {
+    const files = [...this.deferred.values()];
+    this.deferred.clear(); this.toldStopped = false;
+    for (const file of files) this.event(file).catch(() => {});
   }
 
   /** Stops watching for good. */
@@ -210,6 +227,12 @@ export class FolderWatcher {
     const s = this.host.settings(), w = watchSettings(this.kind, s), id = this.id(file);
     if (!w.enabled || s.pauseAutomaticOptimisations || this.protectedFiles.has(id)) return;
     if (this.running.has(id)) { this.queued.add(id); return; }
+    const helper = this.host.helper?.() ?? 'ready';
+    if (helper === 'starting') { if (this.deferred.size < MAX_DEFERRED) this.deferred.set(id, file); return; }
+    if (helper === 'stopped') {
+      if (!this.toldStopped) { this.toldStopped = true; this.host.notice('The Windows helper is not running, so Clop cannot tell cloud-only files from local ones and leaves new files in watched folders alone. Restart Clop to optimise them.'); }
+      return;
+    }
     const dir = matchingWatchedDir(file, w.dirs, this.host.home);
     if (!dir || !await qualifies(this.kind, file, s, this.host)) return;
     // One save can change a file several times; the first change handles it.
