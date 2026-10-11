@@ -218,6 +218,11 @@ export class ClopService {
     }
   };
 
+  /** Stops every request: the files being worked on and those no worker has taken yet ("Stop all", and quitting). */
+  stopAll() {
+    this.stop({ ids: [...new Set([...this.running.keys(), ...[...this.waiting].flatMap(({ queue }) => queue.map(([, url]) => url))])], remove: false });
+  }
+
   /** `handleStopOptimisationRequest`: the ids are the request's URL strings. */
   stop({ ids }: StopOptimisationRequest) {
     for (const { queue, stopped } of this.waiting) for (const entry of queue.filter(([, url]) => ids.includes(url))) { queue.splice(queue.indexOf(entry), 1); stopped(...entry); }

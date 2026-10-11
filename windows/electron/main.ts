@@ -732,7 +732,7 @@ const trayActions: TrayActions = {
   },
   openBackups: () => openFolder(workdir.backups), openWorkdir: () => openFolder(workdir.root),
   forceClean: async () => { const removed = await workdir.forceClean(); inform(removed ? `Working directory cleaned: ${removed} item${removed === 1 ? '' : 's'} removed.` : 'The working directory is already clean.'); },
-  revert: revertLast, bringBack: bringBackLast, stopAll: () => engine.stop(), set: updateSettings, toggleCLI, toggleExplorer,
+  revert: revertLast, bringBack: bringBackLast, stopAll: () => { engine.stop(); service?.stopAll(); void batch?.host.stop(); }, set: updateSettings, toggleCLI, toggleExplorer,
   checkForUpdates: async () => { const text = await updates.check(); if (text) inform(text); },
   saveDebugDump: async () => { inform(`Debug dump saved: ${path.basename(await saveDump())}`); },
   quit: () => app.quit(),
@@ -1209,7 +1209,7 @@ else {
     // So does a placement under way (a result taking an original's place), for up to two minutes; a start after a forced end repairs one.
     else if (placing() && !placementsDone) { event.preventDefault(); void Promise.race([placementsSettled(), new Promise(resolve => setTimeout(resolve, 120_000))]).finally(() => { placementsDone = true; app.quit(); }); }
     if (quitting) return;
-    quitting = true; stopUpdates?.(); for (const collector of verbCollectors.values()) collector.cancel(); withdrawPipe?.(); void pipe?.close(); engine?.abort(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
+    quitting = true; stopUpdates?.(); for (const collector of verbCollectors.values()) collector.cancel(); withdrawPipe?.(); void pipe?.close(); service?.stopAll(); engine?.abort(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });
   app.on('activate', () => { if (engine) showLatest(); });
 }

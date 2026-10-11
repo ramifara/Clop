@@ -190,6 +190,20 @@ test('stopping a request also cancels the files no worker has taken yet', async 
   assert.equal(messages.at(-1)?.kind, 'done');
 });
 
+test('stopping everything reaches every request, its running files and those still waiting', async t => {
+  const started: string[] = [];
+  const s = await setup(t, {
+    withCard: (file, _kind, _request, signal) => new Promise((_, reject) => { started.push(path.basename(file)); signal.addEventListener('abort', () => reject(signal.reason)); }),
+  });
+  const urls: string[] = [];
+  for (let i = 0; i < 6; i++) { const file = s.file(`f${i}.png`); await graphic(20, 20).png().toFile(file); urls.push(fileURL(file)); }
+  const first = s.send({ urls: urls.slice(0, 5), hideFloatingResult: false }), second = s.send({ urls: urls.slice(5), hideFloatingResult: false });
+  while (started.length < 5) await new Promise(resolve => setTimeout(resolve, 10));
+  s.service.stopAll();
+  const messages = [...answers(await first), ...answers(await second)];
+  assert.equal(messages.filter(m => m.kind === 'error' && m.error.error === 'Stopped.').length, 6);
+});
+
 test('the same file twice in one request is worked on one pass after the other', async t => {
   let active = 0, most = 0;
   const s = await setup(t, { async withCard() { most = Math.max(most, ++active); await new Promise(resolve => setTimeout(resolve, 50)); active--; throw new Error('done with it'); } });

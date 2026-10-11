@@ -273,7 +273,7 @@ Clop lives in the notification area. The menu is built when you right-click the 
 | `Downscale and preview the clipboard` | Optimises the clipboard, takes the result one downscale step down (images and videos) and opens its preview. |
 | `Ignore clipboard events from <app>` | Appears once an app has copied something. A checkbox that adds the app, by its exe path or AUMID, to `clipboardIgnoredAppBundleIds`, or takes it off again. |
 | `Open backups folder`, `Open working directory`, `Force clean working directory` | Open the folders of the work directory; the clean removes backups and temporary files except this session's results and the batch backups. |
-| `Revert last optimisations`, `Bring back last result`, `Stop all` | As described under [Result cards](#result-cards-right-click-menus-and-the-compact-list). The first two are disabled when there is nothing to do. |
+| `Revert last optimisations`, `Bring back last result`, `Stop all` | As described under [Result cards](#result-cards-right-click-menus-and-the-compact-list). The first two are disabled when there is nothing to do. `Stop all` also stops a running batch and the work `clop` and agents asked for (quitting stops that work too, so no tool keeps running after Clop). |
 | `Watch clipboard`, `Keep drop zone visible`, `Pause automatic optimisations` | Checkboxes that write `enableClipboardOptimiser`, `keepDropZoneVisible` and `pauseAutomaticOptimisations`, so the Settings window and the tray always agree. |
 | `Install command-line tool` | Portable app only (the installer adds `clop` to the PATH). |
 | `Add Explorer menu entries` | Portable app only (the installer adds them): see [Explorer integration](#explorer-integration). |
