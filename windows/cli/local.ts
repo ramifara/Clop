@@ -194,7 +194,7 @@ async function checkOutput(output: string | undefined, count: number, ctx: Conte
  */
 async function keepReplaced(ctx: Context, dest: string, pdf: string) {
   if (samePath(dest, pdf) || !await exists(dest)) return;
-  if (ctx.origin === 'mcp') throw new Error(`${dest} already exists. Agents can't replace a file that is already there: ask for an output path that doesn't exist yet.`);
+  if (ctx.origin === 'mcp') throw new Error(`${dest} already exists, and this request may not replace a file that is already there: ask for an output path that doesn't exist yet.`);
   const workdir = await openWorkdir((await readSettings(ctx)).workdir, ctx.options);
   await workdir.backup(dest, { force: true }).catch(error => { throw new Error(`Could not back up ${dest} before replacing it: ${error instanceof Error ? error.message : error}`); });
 }

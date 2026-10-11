@@ -32,6 +32,7 @@ test('an agent cannot send a result over a file that exists', async t => {
     await call('clop_convert', { paths: [f.file('a.png')], kind: 'image', to: 'webp', output: f.file('victim.webp') }),
   ];
   for (const result of refused) { assert.equal(result.error, true, result.text); assert.match(result.text, REFUSED); }
+  for (const result of refused) assert.doesNotMatch(result.text, /Ask the user to allow agent changes/, 'the file in the way is the problem, not the MCP switch');
   assert.equal(await readFile(f.file('victim.txt'), 'utf8'), 'precious');
   assert.equal(await readFile(f.file('victim.webp'), 'utf8'), 'precious');
   assert.deepEqual(await readFile(f.file('a.png')), original, 'the input is untouched too');

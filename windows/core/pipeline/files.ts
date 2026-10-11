@@ -71,7 +71,7 @@ export async function applyLocation(run: RunState, location: string, result: str
   if (!hasFileExtension(path.basename(dest), [extension(result), extension(original)]) && ext) dest = `${dest}.${ext}`;
   if (samePath(dest, result)) return result;
   if (run.opts.refuseExisting && !fromSettings && ![original, run.original].some(file => samePath(dest, file)) && await exists(dest)) {
-    throw new Error(`${dest} already exists. Agents can't replace a file that is already there: ask for an output path that doesn't exist yet.`);
+    throw new Error(`${dest} already exists, and this request may not replace a file that is already there: ask for an output path that doesn't exist yet.`);
   }
   await mkdir(path.dirname(dest), { recursive: true });
   return place(run, samePath(dest, original) ? 'inPlace' : 'specificFolder', result, original, dest);
@@ -80,7 +80,7 @@ export async function applyLocation(run: RunState, location: string, result: str
 /** Keeps a different file that already sits at `dest` in the backups before something replaces it; an agent's run is refused instead. */
 async function keepCollision(run: RunState, dest: string) {
   if (samePath(dest, run.current) || !await exists(dest)) return;
-  if (run.opts.refuseExisting && !samePath(dest, run.original)) throw new Error(`${dest} already exists. Agents can't replace a file that is already there: ask for an output path that doesn't exist yet.`);
+  if (run.opts.refuseExisting && !samePath(dest, run.original)) throw new Error(`${dest} already exists, and this request may not replace a file that is already there: ask for an output path that doesn't exist yet.`);
   await run.opts.env.workdir.backup(dest, { force: true });
 }
 
