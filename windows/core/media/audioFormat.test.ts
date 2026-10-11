@@ -61,6 +61,10 @@ test('a target bitrate is capped at the input and snapped to an allowed one; neg
   assert.equal(resolveBitrate('mp3', -2, 192), 128);
   assert.equal(resolveBitrate('mp3', -1, undefined), 160);
   assert.equal(resolveBitrate('opus', -9, 128), 32);
+  // A source under the lowest allowed bitrate is not raised to the top step.
+  const lowest = Math.min(...AUDIO_FORMATS.aac.allowedBitrates);
+  assert.equal(resolveBitrate('aac', -1, lowest - 1), lowest);
+  assert.equal(resolveBitrate('aac', -2, lowest - 1), lowest);
   assert.equal(resolveBitrate('wav', -1, 1411), 1411);
 });
 
