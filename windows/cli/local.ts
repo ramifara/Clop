@@ -5,7 +5,7 @@ import sharp from 'sharp';
 import { findDeviceSize, DEVICE_SIZE_GROUPS } from '../core/data/deviceSizes';
 import { findPaperSize, PAPER_SIZE_GROUPS } from '../core/data/paperSizes';
 import type { CropSizeGroup } from '../core/data/cropSizes';
-import { copyTo, exists, moveTo } from '../core/fileops';
+import { copyTo, exists, moveTo, samePath } from '../core/fileops';
 import { factorText } from '../core/ipc/service';
 import { markOptimised } from '../core/marker';
 import { COLOUR_TAGS } from '../core/media/exif';
@@ -14,6 +14,7 @@ import { cropPDF, extendPDF, uncropPDF } from '../core/media/pdf';
 import { run } from '../core/run';
 import { expandPathTemplate, expandTemplate, type Counter } from '../core/template';
 import { ExitCode, ValidationError } from './args';
+import { openWorkdir } from './backend';
 import { ARROW, bold, CHECKMARK, CIRCLE, dim, ERROR_X, EXCLAMATION, underline } from './colors';
 import { flag, list, on, option, str, type ClopCommand, type Context } from './context';
 import { checkOutputIsDir, chosenTypes, folderFiles, localPath, normalizeOutput } from './items';
@@ -195,6 +196,17 @@ async function checkOutput(output: string | undefined, count: number, ctx: Conte
   await checkOutputIsDir(normalizeOutput(output, ctx.cwd, ctx.home), count);
 }
 
+/**
+ * A different file already at `dest` is what an edit would replace. An agent is refused; anyone else's file is kept in the
+ * work folder's backups first, as every other replaced file is.
+ */
+async function keepReplaced(ctx: Context, dest: string, pdf: string) {
+  if (samePath(dest, pdf) || !await exists(dest)) return;
+  if (ctx.origin === 'mcp') throw new Error(`${dest} already exists. Agents can't replace a file that is already there: ask for an output path that doesn't exist yet.`);
+  const workdir = await openWorkdir((await readSettings(ctx)).workdir, ctx.options);
+  await workdir.backup(dest, { force: true }).catch(error => { throw new Error(`Could not back up ${dest} before replacing it: ${error instanceof Error ? error.message : error}`); });
+}
+
 /** Runs a PDF edit into a work folder, then moves the result where it goes. */
 async function editPDF(dest: string, edit: (dir: string) => Promise<{ path: string }>) {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'clop-pdf-'));
@@ -237,6 +249,7 @@ const cropPdf: ClopCommand = {
       for (const pdf of files) {
         if (!await exists(pdf)) continue;
         const dest = await pdfOutput(pdf, output, ctx, counter);
+        await keepReplaced(ctx, dest, pdf);
         ctx.io.out(`${on(v, 'extend') ? 'Extending' : 'Cropping'} ${pdf} to aspect ratio ${factorText(ratio)}`);
         await editPDF(dest, dir => on(v, 'extend') ? extendPDF(pdf, dir, fit) : cropPDF(pdf, dir, fit));
         ctx.io.out(` -> saved to ${dest}\n`);
@@ -260,6 +273,7 @@ const uncropPdf: ClopCommand = {
       for (const pdf of files) {
         if (!await exists(pdf)) continue;
         const dest = await pdfOutput(pdf, output, ctx, counter);
+        await keepReplaced(ctx, dest, pdf);
         ctx.io.out(`Uncropping ${pdf}`);
         await editPDF(dest, dir => uncropPDF(pdf, dir));
         ctx.io.out(` -> saved to ${dest}\n`);

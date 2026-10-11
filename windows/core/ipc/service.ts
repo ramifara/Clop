@@ -223,6 +223,8 @@ export class ClopService {
       const allowScripts = req.origin !== 'mcp' || settings.mcpAllowScriptSteps;
       const opts: PipelineRunOptions = {
         fileType: kind, env, effects: typeof deps.effects === 'function' ? await deps.effects({ allowExe: allowScripts }) : deps.effects, placementOverride: req.placement, signal, allowScripts,
+        // An explicit output from an agent may not replace a file, as the user's placement settings may.
+        refuseExisting: req.origin === 'mcp' ? { settingsLocation: pipeline ? optimisedLocation(env, kind, req.placement) : undefined } : undefined,
         onProgress: p => progress(Math.min(1, (p.step + p.fraction) / Math.max(1, p.steps))),
       };
       const run = new RunState(input, opts);

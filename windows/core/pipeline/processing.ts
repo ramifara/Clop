@@ -210,10 +210,12 @@ async function encodePDF(run: RunState, batch: PipelineStep[], progress: Progres
 /** `handleCompiledBatch`: runs consecutive processing and media steps, then places the result where the last located step says. */
 export async function runBatch(run: RunState, batch: PipelineStep[], progress: Progress) {
   let location = batch.map(stepLocation).filter(where => where !== undefined && where !== 'inPlace').at(-1) ?? 'inPlace';
-  if (batch.some(step => 'convert' in step)) location = convertLocation(run, location);
+  // A location the conversion setting chose is the user's own, which an agent's run may meet again; one the pipeline names is not.
+  let fromSettings = false;
+  if (batch.some(step => 'convert' in step)) { const chosen = convertLocation(run, location); fromSettings = chosen !== location; location = chosen; }
   const input = run.current;
   const encode = { image: encodeImage, video: encodeVideo, audio: encodeAudio, pdf: encodePDF }[run.fileType];
-  run.current = await applyLocation(run, location, await encode(run, batch, progress), input);
+  run.current = await applyLocation(run, location, await encode(run, batch, progress), input, fromSettings);
 }
 
 /** The steps that run on their own. */
