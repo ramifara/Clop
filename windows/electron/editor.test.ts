@@ -51,9 +51,10 @@ test('commands from the window are applied one after the other, none lost', asyn
 test('a malformed command rejects and changes nothing; the next command still runs', async t => {
   const { editor, store, onDisk } = await setup(t);
   const before = JSON.stringify(await onDisk());
-  for (const bad of [null, 'attach', { type: 'attach' }, draft({ name: '' }), draft({ view: 'rtf' }), { type: 'zone-move', key: 'a', to: -3 }, draft({ icon: '..\\x' })])
+  for (const bad of [null, 'attach', { type: 'attach' }, draft({ name: '' }), draft({ view: 'rtf' }), { type: 'zone-move', key: 'a', to: -3 }, draft({ icon: 7 })])
     await assert.rejects(editor.command(bad), /invalid/);
   assert.equal(JSON.stringify(await onDisk()), before);
+  assert.match((await editor.command(draft({ icon: '..\\x' }))).issues![0].message, /icon name uses only letters/, 'a new icon that is not a plain name is a problem to fix, not a malformed command');
   const reply = await editor.command(draft({ text: 'crop(widht: 5)' }));
   assert.equal(reply.issues?.length, 1);
   assert.equal(reply.saved, undefined);
