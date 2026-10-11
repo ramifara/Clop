@@ -79,6 +79,23 @@ test('results follow the optimised-file setting: a copy beside the file, or the 
   assert.ok(result && f.workdir.owns(result), 'the result stays in the working directory');
   assert.deepEqual(await readFile(other), original);
 });
+test('moving results to a copy after an in-place one gives the file its original back', async t => {
+  const f = await setup(t); if (!f) return;
+  const file = path.join(f.dir, 'shot.png'), original = await sampleImage();
+  await writeFile(file, original);
+  await f.folders.optimise(file, 'image', f.dir);
+  const [item] = f.engine.list();
+  assert.ok((await stat(file)).size < original.length);
+  f.state.settings = { ...f.state.settings, optimisedImageBehaviour: 'sameFolder', sameFolderNameTemplateImage: '%f-copy' };
+  await f.engine.apply(item.id, { ...balanced, scale: 0.5 });
+  const copy = path.join(f.dir, 'shot-copy.png');
+  assert.equal(f.engine.output(item.id), copy);
+  assert.deepEqual(await readFile(file), original, 'the earlier in-place result gives way to the original');
+  assert.ok((await stat(copy)).size < original.length);
+  await f.engine.restore(item.id);
+  assert.deepEqual(await readFile(copy), original);
+  assert.deepEqual(await readFile(file), original);
+});
 test('a result that is not smaller leaves the file alone and marks it', async t => {
   const f = await setup(t); if (!f) return;
   const file = path.join(f.dir, 'small.png'); await writeFile(file, 'png bytes');

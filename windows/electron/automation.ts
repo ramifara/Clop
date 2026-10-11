@@ -66,6 +66,8 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
       if (result.replaced && !(placed && samePath(placed, result.path))) replaced.set(key(result.path), result.replaced);
       // A converted result from the card takes the place of the earlier one rather than sitting beside it.
       if (placed && !samePath(placed, result.path) && !samePath(placed, file)) await vacate(placed);
+      // The setting moved results off the file since: it holds Clop's earlier result, so the original goes back and the copy sits beside it.
+      else if (placed && samePath(placed, file) && !samePath(result.path, file) && backup) { await copyTo(backup, file); await mark(file); backup = undefined; }
       placed = result.path;
       return result.path;
     },
