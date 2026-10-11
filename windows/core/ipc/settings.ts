@@ -120,7 +120,7 @@ export function parseSettingValue(key: SettingKey, raw: string, current: ClopSet
     case 'integer':
       if (s.default === null && (!trimmed || ['none', 'off', 'unlimited', 'no limit'].includes(lower))) return checked(null, '');
       return /^-?\d+$/.test(trimmed) ? checked(Number(trimmed), `${key} takes a whole number${s.min !== undefined ? ` from ${s.min}` : ''}${s.max !== undefined ? ` to ${s.max}` : ''}, not '${raw}'`) : { error: `${key} takes a whole number, not '${raw}'` };
-    case 'number': return trimmed && Number.isFinite(Number(trimmed)) ? checked(Number(trimmed), `${key} takes a number of at least 0, not '${raw}'`) : { error: `${key} takes a number, not '${raw}'` };
+    case 'number': return trimmed && Number.isFinite(Number(trimmed)) ? checked(Number(trimmed), `${key} takes a number of at least 0${s.min !== undefined && s.min < 0 ? ', or -2 or -4 for a half or a quarter of the video\'s rate' : ''}, not '${raw}'`) : { error: `${key} takes a number, not '${raw}'` };
     case 'string': return { value: raw };
     case 'enum': {
       const match = s.values?.find(v => String(v).toLowerCase() === lower);

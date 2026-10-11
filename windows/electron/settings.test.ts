@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { HIDDEN_KEYS } from '../core/settings/entries';
 import { SETTING_KEYS, defaultSettings, migrateLegacy, settingsSchema, type ClopSettings, type SettingSpec } from '../core/settings/schema';
 import { MCP_WRITABLE } from '../core/ipc/settings';
+import { FPS_CAPS } from '../src/settings/options';
 import { ACTION_ONLY_SETTINGS, RENDERER_SETTINGS, imageCompression, imageDefaults, imageMode, parseOptions, rendererSettings } from './settings';
 test('new images use the compression and format settings', () => {
   assert.deepEqual(imageDefaults(defaultSettings()), { mode: 'balanced', format: 'auto', scale: 1 });
@@ -26,6 +27,10 @@ test('rejects invalid dimensions, formats and non-finite scales', () => {
   assert.throws(() => parseOptions({ mode: 'balanced', format: 'mp4', scale: 1 }));
   assert.throws(() => parseOptions({ mode: 'balanced', format: 'png', scale: 1, maxEdge: 1.5 }));
   assert.throws(() => parseOptions({ mode: 'balanced', format: 'png', scale: 1, maxEdge: 20000 }));
+});
+test('every frame-rate cap the settings window offers is a value the setting accepts, and nothing between them', () => {
+  for (const cap of FPS_CAPS) assert.deepEqual(rendererSettings({ targetVideoFPS: cap.value }), { targetVideoFPS: cap.value }, cap.label);
+  for (const bad of [-1, -3, -60, NaN]) assert.throws(() => rendererSettings({ targetVideoFPS: bad }), /not a valid value/, String(bad));
 });
 test('the renderer may change the settings its window has rows for, and not those that change only through an action', () => {
   assert.deepEqual(rendererSettings({ floatingResultsCorner: 'topLeft', keepDropZoneVisible: true }), { floatingResultsCorner: 'topLeft', keepDropZoneVisible: true });

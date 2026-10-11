@@ -31,6 +31,9 @@ test('every value reads back as a string that writes back unchanged', () => {
 test('values are parsed by type, with the words macOS accepts', () => {
   const s = defaultSettings();
   assert.deepEqual(parseSettingValue('stripMetadata', 'off', s), { value: false });
+  assert.deepEqual(parseSettingValue('targetVideoFPS', '-2', s), { value: -2 }, 'half the source rate');
+  assert.deepEqual(parseSettingValue('targetVideoFPS', '-4', s), { value: -4 });
+  assert.match((parseSettingValue('targetVideoFPS', '-3', s) as { error: string }).error, /-2 or -4/);
   assert.match((parseSettingValue('stripMetadata', 'maybe', s) as { error: string }).error, /takes true or false/);
   assert.deepEqual(parseSettingValue('imageCompression', 'aggressive', s), { error: "imageCompression takes one of: adaptive, lossless, fast, smaller, custom, optionally followed by :factor. Got 'aggressive'" });
   assert.deepEqual(parseSettingValue('imageCompression', 'lossless', s), { value: { tier: 'lossless', factor: 30 } });
