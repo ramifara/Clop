@@ -176,6 +176,12 @@ test('crop-pdf lists devices, crops to a paper size, and uncrop-pdf restores the
   assert.ok(Math.abs(box.width / box.height - 210 / 297) < 0.01);
   assert.equal(await c.clop('uncrop-pdf', 'a4.pdf'), 0, c.err());
   assert.deepEqual((await PDFDocument.load(await readFile(c.file('a4.pdf')))).getPage(0).getCropBox(), { x: 0, y: 0, width: 612, height: 792 });
+  assert.equal(await c.clop('crop-pdf', '--paper-size', 'A4', 'nope.pdf'), 1, 'nothing was cropped');
+  assert.match(c.err(), /nope\.pdf does not exist/);
+  assert.equal(await c.clop('uncrop-pdf', 'nope.pdf'), 1);
+  assert.match(c.err(), /nope\.pdf does not exist/);
+  assert.equal(await c.clop('uncrop-pdf', 'nope.pdf', 'a4.pdf'), 0, 'a file that is there was still uncropped');
+  assert.match(c.err(), /nope\.pdf does not exist/);
   assert.equal(await c.clop('crop-pdf', '--paper-size', 'B99', 'letter.pdf'), 64);
   assert.match(c.err(), /Unknown paper size "B99", use --list-paper-sizes/);
 });

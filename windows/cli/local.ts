@@ -236,16 +236,20 @@ const cropPdf: ClopCommand = {
     const output = str(v, 'output'), files = await pdfs(ctx, list(v, 'pdfs') ?? [], on(v, 'recursive'));
     await checkOutput(output, files.length, ctx);
     const fit = { aspectRatio: ratio, alwaysPortrait: layout === 'portrait', alwaysLandscape: layout === 'landscape' };
+    let edited = 0;
     await withCounter(ctx, async counter => {
       for (const pdf of files) {
-        if (!await exists(pdf)) continue;
+        if (!await exists(pdf)) { ctx.io.err(`${ERROR_X()} ${underline(pdf)} does not exist\n`); continue; }
         const dest = await pdfOutput(pdf, output, ctx, counter);
         await keepReplaced(ctx, dest, pdf);
         ctx.io.out(`${on(v, 'extend') ? 'Extending' : 'Cropping'} ${pdf} to aspect ratio ${factorText(ratio)}`);
         await editPDF(dest, dir => on(v, 'extend') ? extendPDF(pdf, dir, fit) : cropPDF(pdf, dir, fit));
         ctx.io.out(` -> saved to ${dest}\n`);
+        edited++;
       }
     });
+    // Non-zero only when nothing was edited, so a caller is not told a missing file was cropped.
+    if (files.length && !edited) throw new ExitCode(1);
   },
 };
 
@@ -259,16 +263,19 @@ const uncropPdf: ClopCommand = {
   async run(v, ctx) {
     const output = str(v, 'output'), files = await pdfs(ctx, list(v, 'pdfs') ?? [], on(v, 'recursive'));
     await checkOutput(output, files.length, ctx);
+    let edited = 0;
     await withCounter(ctx, async counter => {
       for (const pdf of files) {
-        if (!await exists(pdf)) continue;
+        if (!await exists(pdf)) { ctx.io.err(`${ERROR_X()} ${underline(pdf)} does not exist\n`); continue; }
         const dest = await pdfOutput(pdf, output, ctx, counter);
         await keepReplaced(ctx, dest, pdf);
         ctx.io.out(`Uncropping ${pdf}`);
         await editPDF(dest, dir => uncropPDF(pdf, dir));
         ctx.io.out(` -> saved to ${dest}\n`);
+        edited++;
       }
     });
+    if (files.length && !edited) throw new ExitCode(1);
   },
 };
 
