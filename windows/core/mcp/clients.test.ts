@@ -164,6 +164,19 @@ test('the entry is written in the file\'s own indent: four spaces or tabs', asyn
   }
 });
 
+test('the indent step is read from a key, never from the lines of a comment block', async t => {
+  const p = await profile(t);
+  const file = configOf(p.client('cursor')).path;
+  await mkdir(path.dirname(file), { recursive: true });
+  const before = '/*\n * Notes on this file\n */\n{\n    "mcpServers": {\n        "other": { "command": "x" }\n    }\n}\n';
+  await writeFile(file, before);
+  await installClient(p.client('cursor'), SERVER);
+  const written = await readFile(file, 'utf8');
+  assert.match(written, new RegExp(`\n {8}"clop": \\{\n {12}"command": `), 'four-space steps, not the comment\'s one space');
+  await removeClient(p.client('cursor'));
+  assert.equal(await readFile(file, 'utf8'), before);
+});
+
 test('a member whose key is written with escapes is found as the parser reads it', async t => {
   const p = await profile(t);
   const file = configOf(p.client('cursor')).path;

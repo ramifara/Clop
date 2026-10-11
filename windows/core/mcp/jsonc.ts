@@ -115,7 +115,7 @@ export function setMember(text: string, container: string, name: string, member:
   const existing = memberSpan(clean, containerSpan[0], name);
   if (existing) {
     const pad = lineIndent(text, existing[0]);
-    return text.slice(0, existing[0]) + nl(`"${name}": ${indented(reunit(member, indentUnit(text)), pad)}`) + text.slice(existing[1]);
+    return text.slice(0, existing[0]) + nl(`"${name}": ${indented(reunit(member, indentUnit(clean)), pad)}`) + text.slice(existing[1]);
   }
   return insert(name, member, containerSpan[0], text, clean, nl);
 }
@@ -202,9 +202,9 @@ function memberValueSpan(clean: string, brace: number, name: string) { let found
 /** Re-indents a multi-line member so it sits under its new parent, with the parent line's own spaces or tabs. */
 const indented = (member: string, pad: string) => member.split('\n').map((line, n) => n === 0 ? line : pad + line).join('\n');
 
-/** The file's own indent step (its first indented line), two spaces when it has none. */
-function indentUnit(text: string) {
-  const first = /^([ \t]+)\S/m.exec(text)?.[1];
+/** The file's own indent step (the first indented line that starts a key, read with comments blanked), two spaces when it has none. */
+function indentUnit(clean: string) {
+  const first = /^([ \t]+)"/m.exec(clean)?.[1];
   return first ? (first.startsWith('\t') ? '\t' : first) : '  ';
 }
 /** Member text written with two-space steps, in the file's own step. */
@@ -221,7 +221,7 @@ function lineIndent(text: string, offset: number) {
 function insert(key: string, member: string, brace: number, text: string, clean: string, nl: (s: string) => string) {
   const after = skipSpace(clean, brace + 1), empty = after >= clean.length || clean[after] === '}';
   const closing = lineIndent(text, brace), pad = empty ? `${closing}  ` : lineIndent(text, after);
-  const insertion = nl(`\n${pad}"${key}": ${indented(reunit(member, indentUnit(text)), pad)}${empty ? `\n${closing}` : ','}`);
+  const insertion = nl(`\n${pad}"${key}": ${indented(reunit(member, indentUnit(clean)), pad)}${empty ? `\n${closing}` : ','}`);
   return text.slice(0, brace + 1) + insertion + text.slice(brace + 1);
 }
 
