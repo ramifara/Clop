@@ -94,3 +94,14 @@ test('a link opens the tab of its row, whatever tab it names', () => {
   assert.deepEqual(settingsTarget('images', 'no such row'), { tab: 'images' });
   assert.deepEqual(settingsTarget(), { tab: 'general' });
 });
+
+test('name templates apply under Same folder and path templates under Specific folder, for the placements of their own kind', () => {
+  const templates = SETTING_ENTRIES.filter(entry => ['nameTemplate', 'pathTemplate'].includes(entry.ui?.control ?? '') && entry.ui?.when && /FolderNameTemplate/.test(entry.keys[0]));
+  assert.equal(templates.length, 14);
+  for (const entry of templates) {
+    const wanted = entry.ui!.control === 'pathTemplate' ? 'specificFolder' : 'sameFolder', kind = entry.keys[0].replace(/^(converted)?[Ss](ame|pecific)FolderNameTemplate/, '');
+    const converted = entry.keys[0].startsWith('converted');
+    const expected = converted ? [`converted${kind}Behaviour`, `manualConverted${kind}Behaviour`].filter(key => metas.has(key)) : [`optimised${kind}Behaviour`];
+    assert.deepEqual(entry.ui!.when, expected.map(key => [key, wanted]), entry.id);
+  }
+});
