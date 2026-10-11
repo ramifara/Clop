@@ -320,6 +320,22 @@ test('a failure after the original was taken restores it, and leaves a new resul
   }
 });
 
+test('a result whose manifest write failed does not reach the manifest through another file\'s save', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { dir, files, env, params } = await setup(t);
+  const a = await write(path.join(files, 'a.jpg'), await jpeg(320, 240, 1)), b = await write(path.join(files, 'b.jpg'), await jpeg(320, 240, 2));
+  const batch = await batchOf(env, [a], params({ output: { location: 'folder', folder: path.join(dir, 'out'), template: '%f' } }));
+  // The first write fails after a moment; a second file is recorded while it is in flight.
+  const backup = batch.backup as unknown as { save(): Promise<void> }, save = backup.save.bind(backup);
+  let calls = 0;
+  backup.save = () => calls++ === 0 ? new Promise<void>((_, reject) => setTimeout(() => reject(new Error('disk full')), 50)) : save();
+  const entry = (original: string) => ({ original, path: path.join(dir, 'out', path.basename(original)), size: 1, mtimeMs: 1, originalRemoved: false });
+  const [failed] = await Promise.allSettled([batch.backup.recordResult(entry(a)), batch.backup.recordResult(entry(b))]);
+  assert.equal(failed.status, 'rejected');
+  assert.deepEqual(JSON.parse(await readFile(path.join(batch.backup.dir, 'manifest.json'), 'utf8')).results.map((r: { original: string }) => r.original), [b], 'the failed result is not carried along');
+  assert.deepEqual(batch.backup.allResults().map(r => r.original), [b]);
+});
+
 test('a result whose manifest write failed is not remembered, so it never reaches the manifest later', async t => {
   if (!needTools(t, 'jpegoptim', 'exiftool')) return;
   const { dir, files, env, params } = await setup(t);

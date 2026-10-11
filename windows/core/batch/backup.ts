@@ -86,17 +86,15 @@ export class BatchBackup {
   async keep(file: string, { copy = false, before }: { copy?: boolean; before?: { size: number; mtimeMs: number } } = {}): Promise<BackupEntry> {
     const seen = before ?? await stat(file);
     await mkdir(this.dir, { recursive: true });
-    const backup = path.join(this.dir, `${randomUUID()}${path.extname(file)}`), key = this.key(file), previous = this.entries.get(key);
+    const backup = path.join(this.dir, `${randomUUID()}${path.extname(file)}`), key = this.key(file);
     if (copy) await copyTo(file, backup); else await moveTo(file, backup, { force: false });
     const entry = { path: path.resolve(file), backup, size: seen.size, mtimeMs: seen.mtimeMs };
     try {
       // A copy across volumes is stamped with whole milliseconds, hence the tolerance.
       const now = await stat(copy ? file : backup);
       if (now.size !== seen.size || Math.abs(now.mtimeMs - seen.mtimeMs) >= 1) throw new Error(`${path.basename(file)} changed while the batch ran, so Clop left it as it is.`);
-      this.entries.set(key, entry);
-      await this.save();
+      await this.remember(this.entries, key, entry);
     } catch (error) {
-      if (previous) this.entries.set(key, previous); else this.entries.delete(key);
       if (copy) await rm(backup, { force: true }).catch(() => {});
       else await moveTo(backup, file).catch(() => { throw new Error(`${path.basename(file)} could not be put back after a failed backup. It is in ${this.dir}.`); });
       throw error;
@@ -130,11 +128,7 @@ export class BatchBackup {
   }
 
   /** Remembers where a result went. When the manifest cannot be written it is not remembered, so a later save does not carry it into the manifest. */
-  async recordResult(result: ResultEntry) {
-    const key = this.key(result.original), previous = this.results.get(key);
-    this.results.set(key, result);
-    try { await this.save(); } catch (error) { if (previous) this.results.set(key, previous); else this.results.delete(key); throw error; }
-  }
+  async recordResult(result: ResultEntry) { await this.remember(this.results, this.key(result.original), result); }
   result(original: string) { return this.results.get(this.key(original)); }
   async forgetResult(original: string) { this.results.delete(this.key(original)); await this.save(); }
 
@@ -143,6 +137,20 @@ export class BatchBackup {
     await this.saving.catch(() => {});
     await rm(this.dir, { recursive: true, force: true, maxRetries: 3 });
     this.entries.clear(); this.results.clear();
+  }
+
+  /** Held while a change to the manifest's state is made and written, so a save for one file never carries another file's change that is about to be undone. */
+  private changing: Promise<unknown> = Promise.resolve();
+  /** Puts `value` in `map` and writes the manifest. When it cannot be written the change is undone, so a later save does not carry it. */
+  private remember<T>(map: Map<string, T>, key: string, value: T) {
+    const change = async () => {
+      const previous = map.get(key);
+      map.set(key, value);
+      try { await this.save(); } catch (error) { if (previous) map.set(key, previous); else map.delete(key); throw error; }
+    };
+    const turn = this.changing.then(change, change);
+    this.changing = turn.catch(() => {});
+    return turn;
   }
 
   /** Writes the manifest atomically; saves queue behind each other so the last state always lands. */
