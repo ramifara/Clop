@@ -240,6 +240,13 @@ test('stopping everything also stops an import that is still being read', async 
   engine.stop(['nothing']);
   assert.equal(engine.get(await other).result.status, 'ready');
 });
+test('pipelines are chosen for the kind a file turns out to be, not by its name', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine } = f, kinds: string[] = [], ran: string[] = [], staged: string[] = [];
+  const late = (kind: string) => { kinds.push(kind); return { staged: (id: string) => staged.push(id), automation: { skipOptimisation: false, fallback: false, run: async () => { ran.push(kind); return { file: '', anyRan: false, warnings: [] }; } } }; };
+  const id = await engine.importBuffer(await sampleImage(), 'download.bin', 'drop', balanced, { late: late as never });
+  assert.deepEqual([kinds, ran, staged], [['image'], ['image'], [id]]);
+});
 test('names an imported file as asked and reports files it cannot read', async t => {
   const f = await fixture(t); if (!f) return;
   const { engine, dir } = f;

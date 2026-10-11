@@ -70,7 +70,11 @@ interface Entry {
   changedOutside?: string;
 }
 /** `placement` puts each result back where the file came from; `staged` hears the result's id as soon as it is in the shelf; `automation` runs attached pipelines. */
-export interface ImportExtra { placement?: ItemPlacement; staged?: (id: string) => void; automation?: ItemAutomation }
+export interface ImportExtra {
+  placement?: ItemPlacement; staged?: (id: string) => void; automation?: ItemAutomation;
+  /** More of the above for what the file turns out to be, once its content has been read: a dropped file's name can lie about its kind. */
+  late?: (kind: MediaKind) => Pick<ImportExtra, 'staged' | 'automation'> | undefined;
+}
 /** A change to a result's current file, writing into `outputDir` under `name`. */
 type Edit = (input: string, outputDir: string, name: string, signal: AbortSignal) => Promise<MediaOutput>;
 /** Dismissed results kept for `bringBack`. */
@@ -140,9 +144,10 @@ export class ItemEngine extends EventEmitter {
       const result = { id, kind, name: display, source, status: 'processing', options, animated: false, createdAt: Date.now() } as const;
       entry = kind === 'image' ? await this.stageImage(staged, directory, result, signal) : await this.stageMedia(staged, directory, { ...result, kind }, signal);
       signal.throwIfAborted();
-      entry.placement = extra.placement; entry.automation = extra.automation;
+      const late = extra.late?.(kind);
+      entry.placement = extra.placement; entry.automation = extra.automation ?? late?.automation;
       this.entries.set(id, entry);
-      this.emit('add', id); extra.staged?.(id);
+      this.emit('add', id); extra.staged?.(id); late?.staged?.(id);
       this.changed();
     } catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
     finally { this.staging.delete(importing); }

@@ -258,7 +258,7 @@ async function importUrl(value: unknown, aggressive = false, source: ItemResult[
     await makeRoom();
     let name = path.basename(url.pathname);
     try { name = decodeURIComponent(name); } catch {}
-    const id = await engine.importBuffer(Buffer.concat(chunks), name || 'Download', source, defaults(aggressive));
+    const id = await engine.importBuffer(Buffer.concat(chunks), name || 'Download', source, defaults(aggressive), source === 'drop' && !aggressive ? dropExtra() : undefined);
     if (isReady(id)) await (source === 'clipboard' ? copyClipboardResults([id], sequence) : settings.autoCopyToClipboard ? copy([id], sequence) : undefined);
   } finally { importsRunning--; syncFloating(); broadcast(); }
 }
@@ -475,6 +475,10 @@ async function importPaths(files: unknown, source: ItemResult['source'], { aggre
   } finally { importsRunning--; syncFloating(); broadcast(); }
   return completed;
 }
+/** The pipelines of the drop zone (or of the preset zone `zone`), chosen for the kind the file turns out to be rather than by its name. */
+const dropExtra = (zone?: unknown): ImportExtra => ({
+  late: kind => sourceAutomation(kind, 'dropZone', 'drop', undefined, zone === undefined ? undefined : [zonePipeline(settings.presetZones, settings.savedPipelines, zone, kind)]),
+});
 /**
  * Dropped and opened files; their results go on the clipboard with `autoCopyToClipboard`. Dropped files run the pipelines attached
  * to the drop zone, or the pipeline of the preset zone `zone` they were dropped on instead.
@@ -482,10 +486,7 @@ async function importPaths(files: unknown, source: ItemResult['source'], { aggre
 async function importFiles(files: unknown, source: ItemResult['source'], aggressive = false, zone?: unknown) {
   const sequence = await currentSequence();
   // Pipelines attached to the drop zone (or a preset zone's pipeline) run on drops, but not on a ⌘-drop's explicit aggressive optimisation (`wantsPipelineLookup`).
-  const extra = source !== 'drop' || aggressive ? undefined : (file: string) => {
-    const kind = mediaKind(file) ?? 'image';
-    return sourceAutomation(kind, 'dropZone', 'drop', undefined, zone === undefined ? undefined : [zonePipeline(settings.presetZones, settings.savedPipelines, zone, kind)]);
-  };
+  const extra = source !== 'drop' || aggressive ? undefined : () => dropExtra(zone);
   const ids = await importPaths(files, source, { aggressive, extra });
   if (settings.autoCopyToClipboard && ids.length) await copy(ids, sequence);
 }
