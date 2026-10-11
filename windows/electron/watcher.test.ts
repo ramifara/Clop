@@ -18,7 +18,7 @@ let shade = 0;
 /** A small PNG, different each time so no two files are alike. */
 const image = (file: string) => sharp({ create: { width: 64, height: 48, channels: 3, background: { r: shade++ % 255, g: 90, b: 140 } } }).png().toFile(file);
 
-async function setup(t: TestContext, overrides: Partial<ClopSettings> = {}, host: Partial<WatcherHost> = {}) {
+async function setup(t: TestContext, overrides: Partial<ClopSettings> = {}, host: Partial<WatcherHost> = {}, times: Partial<typeof timing> = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'clop-watch-')), dir = path.join(root, 'Shots');
   await mkdir(dir);
   const state = {
@@ -29,7 +29,7 @@ async function setup(t: TestContext, overrides: Partial<ClopSettings> = {}, host
     settings: () => state.settings, owns: file => file.includes(`${path.sep}work${path.sep}`), isOptimised: async file => state.optimised.has(file),
     handle: async (file, folder) => { state.handled.push([path.basename(file), folder]); return undefined; }, cancel: files => state.cancelled.push(...files.map(file => path.basename(file))),
     notice: text => state.notices.push(text), disable: () => { state.disabled++; }, ...host,
-  }, timing);
+  }, { ...timing, ...times });
   t.after(async () => { await watcher.close(); await rm(root, { recursive: true, force: true }); });
   return { root, dir, state, watcher, names: () => state.handled.map(([name]) => name).sort() };
 }
@@ -235,4 +235,24 @@ test('a copy that replaces a file and keeps the source\'s old modification time 
   // Explorer writes the copy over the file, then gives it the source's modification time.
   await sharp({ create: { width: 90, height: 40, channels: 3, background: '#335577' } }).png().toFile(old); await utimes(old, hour, hour);
   await until(() => state.handled.length === 1, 'the replaced file was not optimised');
+});
+
+test('a file named in .clopignore does not count towards the batch limit', async t => {
+  const { dir, state, watcher, names } = await setup(t, { maxImageFileCount: 1 });
+  await watcher.update();
+  await writeFile(path.join(dir, '.clopignore-image'), 'ignored-*\n');
+  await image(path.join(dir, 'ignored-1.png')); await pause(150);
+  await image(path.join(dir, 'real.png'));
+  await until(() => state.handled.length === 1, 'the real image was not optimised');
+  await pause(300);
+  assert.deepEqual([names(), state.cancelled, state.notices], [['real.png'], [], []]);
+});
+test('a file named in .clopignore is not optimised with the files held at first launch', async t => {
+  const { dir, state, watcher, names } = await setup(t, {}, { firstLaunch: true });
+  await watcher.update();
+  await writeFile(path.join(dir, '.clopignore-image'), 'ignored-*\n');
+  await image(path.join(dir, 'ignored-1.png')); await image(path.join(dir, 'real.png'));
+  await until(() => state.handled.length > 0, 'the held image was not optimised');
+  await pause(300);
+  assert.deepEqual(names(), ['real.png']);
 });

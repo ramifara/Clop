@@ -216,7 +216,8 @@ export class FolderWatcher {
     if (!safe) { entry.timer = setTimeout(() => this.recent.delete(id), this.timing.windowMs); entry.timer.unref(); }
     this.recent.set(id, entry);
     clearTimeout(this.cleaner);
-    if (await clopIgnored(this.kind, path.resolve(expandHome(dir, this.host.home)), file)) return;
+    // A file the .clopignore names is no part of a burst or of the files held at first launch.
+    if (await clopIgnored(this.kind, path.resolve(expandHome(dir, this.host.home)), file)) { clearTimeout(entry.timer); this.recent.delete(id); return; }
     if (safe) return this.hold();
     if (this.recent.size > w.maxFiles) {
       this.host.notice(`More than ${w.maxFiles} ${NOUN[this.kind]}${w.maxFiles === 1 ? '' : 's'} appeared in ${path.dirname(file)}, so Clop is leaving them alone.`);
