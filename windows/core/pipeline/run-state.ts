@@ -46,6 +46,8 @@ export interface PipelineRunOptions {
   sourceApp?: { id?: string; name?: string };
   /** A per-request placement (CLI `--convert-behaviour`), which a `convert` step's default location follows. */
   placementOverride?: PlacementOverride;
+  /** Another pipeline runs on the same file after this one, so a `fork` keeps a copy even when no later step of this one changes the file. */
+  laterPipelines?: boolean;
   signal?: AbortSignal;
   onProgress?: (progress: PipelineProgress) => void;
 }
