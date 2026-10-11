@@ -257,4 +257,9 @@ test('formatsToConvertToOutputAudio converts its types to the chosen output form
   assert.equal(path.basename(unlisted.path), 'album.flac');
   const same = await optimiseAudio(wav, w.out, { ...settings, audioFormat: 'sameAsInput' });
   assert.deepEqual([same.path, same.unchanged], [wav, true], 'sameAsInput converts nothing');
+  // FLAC to WAV is always larger: the type the user listed is converted anyway, and a type already in the output format keeps the smaller-only rule.
+  const grown = await optimiseAudio(flac, w.out, { ...settings, formatsToConvertToOutputAudio: ['flac'], audioFormat: 'wav' });
+  assert.deepEqual([path.basename(grown.path), grown.unchanged, grown.bytes > await size(flac)], ['album.wav', undefined, true]);
+  const kept = await optimiseAudio(wav, w.out, { ...settings, audioFormat: 'wav', aggressive: false });
+  assert.equal(kept.unchanged, true, 'WAV to WAV that is not smaller stays as it was');
 });

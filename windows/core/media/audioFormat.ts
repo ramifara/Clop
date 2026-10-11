@@ -136,11 +136,16 @@ export interface AudioConversionSettings {
  * (`audioFormat`) when `formatsToConvertToOutputAudio` lists the type; otherwise undefined.
  */
 export function audioConversionTarget(ext: string, settings: AudioConversionSettings = {}): AudioFormat | undefined {
+  return audioConversionRoute(ext, settings)?.format;
+}
+
+/** `audioConversionTarget` with whether the output list chose it: a conversion the user asked for by naming the type there is kept even when the result is larger (FLAC to WAV always is). */
+export function audioConversionRoute(ext: string, settings: AudioConversionSettings = {}): { format: AudioFormat; chosen: boolean } | undefined {
   const type = normalisedExtension(ext);
   const listed = (list: readonly string[]) => list.some(item => normalisedExtension(item) === type);
-  if (listed(settings.formatsToConvertToAAC ?? settingsSchema.formatsToConvertToAAC.default as string[])) return 'aac';
-  if (listed(settings.formatsToConvertToMP3 ?? settingsSchema.formatsToConvertToMP3.default as string[])) return 'mp3';
-  if (settings.audioFormat && settings.audioFormat !== 'sameAsInput' && listed(settings.formatsToConvertToOutputAudio ?? [])) return settings.audioFormat;
+  if (listed(settings.formatsToConvertToAAC ?? settingsSchema.formatsToConvertToAAC.default as string[])) return { format: 'aac', chosen: false };
+  if (listed(settings.formatsToConvertToMP3 ?? settingsSchema.formatsToConvertToMP3.default as string[])) return { format: 'mp3', chosen: false };
+  if (settings.audioFormat && settings.audioFormat !== 'sameAsInput' && listed(settings.formatsToConvertToOutputAudio ?? [])) return { format: settings.audioFormat, chosen: true };
 }
 
 /** The format an optimisation writes: the assigned conversion target, else the input's own format. */
