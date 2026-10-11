@@ -337,6 +337,7 @@ export const cropCommand: ClopCommand = {
     if (on(v, 'longEdge') && size.width !== size.height) throw new ValidationError('When using --long-edge, the size must be a single number');
     if (!size.width && !size.height) throw new ValidationError('Invalid size, must be greater than 0');
     const urls = await items(ctx, v, chosenTypes(list(v, 'types'), list(v, 'excludeTypes')));
+    await checkOutputIsDir(normalizeOutput(str(v, 'output'), ctx.cwd, ctx.home), urls.length);
     const dpi = pdfDPI(str(v, 'pdfDpi'));
     return sendOptimisation(ctx, v, urls, {
       size: { ...size, longEdge: on(v, 'longEdge'), smartCrop: on(v, 'smartCrop') }, downscaleFactor: 0.9, aggressiveOptimisation: on(v, 'aggressive'),

@@ -53,6 +53,15 @@ test('a file named twice, or named and inside a named folder, is sent once', asy
   assert.equal(urls.length, 1);
 });
 
+test('crop with several files needs a folder for its output, as optimise does', async t => {
+  const c = await cli(t);
+  await graphic(20, 20).png().toFile(c.file('a.png'));
+  await graphic(20, 20, { seed: 3 }).png().toFile(c.file('b.png'));
+  await writeFile(c.file('result.png'), 'a file');
+  assert.equal(await c.clop('crop', '-s', '10x10', '-o', 'result.png', 'a.png', 'b.png'), 64);
+  assert.match(c.err(), /Output path must be a folder when processing multiple files/);
+});
+
 test('result lines are coloured as Colorize.swift colours them when stdout is a terminal', async t => {
   if (!needTools(t, 'pngquant')) return;
   const c = await cli(t, true);
