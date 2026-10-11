@@ -96,6 +96,10 @@ function validArg(kind: MediaKind, action: ActionId, arg: unknown): boolean {
     default: return arg === undefined;
   }
 }
+/** The keys that do a menu entry's action on the card under the pointer, as the menu's hints say. */
+export const SHORTCUTS: Readonly<Record<string, Invocation>> = {
+  Delete: { action: 'dismiss' }, ' ': { action: 'preview' }, d: { action: 'compare' }, k: { action: 'crop' }, s: { action: 'saveAs' }, c: { action: 'copy' }, r: { action: 'restore' }, a: { action: 'aggressive' },
+};
 /** The submenus a corner button opens by name. */
 export const MENUS = ['downscale', 'compression', 'targetSize', 'convert', 'pipelines', 'speed', 'resolution', 'bitrate', 'coverDownscale', 'gif', 'encoder', 'normalise', 'pages'] as const;
 
@@ -217,19 +221,19 @@ export const cropAllowed = (kind: MediaKind) => kind !== 'audio';
 export function itemMenu(item: CardItem, facts: Facts): MenuNode[] {
   const { kind } = item, busy = item.status === 'processing', ready = item.status === 'ready';
   const nodes: MenuNode[] = [
-    busy ? label('Stop', { action: 'stop' }) : label('Dismiss', { action: 'dismiss' }, { hint: 'Del' }),
-    label(kind === 'video' ? 'Restore original video' : 'Restore original', { action: 'restore' }, { enabled: !busy && !item.restored }),
+    busy ? label('Stop', { action: 'stop' }) : label('Dismiss', { action: 'dismiss' }, { hint: 'Delete' }),
+    label(kind === 'video' ? 'Restore original video' : 'Restore original', { action: 'restore' }, { enabled: !busy && !item.restored, hint: 'R' }),
     sep, label('Preview', { action: 'preview' }, { enabled: ready, hint: 'Space' }), label(kind === 'audio' ? 'Compare (A/B)' : 'Compare (diff)', { action: 'compare' }, { enabled: ready, hint: 'D' }),
   ];
   if (!ready) return nodes;
-  nodes.push(sep, { header: 'File' }, label('Save as…', { action: 'saveAs' }, { hint: 'Ctrl+S' }), label('Copy to clipboard', { action: 'copy' }, { hint: 'Ctrl+C' }), label('Show in Explorer', { action: 'reveal' }, { enabled: facts.native }));
+  nodes.push(sep, { header: 'File' }, label('Save as…', { action: 'saveAs' }, { hint: 'S' }), label('Copy to clipboard', { action: 'copy' }, { hint: 'C' }), label('Show in Explorer', { action: 'reveal' }, { enabled: facts.native }));
   if (facts.native) nodes.push(sep, { header: 'Open' }, label('Open with default app', { action: 'openDefault' }),
     ...(facts.editor ? [label(`Edit with ${facts.editor}`, { action: 'editWith' })] : []), label('Open with…', { action: 'openWith' }));
   const transform: MenuNode[] = [];
   if (cropAllowed(kind)) transform.push(label('Crop and resize…', { action: 'crop' }, { hint: 'K' }));
   if (kind === 'video') transform.push(label('Remove audio', { action: 'removeAudio' }, { enabled: facts.hasAudio !== false }));
   if (kind === 'audio') transform.push(label('Extract cover art', { action: 'coverArt' }, { enabled: facts.hasCoverArt !== false }));
-  if (kind !== 'video') transform.push(label('Aggressive optimisation', { action: 'aggressive' }, { enabled: !(kind === 'image' && item.options.mode === 'aggressive') }));
+  if (kind !== 'video') transform.push(label('Aggressive optimisation', { action: 'aggressive' }, { enabled: !(kind === 'image' && item.options.mode === 'aggressive'), hint: 'A' }));
   if (kind === 'video' && facts.hdr) transform.push(label('Convert HDR to SDR', { action: 'hdrToSdr' }));
   if (kind === 'audio') { if (facts.bitrates?.length) transform.push(sub('Change bitrate', 'bitrate', item, facts)); }
   else if (kind === 'pdf') transform.push(sub('Reduce image resolution', 'resolution', item, facts));
@@ -262,6 +266,7 @@ export function batchMenu(items: CardItem[]): MenuNode[] {
 
 // Corner buttons.
 export interface ButtonDef { name: string; label: string; icon: string; invoke?: Invocation; menu?: string; panel?: 'scale' | 'compression' }
+const LOSSLESS_AUDIO = ['wav', 'flac', 'aiff', 'aif'];
 const BUTTONS: Record<string, { label: string; icon: string }> = {
   downscale: { label: 'Downscale', icon: 'minus' }, compression: { label: 'Compression', icon: 'settings' }, crop: { label: 'Crop and resize', icon: 'crop' }, share: { label: 'Share', icon: 'share' },
   restoreOptimise: { label: 'Restore / Optimise', icon: 'restore' }, aggressiveOptimisation: { label: 'Aggressive optimisation', icon: 'bolt' }, copyToClipboard: { label: 'Copy to clipboard', icon: 'copy' },
@@ -302,7 +307,7 @@ export function buttonsFor(item: CardItem, names: readonly string[], facts: Fact
       case 'compression':
         if (kind === 'image') out.push({ name, ...base, ...(panels ? { panel: 'compression' as const } : { menu: 'compression' }) });
         else if (kind === 'video') out.push({ name, ...base, menu: 'compression' });
-        else if (kind === 'audio' && facts.bitrates?.length) out.push({ name, ...base, label: 'Change bitrate', menu: 'bitrate' });
+        else if (kind === 'audio' && (facts.bitrates ? facts.bitrates.length > 0 : !LOSSLESS_AUDIO.includes(item.format))) out.push({ name, ...base, label: 'Change bitrate', menu: 'bitrate' });
         break;
       case 'crop': if (cropAllowed(kind)) out.push({ name, ...base, invoke: { action: 'crop' } }); break;
       case 'share': out.push({ name, ...base, invoke: { action: 'share' } }); break;
