@@ -251,6 +251,36 @@ test('watching and optimising together optimise each file exactly once, in place
   assert.deepEqual((await readdir(f.dir)).sort(), ['beside-optimised.png', 'beside.png', 'converted.jpeg', 'inplace.png']);
   assert.deepEqual(f.engine.list().map(item => item.status), ['ready', 'ready', 'ready']);
 });
+test('with the default settings a watched SVG, HEIC or BMP keeps its original, and its converted result goes beside it', async t => {
+  const f = await setup(t, { minImageSizeKB: 0, maxImageFileCount: 10, optimisedFileProtectionMs: 300 }); if (!f) return;
+  if (!needTools(t, 'heif-enc', 'heif-dec')) return;
+  const handled: string[] = [];
+  const watcher = new FolderWatcher('image', {
+    settings: () => f.state.settings, owns: file => f.workdir.owns(file), isOptimised: file => f.marker.isOptimised(file),
+    handle: (file, dir) => { handled.push(path.basename(file)); return f.folders.optimise(file, 'image', dir); }, cancel: files => f.folders.cancel(files), notice: () => {}, disable: () => {},
+  }, { stabilityMs: 200, checkMs: 50, pollMs: 1000, settleMs: 50, windowMs: 400, safeMs: 0, safeDelayMs: 0 });
+  t.after(() => watcher.close());
+  await watcher.update();
+  // Made outside the folder and moved in whole, as a download or a save lands.
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240">${Array.from({ length: 4000 }, (_, i) => `<rect x="${(i * 37) % 320}" y="${(i * 53) % 240}" width="3" height="3" fill="#${(i * 2654435761 % 0xffffff).toString(16).padStart(6, '0')}"/>`).join('')}</svg>`;
+  await writeFile(path.join(f.root, 'logo.svg'), svg);
+  await run('ffmpeg', ['-y', '-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=640x480', '-frames:v', '1', path.join(f.root, 'scan.bmp')]);
+  await run('ffmpeg', ['-y', '-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=640x480', '-frames:v', '1', path.join(f.root, 'photo.png')]);
+  await run('heif-enc', ['-q', '100', '-o', path.join(f.root, 'photo.heic'), path.join(f.root, 'photo.png')]);
+  const names = ['logo.svg', 'photo.heic', 'scan.bmp'], originals = new Map<string, Buffer>();
+  for (const name of names) originals.set(name, await readFile(path.join(f.root, name)));
+  for (const name of names) await rename(path.join(f.root, name), path.join(f.dir, name));
+  for (const deadline = Date.now() + 60000; Date.now() < deadline && (handled.length < 3 || f.engine.list().length < 3 || f.engine.list().some(item => item.status === 'processing')); ) await new Promise(resolve => setTimeout(resolve, 50));
+  await new Promise(resolve => setTimeout(resolve, 1200));
+  assert.deepEqual([...handled].sort(), names);
+  for (const name of names) assert.ok(originals.get(name)!.equals(await readFile(path.join(f.dir, name))), `${name} is where it was, unchanged`);
+  // Converted results sit beside their originals under the original's name (the converted-file template is %f); none replaced a file.
+  const results = f.engine.list().map(item => ({ status: item.status, output: f.engine.output(item.id) }));
+  assert.ok(results.every(result => result.status === 'ready'), JSON.stringify(results));
+  for (const { output } of results) assert.ok(names.includes(path.basename(output)) || (path.dirname(output) === f.dir && names.some(name => path.parse(name).name === path.parse(output).name)), output);
+  assert.deepEqual((await readdir(f.dir)).sort(), ['logo.png', 'logo.svg', 'photo.heic', 'photo.jpeg', 'scan.bmp', 'scan.jpeg']);
+  assert.deepEqual(await readdir(f.workdir.backups), [], 'no original was moved into the backups, where the cleaner would delete it');
+});
 test('a watched file that comes out in another format is placed by the converted-file settings, the card\'s format menu by the manual ones', async t => {
   const f = await setup(t, { convertedImageBehaviour: 'sameFolder', convertedSameFolderNameTemplateImage: '%f-auto', manualConvertedImageBehaviour: 'inPlace' } as Partial<ClopSettings>); if (!f) return;
   const file = path.join(f.dir, 'shot.png'), result = path.join(f.root, 'result.jpeg');
