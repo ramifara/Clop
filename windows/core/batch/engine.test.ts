@@ -328,6 +328,22 @@ test('an original a converted result is about to replace is noted until the resu
   assert.deepEqual(await readdir(path.join(workdir.root, 'placing')).catch(() => []), []);
 });
 
+test('the note of a moved original exists before the original leaves its path, so a crash in between leaves nothing missing', async t => {
+  if (!needTools(t, 'jpegoptim', 'pngquant', 'exiftool')) return;
+  const { files, env, params, workdir } = await setup(t);
+  const shot = await write(path.join(files, 'shot.png'), await png(400, 300, 3));
+  const p = params(); p.image = { ...p.image, convert: 'jpeg' };
+  const batch = await batchOf(env, [shot], p);
+  const seen: { atPath: boolean; backupThere: boolean }[] = [];
+  const journal = workdir.journal.bind(workdir);
+  mock.method(workdir, 'journal', async (original: string, backup: string) => { seen.push({ atPath: await exists(original), backupThere: await exists(backup) }); return journal(original, backup); });
+  await batch.run();
+  assert.deepEqual(statuses(batch), ['done']);
+  // The note was written while the original still stood at its path, and its backup did not exist yet.
+  assert.deepEqual(seen, [{ atPath: true, backupThere: false }]);
+  assert.deepEqual(await readdir(path.join(workdir.root, 'placing')).catch(() => []), []);
+});
+
 test('a failure after the original was taken restores it, and leaves a new result file out', async t => {
   if (!needTools(t, 'jpegoptim', 'exiftool')) return;
   const { dir, files, env, params } = await setup(t);

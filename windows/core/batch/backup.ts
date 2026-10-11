@@ -82,12 +82,14 @@ export class BatchBackup {
    * (it is about to go); with `copy` it stays where it is, so a result can replace it atomically with no moment when the path is
    * empty. `before` is the size and time the caller saw the file with: what was taken must match them, or the file changed while
    * it was taken and it stays as it was. When anything fails, including the manifest write, the file is back where it was.
+   * `beforeMove` runs with the backup's path just before a moved file leaves its place, so a note of it can exist before the file is away.
    */
-  async keep(file: string, { copy = false, before }: { copy?: boolean; before?: { size: number; mtimeMs: number } } = {}): Promise<BackupEntry> {
+  async keep(file: string, { copy = false, before, beforeMove }: { copy?: boolean; before?: { size: number; mtimeMs: number }; beforeMove?: (backup: string) => Promise<void> } = {}): Promise<BackupEntry> {
     const seen = before ?? await stat(file);
     await mkdir(this.dir, { recursive: true });
     const backup = path.join(this.dir, `${randomUUID()}${path.extname(file)}`), key = this.key(file);
-    if (copy) await copyTo(file, backup); else await moveTo(file, backup, { force: false });
+    if (copy) await copyTo(file, backup);
+    else { await beforeMove?.(backup); await moveTo(file, backup, { force: false }); }
     const entry = { path: path.resolve(file), backup, size: seen.size, mtimeMs: seen.mtimeMs };
     try {
       // A copy across volumes is stamped with whole milliseconds, hence the tolerance.

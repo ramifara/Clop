@@ -283,10 +283,10 @@ export class Batch extends EventEmitter {
       }
       if (removes) {
         // An original the result replaces in its own path is copied, so the path is never empty; one that goes under another name is moved.
-        const kept = await this.backup.keep(original, { copy: over, before });
+        // The note exists before the original moves, so a crash at any point after that finds it.
+        const kept = await this.backup.keep(original, { copy: over, before, beforeMove: over ? undefined : async backup => { note = await env.workdir.journal(original, backup); } });
         // A copy leaves the original where it is, so it is only given back if the result had already replaced it.
         undo.push(async () => { if (!over || !await isAsKept(original, kept)) await copyTo(kept.backup, original); await this.backup.discard(original); });
-        if (!over) note = await env.workdir.journal(original, kept.backup);
       }
       await copyTo(produced, dest);
       await env.marker.markOptimised(dest).catch(() => {});
