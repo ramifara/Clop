@@ -45,7 +45,7 @@ import { setupBatch } from './batch-window';
 const here = path.dirname(fileURLToPath(import.meta.url));
 // The crop and compare windows load the session's originals and results through this scheme, with byte ranges for video.
 protocol.registerSchemesAsPrivileged([{ scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, stream: true } }]);
-let main: BrowserWindow, floating: BrowserWindow, editorWindow: BrowserWindow | undefined, tray: Tray, engine: ItemEngine, media: MediaFiles;
+let main: BrowserWindow, floating: BrowserWindow, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray, engine: ItemEngine, media: MediaFiles;
 /** Open crop and compare windows, by `crop:<id>` and `compare:<id>`. */
 const views = new Map<string, BrowserWindow>();
 let settings = defaultSettings(), notice: string | undefined, quitting = false, bridgeReady = false;
@@ -231,16 +231,23 @@ async function openView(view: 'crop' | 'compare', id: unknown) {
     throw error;
   }
 }
-/** The pipeline editor: its own sandboxed window, made the first time it is asked for. `tab` opens it on the preset zones. */
+/**
+ * The pipeline editor: its own sandboxed window, made the first time it is asked for. `tab` opens it on the preset zones.
+ * It counts as the editor window only once its page has loaded; a page that fails to load is closed, so the next try starts
+ * over. Asks that arrive while it loads wait for it, so a tab change is never sent to a page that cannot receive it yet.
+ */
 async function openEditor(tab?: 'zones') {
-  if (!editorWindow || editorWindow.isDestroyed()) {
-    const window = editorWindow = new BrowserWindow({ width: 1060, height: 720, minWidth: 780, minHeight: 500, show: false, backgroundColor: '#f3f1ef', title: 'Clop pipelines', autoHideMenuBar: true, webPreferences: webPreferences() });
+  if (editorLoading) await editorLoading.done;
+  let window = editorWindow && !editorWindow.isDestroyed() ? editorWindow : undefined;
+  if (!window) {
+    window = new BrowserWindow({ width: 1060, height: 720, minWidth: 780, minHeight: 500, show: false, backgroundColor: '#f3f1ef', title: 'Clop pipelines', autoHideMenuBar: true, webPreferences: webPreferences() });
     configure(window);
     window.on('closed', syncNative);
-    syncNative();
-    await load(window, { editor: '1', ...(tab ? { tab } : {}) });
-  } else if (tab) editorWindow.webContents.send('clop:editor-tab', tab);
-  editorWindow.show(); editorWindow.focus();
+    const created = window, done = load(created, { editor: '1', ...(tab ? { tab } : {}) }).then(() => { editorWindow = created; syncNative(); }, (error: unknown) => { created.destroy(); throw error; });
+    editorLoading = { window: created, done };
+    try { await done; } finally { editorLoading = undefined; }
+  } else if (tab) window.webContents.send('clop:editor-tab', tab);
+  window.show(); window.focus();
 }
 async function createWindows() {
   const windowPreferences = webPreferences();
@@ -664,7 +671,8 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
 // The editor window may only ask for the pipeline editor's state and send its commands, which `EditorService` checks.
 const editor = new EditorService({ settings: () => store.get(), update: change => store.update(change), context: () => ({ home }) });
 ipcMain.handle('clop:editor', (event, action: string, command?: unknown) => {
-  if (!editorWindow || editorWindow.isDestroyed() || event.sender !== editorWindow.webContents) throw new Error('Untrusted window.');
+  const known = [editorWindow, editorLoading?.window].find(window => window && !window.isDestroyed() && window.webContents === event.sender);
+  if (!known) throw new Error('Untrusted window.');
   if (action === 'state') return editor.state();
   if (action === 'command') return editor.command(command);
   throw new Error('Unknown editor action.');
@@ -740,7 +748,7 @@ else {
     store.on('change', (next, changed) => {
       settings = next; for (const watcher of watchers) void watcher.update();
       // Pipelines, attachments and preset zones show in the editor and, as tiles, on the drop target.
-      if (changed.some(key => (EDITOR_SETTING_KEYS as readonly string[]).includes(key))) { syncFloating(); broadcast(); if (editorWindow && !editorWindow.isDestroyed()) editorWindow.webContents.send('clop:editor-changed'); }
+      if (changed.some(key => (EDITOR_SETTING_KEYS as readonly string[]).includes(key))) { syncFloating(); broadcast(); for (const window of [editorWindow, editorLoading?.window]) if (window && !window.isDestroyed()) window.webContents.send('clop:editor-changed'); }
     });
     for (const watcher of watchers) void watcher.update();
     const icon = nativeImage.createFromPath(path.join(here, 'icon.png'));
