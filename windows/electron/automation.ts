@@ -87,6 +87,7 @@ export class LastBatch {
   private at = -Infinity;
   constructor(private gapMs = 2000, private now = Date.now) {}
   add(id: string) { const now = this.now(); if (now - this.at > this.gapMs) this.ids = []; this.ids.push(id); this.at = now; }
+  get size() { return this.ids.length; }
   /** The batch's ids; the batch is then empty. */
   take() { const ids = this.ids; this.ids = []; this.at = -Infinity; return ids; }
 }

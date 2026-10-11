@@ -11,14 +11,17 @@ import { SettingsStore } from '../core/settings/store';
 import { Workdir } from '../core/workdir';
 import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
-import { ignoredApp } from './apps';
+import { ignoredApp, withIgnored } from './apps';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
-import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, type ClipboardMemory, type CopyingApp } from './clipboard';
+import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, copyingApp, type ClipboardMemory, type CopyingApp } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
 import { enabledKey, placeholderReply } from './watch-rules';
 import { FolderResults, LastBatch, restoreAll } from './automation';
 import { appsReply } from './apps';
+import { nextDownscale, nextResolution, nextSpeed, ShortcutRegistry, shortcutsFor, type ShortcutAction } from '../core/shortcuts';
+import { describeAccelerator } from '../src/settings/accelerator';
+import { guarded, recentClipboard, toTemplate, trayMenu, trayTooltip, trayVariant, type TrayActions, type TrayVariant } from './tray-menu';
 import { allPipelineChoices, appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
 import { seedBuiltinPipelines } from '../core/pipeline/builtins';
 import { EDITOR_SETTING_KEYS } from '../core/pipeline/editor-state';
@@ -53,7 +56,7 @@ import { CompactMode, cardsThatFit } from './compact';
 const here = path.dirname(fileURLToPath(import.meta.url));
 // The crop and compare windows load the session's originals and results through this scheme, with byte ranges for video.
 protocol.registerSchemesAsPrivileged([{ scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, stream: true } }]);
-let main: BrowserWindow, floating: BrowserWindow, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray, engine: ItemEngine, media: MediaFiles;
+let main: BrowserWindow, floating: BrowserWindow, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray | undefined, engine: ItemEngine, media: MediaFiles;
 /** Open crop, compare and preview windows, by `crop:<id>`, `compare:<id>` and `preview:<id>`. */
 const views = new Map<string, BrowserWindow>();
 let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false;
@@ -86,6 +89,12 @@ const removedOrder: string[] = [];
 /** Remembers a result that hid or was dismissed; only the latest few can be brought back. */
 function removed(id: string) { removedOrder.push(id); removedOrder.splice(0, removedOrder.length - 80); }
 const lastBatch = new LastBatch();
+/** The app that put the latest thing on the clipboard, for the tray's "Ignore clipboard events from" (the helper reports it with every change, ignored apps included). */
+let lastCopier: { owner?: string; aumid?: string } | undefined;
+/** How far shortcuts have stepped a result: `down:<id>` the downscale factor of a video, `dpi:<id>` a PDF's resolution, `speed:<id>` the playback speed. */
+const steps = new Map<string, number>();
+let shortcuts: ShortcutRegistry, trayShown: TrayVariant | undefined;
+const trayIcons: Partial<Record<TrayVariant, Electron.NativeImage>> = {};
 const paused = () => settings.pauseAutomaticOptimisations;
 const intake = new ClipboardIntake(error => inform(message(error)));
 const pickup = new ClipboardPickup(change => { void optimiseClipboard(change); });
@@ -116,6 +125,7 @@ const pipelineList = () => (choices?.saved === settings.savedPipelines ? choices
 let cardFit = 3;
 const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, dropActive, notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList() });
 function broadcast() {
+  refreshTrayIcon();
   for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
   // The crop and compare windows follow their result even after its card hid, so they get every result.
   if (views.size) { const all = { ...state(), items: engine.list() }; for (const window of views.values()) if (!window.isDestroyed()) window.webContents.send('clop:state', all); }
@@ -176,7 +186,8 @@ async function dismiss(id: string) {
   const timer = hideTimers.get(id); if (timer) clearTimeout(timer);
   for (const view of ['crop', 'compare', 'preview']) views.get(`${view}:${id}`)?.close();
   if (engine.has(id)) media?.revoke(engine.get(id).directory);
-  hideTimers.delete(id); hidden.delete(id); await engine.dismiss(id);
+  hideTimers.delete(id); hidden.delete(id); for (const kind of ['down', 'dpi', 'speed']) steps.delete(`${kind}:${id}`);
+  await engine.dismiss(id);
   if (!quiet.delete(id)) removed(id);
 }
 /** Shows a result that hid or was dismissed again, with its hide timer, and takes it out of the removed order. */
@@ -608,28 +619,113 @@ function showSettings(tab?: SettingsTab, row?: string) {
   main.show(); main.focus();
   if (tab || row) broadcast();
 }
-function updateTray() {
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Show latest results', click: showLatest },
-    { label: 'Optimise clipboard', accelerator: 'Control+Shift+C', click: () => { void optimiseClipboard(undefined, true); } },
-    { type: 'separator' },
-    { label: 'Watch clipboard', type: 'checkbox', checked: settings.enableClipboardOptimiser, click: item => toggleSetting({ enableClipboardOptimiser: item.checked }) },
-    { label: 'Keep drop zone visible', type: 'checkbox', checked: settings.keepDropZoneVisible, click: item => toggleSetting({ keepDropZoneVisible: item.checked }) },
-    { label: 'Pause automatic optimisations', type: 'checkbox', checked: settings.pauseAutomaticOptimisations, click: item => toggleSetting({ pauseAutomaticOptimisations: item.checked }) },
-    { type: 'separator' },
-    { label: 'Revert last optimisations', click: () => { revertLast().catch(error => inform(message(error))); } },
-    { label: 'Bring back last result', click: bringBackLast },
-    { label: 'Stop all', click: () => engine.stop() },
-    { type: 'separator' },
-    { label: 'Pipelines…', click: () => { openEditor().catch(error => inform(message(error))); } },
-    { label: 'Settings…', click: () => showSettings() },
-    { label: 'Open originals and results', click: () => { void shell.openPath(workdir.temp); } },
-    ...(isPortable() ? [{ label: cliInstalled ? 'Remove command-line tool' : 'Install command-line tool', click: toggleCLI }] : []),
-    { type: 'separator' }, { label: 'Quit Clop', click: () => app.quit() },
-  ]));
+// The global shortcuts (spec step 38, `handleHotkey` in ClopApp.swift): they act on the newest result still in view, or on the clipboard.
+const currentResult = () => state().items.find(item => item.status === 'ready');
+/** Runs a card action, with its plan and checks, on a result as if its menu had been used. */
+const runAction = (id: string, invocation: { action: ActionId; arg?: string | number }) => runCard(main.webContents, [id], invocation);
+async function runShortcut({ kind, factor }: ShortcutAction) {
+  const item = currentResult();
+  const needResult = () => { inform('There is no result to do this on. Copy or drop a file first.'); };
+  switch (kind) {
+    case 'optimiseClipboard': return optimiseClipboard(undefined, true);
+    case 'aggressive':
+      if (!item) return optimiseClipboard(undefined, true, true);
+      if (item.options.mode === 'aggressive') return;
+      if (!ACTION_KINDS.aggressive.includes(item.kind)) { inform(`Aggressive optimisation is not offered for ${item.kind === 'video' ? 'videos' : item.kind}.`); return; }
+      return runAction(item.id, { action: 'aggressive' });
+    case 'downscale': case 'resize': {
+      if (!item) return downscaleAndPreviewClipboard(factor);
+      if (item.kind === 'audio') { inform("Audio has no resolution: use the card's menu to lower its bitrate."); return; }
+      if (item.kind === 'pdf') {
+        if (kind === 'resize') { inform('PDFs are downscaled by resolution: press the downscale key.'); return; }
+        const dpi = nextResolution(steps.get(`dpi:${item.id}`));
+        if (!dpi) { inform('This PDF is already at the lowest resolution.'); return; }
+        await runAction(item.id, { action: 'resolution', arg: dpi }); steps.set(`dpi:${item.id}`, dpi); return;
+      }
+      const current = item.kind === 'image' ? item.options.scale : steps.get(`down:${item.id}`) ?? 1, target = factor ?? nextDownscale(current);
+      if (!target) { inform('This result is already at the smallest size.'); return; }
+      await runAction(item.id, { action: 'downscale', arg: target }); steps.set(`down:${item.id}`, target); return;
+    }
+    case 'speedUp': {
+      if (!item) return needResult();
+      if (item.kind !== 'video' && item.kind !== 'audio') { inform('Only videos and audio can play faster.'); return; }
+      const speed = nextSpeed(steps.get(`speed:${item.id}`) ?? 1);
+      if (!speed) { inform('This result is already at the fastest speed.'); return; }
+      await runAction(item.id, { action: 'speed', arg: speed }); steps.set(`speed:${item.id}`, speed); return;
+    }
+    case 'dismiss': { const newest = state().items[0]; if (newest) await dismiss(newest.id); return; }
+    case 'clearAll': engine.stop(); for (const each of state().items) await dismiss(each.id); return;
+    case 'bringBack': return bringBackLast();
+    case 'preview': return item ? openView('preview', item.id) : needResult();
+    case 'crop': return item ? openView('crop', item.id) : needResult();
+    case 'restore': if (!item) return needResult(); if (item.restored || item.unchanged) return; return runAction(item.id, { action: 'restore' });
+    case 'pause': { const pause = !settings.pauseAutomaticOptimisations; await updateSettings({ pauseAutomaticOptimisations: pause }); inform(pause ? 'Automatic optimisations are paused.' : 'Clop is listening for clipboard and file events.'); return; }
+  }
 }
-// A failed tray toggle rebuilds the menu so its checkbox shows the setting that is actually in effect.
-function toggleSetting(value: unknown) { updateSettings(value).catch(error => { updateTray(); inform(message(error)); }); }
+/** "Downscale and preview the clipboard": optimises what is on the clipboard, takes the result down one downscale step (or to `factor`) and opens its preview. */
+async function downscaleAndPreviewClipboard(factor?: number) {
+  const before = new Set(engine.list().map(item => item.id));
+  await optimiseClipboard(undefined, true);
+  await intake.idle();
+  const fresh = engine.list().find(item => !before.has(item.id) && item.source === 'clipboard' && item.status === 'ready');
+  if (!fresh) return;
+  const target = factor ?? nextDownscale(fresh.kind === 'image' ? fresh.options.scale : 1);
+  if (target && (fresh.kind === 'image' || fresh.kind === 'video')) await runAction(fresh.id, { action: 'downscale', arg: target });
+  if (isReady(fresh.id)) await openView('preview', fresh.id);
+}
+/** Every tray and shortcut handler reports a failure here: the notice shows it, and the menu is rebuilt so its checkboxes show what is really set. */
+function reportFailure(error: unknown) { console.warn(message(error)); inform(message(error)); updateTray(); }
+const toggleSetting = (value: unknown) => { updateSettings(value).catch(reportFailure); };
+const openFolder = async (dir: string) => { const failure = await shell.openPath(dir); if (failure) throw new Error(failure); };
+/** A recent clipboard item from the tray: its card shows again and its result goes back on the clipboard. */
+async function showRecentResult(id: string) {
+  if (!engine.has(id)) throw new Error('This result is no longer in the shelf.');
+  hidden.delete(id); scheduleHide(id); syncFloating(); broadcast();
+  if (isReady(id)) await copy([id]);
+}
+const trayActions: TrayActions = {
+  showLatest, showRecent: showRecentResult, batch: () => batch?.show(), settings: () => showSettings(), pipelines: () => openEditor(),
+  optimiseClipboard: aggressive => optimiseClipboard(undefined, true, aggressive), downscaleClipboard: () => downscaleAndPreviewClipboard(),
+  ignoreApp: (id, ignore) => {
+    // The menu was built for the app that copied last; if another copied since, the click is for a menu that is gone.
+    if (!lastCopier || copyingApp(lastCopier)?.id !== id) throw new Error('Another app copied since the menu opened. Open it again.');
+    return updateSettings({ clipboardIgnoredAppBundleIds: withIgnored(settings.clipboardIgnoredAppBundleIds, lastCopier, ignore) });
+  },
+  openBackups: () => openFolder(workdir.backups), openWorkdir: () => openFolder(workdir.root),
+  forceClean: async () => { const removed = await workdir.forceClean(); inform(removed ? `Working directory cleaned: ${removed} item${removed === 1 ? '' : 's'} removed.` : 'The working directory is already clean.'); },
+  revert: revertLast, bringBack: bringBackLast, stopAll: () => engine.stop(), set: updateSettings, toggleCLI, quit: () => app.quit(),
+};
+/** The menu for the app as it is now, read each time it opens. */
+function trayItems() {
+  const copier = lastCopier && copyingApp(lastCopier);
+  return trayMenu({
+    settings, shortcuts: shortcutsFor(settings), recent: recentClipboard(engine.list()), canRevert: lastBatch.size > 0, canBringBack: removedOrder.length > 0,
+    copier: copier?.id && copier.name ? { id: copier.id, name: copier.name, ignored: ignoredApp(lastCopier!, settings.clipboardIgnoredAppBundleIds) } : undefined,
+    cli: isPortable() ? { installed: cliInstalled } : undefined, version: app.getVersion(),
+  }, trayActions);
+}
+const trayMenuNow = () => Menu.buildFromTemplate(toTemplate(trayItems(), reportFailure));
+function trayIcon(variant: TrayVariant) {
+  return trayIcons[variant] ??= [`tray-${variant}.png`, 'icon.png'].map(name => nativeImage.createFromPath(path.join(here, name))).find(image => !image.isEmpty()) ?? nativeImage.createEmpty();
+}
+/** The icon follows the engine: working, paused, or normal. */
+function refreshTrayIcon(force = false) {
+  if (!tray) return;
+  const variant = trayVariant({ working: importsRunning > 0 || !!engine?.list().some(item => item.status === 'processing'), paused: paused() });
+  if (!force && variant === trayShown) return;
+  trayShown = variant; tray.setImage(trayIcon(variant)); tray.setToolTip(trayTooltip(variant));
+}
+/** Builds, refreshes or removes the tray icon to match `showMenubarIcon`. */
+function updateTray() {
+  if (!settings.showMenubarIcon) { tray?.destroy(); tray = undefined; trayShown = undefined; return; }
+  if (!tray) {
+    tray = new Tray(trayIcon('normal')); tray.on('double-click', showLatest);
+    // Windows shows the menu built fresh on each right-click, so recent items and the copying app are current.
+    if (process.platform === 'win32') tray.on('right-click', () => tray?.popUpContextMenu(trayMenuNow()));
+  }
+  if (process.platform !== 'win32') tray.setContextMenu(trayMenuNow());
+  refreshTrayIcon(true);
+}
 async function updateSettings(value: unknown) {
   const wasEnabled = settings.mcpEnabled;
   await settingsChanged(await store.set(value), wasEnabled);
@@ -642,9 +738,17 @@ async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
   floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop);
   syncFloating();
   if (process.platform === 'win32') app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin, path: process.execPath, args: ['--hidden'] });
+  applyWindowSettings();
   if (bridgeReady) await bridge.request(nativeSettings());
   updateTray(); broadcast();
 }
+/** The shortcuts and the windows' screenshot protection follow the settings, whichever way they changed. */
+function applyWindowSettings() {
+  shortcuts?.sync(shortcutsFor(settings));
+  for (const window of BrowserWindow.getAllWindows()) protectFromCapture(window);
+}
+// "Show Clop UI in screenshots": every window of Clop is hidden from screenshots and recordings unless it is on, including windows made later.
+function protectFromCapture(window: BrowserWindow) { if (!window.isDestroyed()) window.setContentProtection(!settings.allowClopToAppearInScreenshots); }
 /** Presses inside Clop's own windows, the crop and compare windows too, never start a drag. */
 function nativeSettings() {
   return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating, editorWindow, ...views.values(), batch?.window()].filter((window): window is BrowserWindow => !!window && !window.isDestroyed()).map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
@@ -874,12 +978,14 @@ ipcMain.on('clop:drag', (event, id: string) => {
     if (dismissOnDrop && process.platform === 'win32') setTimeout(() => { if (engine.has(id) && !over()) void dismiss(id); }, 250);
   } catch (error) { inform(message(error)); }
 });
+app.on('browser-window-created', (_event, window) => protectFromCapture(window));
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', (_event, argv) => {
     const links = clopURLs(argv);
     if (links.length) { if (engine) for (const link of links) void openClopURL(link).catch(error => inform(message(error))); return; }
-    if (engine) showLatest();
+    // Without the tray icon there is no menu to open, so another launch opens Settings.
+    if (engine) { if (tray) showLatest(); else showSettings(); }
     const files = argv.filter(arg => path.isAbsolute(arg) && mediaKind(arg));
     if (files.length) void importFiles(files, 'file').catch(error => inform(message(error)));
   });
@@ -948,22 +1054,21 @@ else {
     batch = setupBatch({ here, devUrl, webPreferences, created: syncNative, quitting: () => quitting, settings: () => settings, owns: file => workdir.owns(file), isLocal, env: () => ({ settings: () => settings, workdir, marker, home, counter: counter(), saved: saveCounter }) });
     store.on('change', (next, changed) => {
       settings = next; for (const watcher of watchers) void watcher.update();
+      if (changed.some(key => ['keyComboModifiers', 'enabledKeys', 'quickResizeKeys', 'allowClopToAppearInScreenshots'].includes(key))) applyWindowSettings();
       // Pipelines, attachments and preset zones show in the editor and, as tiles, on the drop target.
       if (changed.some(key => (EDITOR_SETTING_KEYS as readonly string[]).includes(key))) { syncFloating(); broadcast(); for (const window of [editorWindow, editorLoading?.window]) if (window && !window.isDestroyed()) window.webContents.send('clop:editor-changed'); }
     });
     for (const watcher of watchers) void watcher.update();
-    const icon = nativeImage.createFromPath(path.join(here, 'icon.png'));
-    tray = new Tray(icon); tray.setToolTip('Clop'); tray.on('double-click', showLatest); updateTray();
-    for (const [key, callback] of [
-      ['Control+Shift+C', () => { void optimiseClipboard(undefined, true); }],
-      ['Control+Shift+A', () => { void optimiseClipboard(undefined, true, true); }],
-      ['Control+Shift+Space', showLatest],
-    ] as const) if (!globalShortcut.register(key, callback)) inform(`${key} is already in use. Use the tray menu or floating shelf instead.`);
+    updateTray();
+    shortcuts = new ShortcutRegistry(globalShortcut, action => guarded(() => runShortcut(action), reportFailure),
+      accelerator => inform(`${describeAccelerator(accelerator)} is already in use. Use the tray menu or floating shelf instead.`));
+    applyWindowSettings();
     if (process.platform === 'win32') {
       bridge.on('ready', () => { bridgeReady = true; void bridge.request(nativeSettings()).then(() => { if (settings.enableClipboardOptimiser) void optimiseClipboard(); }).catch(error => inform(message(error))); });
       bridge.on('clipboard', event => {
-        if (!settings.enableClipboardOptimiser || paused()) return;
         const change = clipboardChange(event);
+        if (change && (change.owner || change.aumid)) lastCopier = { owner: change.owner, aumid: change.aumid };
+        if (!settings.enableClipboardOptimiser || paused()) return;
         // A copy by an ignored app is left alone, so it neither waits in the pickup nor counts towards an editing session.
         if (change) { if (ignoredApp(change, settings.clipboardIgnoredAppBundleIds)) pickup.cancel(); else pickup.change(change); } else inform('The Windows helper sent an unreadable clipboard change.');
       });
