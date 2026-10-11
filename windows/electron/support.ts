@@ -110,7 +110,8 @@ export function setupWatchdog() {
     window.on('closed', () => { offers.get(id)?.abort(); dog.closed(id); });
     window.webContents.on('render-process-gone', (_e, details) => console.warn(`The ${label()} window's renderer stopped: ${details.reason} (exit code ${details.exitCode}).`));
   });
-  // A sleeping PC stops the timer, which is not a blocked app.
+  // A sleeping PC stops the timer, which is not a blocked app. The first tick after waking can come before `resume` is delivered, so going to sleep starts over too.
+  powerMonitor.on('suspend', () => dog.resume());
   powerMonitor.on('resume', () => dog.resume());
   setInterval(() => act(undefined, dog.sample(Date.now())), 500).unref();
 }
