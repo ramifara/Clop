@@ -28,12 +28,16 @@ const app = spawn(executable, ['--remote-debugging-port=9227', `--user-data-dir=
 let output = '';
 app.stdout.on('data', chunk => { output += chunk; }); app.stderr.on('data', chunk => { output += chunk; });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function until(task, description, timeout = 30000) {
+/** Waits for `task` to return something. On a timeout the error says what `explain` reports (the app's state), if given, to make the failure diagnosable. */
+async function until(task, description, timeout = 30000, explain) {
   let last;
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) { try { const value = await task(); if (value) return value; } catch (error) { last = error; } await pause(250); }
-  throw new Error(`${description}: ${last?.message ?? output.slice(-2000)}`);
+  const state = explain ? `\nApp state: ${await explain().catch(error => `could not be read (${error.message})`)}` : '';
+  throw new Error(`${description}: ${last?.message ?? output.slice(-2000)}${state}`);
 }
+/** The app's items (status, error, kind, source, name) and notice, for a failure message. */
+const appState = async window => { const state = await window.evaluate('window.clop.state()'); return JSON.stringify({ notice: state.notice, items: state.items.map(({ id, kind, source, status, error, name, progress }) => ({ id, kind, source, status, error, name, progress })) }); };
 async function connect(target) {
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let sequence = 0;
@@ -197,7 +201,7 @@ try {
   for (const [file, kind] of [[video, 'video'], [scan, 'pdf'], [song, 'audio']]) {
     const before = new Set((await main.evaluate('window.clop.state()')).items.map(item => item.id));
     copyFiles([file]);
-    const item = await until(async () => (await main.evaluate('window.clop.state()')).items.find(item => !before.has(item.id) && item.kind === kind && item.source === 'clipboard' && item.status !== 'processing'), `Copying a ${kind} file did not produce a result`, 120000);
+    const item = await until(async () => (await main.evaluate('window.clop.state()')).items.find(item => !before.has(item.id) && item.kind === kind && item.source === 'clipboard' && item.status !== 'processing'), `Copying a ${kind} file did not produce a result`, 90000, () => appState(main));
     console.log(`Clipboard ${kind}:`, JSON.stringify({ status: item.status, error: item.error, format: item.format, originalBytes: item.originalBytes, outputBytes: item.outputBytes, durationMs: item.durationMs, pages: item.pages }));
     assert.equal(item.status, 'ready', item.error);
     assert.ok(item.outputBytes < item.originalBytes, `The ${kind} should be smaller after optimising`);
