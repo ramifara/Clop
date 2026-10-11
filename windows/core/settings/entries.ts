@@ -275,6 +275,8 @@ const rows: Row[] = [
 
   // updates › main
   { id: 'updates.main.updates', keys: [], title: 'Version and updates', subtitle: 'The version of Clop you are running and where new releases are published', keywords: ['update', 'updates', 'upgrade', 'release', 'releases', 'version', 'changelog', 'license', 'licence', 'free', 'open source', 'gpl'], tab: 'updates', section: '', ui: { control: 'updates' } },
+  { id: 'updates.main.checkForUpdates', keys: ['checkForUpdates'], title: 'Check for updates', subtitle: 'Ask GitHub Releases for a new version when Clop starts and once a day. This is the only time Clop contacts the internet by itself', keywords: ['update', 'updates', 'upgrade', 'release', 'automatic', 'network', 'privacy', 'check'], tab: 'updates', section: '' },
+  { id: 'updates.main.betaUpdates', keys: ['betaUpdates'], title: 'Include beta versions', subtitle: 'Offer prereleases too. They are tested less and can be unstable', keywords: ['beta', 'prerelease', 'pre-release', 'preview', 'channel', 'update', 'unstable'], tab: 'updates', section: '', ui: { when: [['checkForUpdates', true]] } },
 
   // about › main
   { id: 'about.main.about', keys: [], title: 'About Clop', subtitle: 'Version, source code and where to get help', keywords: ['about', 'version', 'credits', 'source', 'github', 'website', 'contact', 'low tech', 'lowtech', 'licence', 'license', 'gpl'], tab: 'about', section: '', ui: { control: 'about' } },

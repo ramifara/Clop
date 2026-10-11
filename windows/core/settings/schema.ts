@@ -266,6 +266,8 @@ export const settingsSchema = {
   launchAtLogin: bool(false, 'Start Clop when signing in to Windows. macOS keeps this as a login item, not a setting.', { windowsOnly: true }),
   defaultImageFormat: oneOf(['auto', 'png', 'jpeg', 'webp', 'avif', 'gif'], 'auto', 'Format for new image results; `auto` keeps the original format. Legacy Windows key: `defaultFormat`.', { windowsOnly: true }),
   persistDebugLogs: bool(false, 'Keep the app\'s debug log in `logs\\clop.log` in the app data folder. macOS keeps its logs in the system log instead; `clop logs persist` switches this.', { windowsOnly: true }),
+  checkForUpdates: bool(true, 'Check GitHub Releases for a new version when Clop starts and once a day after. macOS uses Sparkle, which has no key in Settings.swift. Development and unpackaged runs never check. The portable app only tells you about a new version; it cannot install it.', { windowsOnly: true }),
+  betaUpdates: bool(false, 'Also offer prereleases (beta versions) when checking for updates.', { windowsOnly: true }),
 } satisfies Record<string, SettingSpec<any>>;
 
 export type SettingKey = keyof typeof settingsSchema;
