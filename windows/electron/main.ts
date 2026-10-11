@@ -329,7 +329,9 @@ async function createWindows() {
   await load(main, { preferences: '1' }); await load(floating, { floating: '1' });
   positionFloating();
   floating.setIgnoreMouseEvents(true, { forward: true });
-  if (settings.keepDropZoneVisible) { syncFloating(); floating.setIgnoreMouseEvents(false); }
+  // The drop zone that stays, and the welcome card of a first run, show from the start.
+  if (settings.keepDropZoneVisible || !settings.finishedOnboarding) syncFloating();
+  if (settings.keepDropZoneVisible) floating.setIgnoreMouseEvents(false);
 }
 /**
  * Puts results on the clipboard. One image goes on as image data, with its file unless `copyImageFilePath` is off. Other

@@ -69,6 +69,10 @@ try {
   assert.equal(initial.items.length, 0, 'The app should start quietly, with no sample or workbench');
   // A first run shows the welcome card until it is dismissed, and dismissing it is remembered.
   assert.equal(initial.welcome, true, 'A first run shows the welcome card');
+  // The window that holds it is on screen, not waiting for some later event to show it.
+  const welcomeWindow = await connect(await until(async () => (await pages()).find(page => page.type === 'page' && page.url.includes('floating')), 'Floating window did not open for the welcome card'));
+  await until(() => welcomeWindow.evaluate("document.visibilityState === 'visible' && Boolean(document.querySelector('.welcome-card'))"), 'The welcome card is not showing on a first run');
+  welcomeWindow.close();
   await main.evaluate("window.clop.window('finish-welcome')");
   const welcomed = await main.evaluate('window.clop.state()');
   assert.equal(welcomed.welcome, undefined, 'The welcome card is gone once dismissed');
