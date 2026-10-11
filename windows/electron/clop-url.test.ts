@@ -43,3 +43,13 @@ test('the start question does not say an agent asked, since any website or app c
   assert.doesNotMatch(MCP_START_QUESTION.detail, /^An agent asked/);
   assert.match(MCP_START_QUESTION.detail, /possibly a website or another app\. Allow it only if you asked an agent to use Clop just now\./);
 });
+
+test('files another launch passes while the app starts wait for it too, in order', () => {
+  const opened: string[][] = [], inbox = linkInbox<string[]>(files => opened.push(files));
+  inbox.receive([['C:\\a.png']]);
+  inbox.receive([['C:\\b.mp4', 'C:\\c.pdf']]);
+  assert.deepEqual(opened, []);
+  inbox.ready();
+  inbox.receive([['C:\\d.png']]);
+  assert.deepEqual(opened, [['C:\\a.png'], ['C:\\b.mp4', 'C:\\c.pdf'], ['C:\\d.png']]);
+});

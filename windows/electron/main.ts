@@ -1046,6 +1046,8 @@ ipcMain.on('clop:drag', (event, id: string) => {
 });
 // `clop://` links wait until the app is up: a second instance can pass one before the windows exist.
 const linkQueue = linkInbox(link => { void openClopURL(link).catch(error => inform(message(error))); });
+// So do files another launch opens with Clop: before startup ends there is no engine to take them.
+const fileQueue = linkInbox<string[]>(files => { void importFiles(files, 'file').catch(error => inform(message(error))); });
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', (_event, argv) => {
@@ -1057,7 +1059,7 @@ else {
     // Without the tray icon there is no menu to open, so another launch opens Settings.
     if (engine) { if (tray) showLatest(); else showSettings(); }
     const files = argv.filter(arg => path.isAbsolute(arg) && mediaKind(arg));
-    if (files.length) void importFiles(files, 'file').catch(error => inform(message(error)));
+    if (files.length) fileQueue.receive([files]);
   });
   // The files this launch was started with for an Explorer verb join the other launches' at once: those reach `second-instance` while the app starts,
   // and the collector waits for the service, so this launch's file must not arrive after them and run on its own.
@@ -1189,6 +1191,7 @@ else {
     if (isPortable() && (cliInstalled = await portableCLIInstalled())) { updateTray(); void refreshPortableCLI(process.resourcesPath, path.dirname(process.execPath)).catch(error => inform(message(error))); }
     linkQueue.receive(clopURLs(process.argv.slice(1)));
     linkQueue.ready();
+    fileQueue.ready();
     if (!startupVerb) {
       const files = process.argv.slice(1).filter(arg => path.isAbsolute(arg) && mediaKind(arg));
       if (files.length) await importFiles(files, 'file');
