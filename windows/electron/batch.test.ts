@@ -10,9 +10,9 @@ import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { needTools } from '../core/testing';
 import { Workdir } from '../core/workdir';
 import type { BatchViewState } from '../src/batch/types';
-import { BatchHost } from './batch';
+import { BatchHost, type BatchHostOptions } from './batch';
 
-async function setup(t: TestContext, change: Partial<ClopSettings> = {}) {
+async function setup(t: TestContext, change: Partial<ClopSettings> = {}, extra: Partial<BatchHostOptions> = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-batch-host-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const workdir = await new Workdir(path.join(dir, 'work')).ensure();
@@ -20,7 +20,7 @@ async function setup(t: TestContext, change: Partial<ClopSettings> = {}) {
   const states: BatchViewState[] = [], revealed: string[] = [];
   let shown = 0;
   const host = new BatchHost({
-    settings: () => settings, owns: file => workdir.owns(file), show: () => { shown++; }, publish: state => states.push(state), reveal: file => revealed.push(file),
+    settings: () => settings, owns: file => workdir.owns(file), show: () => { shown++; }, publish: state => states.push(state), reveal: file => revealed.push(file), ...extra,
     env: () => ({ workdir, settings: () => settings, marker: new OptimisedMarker(path.join(dir, 'optimised.json')), counter: { value: 0 } }),
   });
   t.after(() => host.stop());
@@ -92,7 +92,7 @@ test('a started batch runs, reports its rows, reverts, and a later drop starts a
   await host.add([b]);
   assert.equal(host.state().batch, undefined, 'a drop after a batch starts a new one');
   assert.deepEqual(host.state().files.map(f => f.path), [b]);
-  host.clear();
+  await host.clear();
   assert.deepEqual([host.state().files, host.state().batch], [[], undefined]);
 });
 
@@ -112,4 +112,71 @@ test('results go only to a folder the folder chooser returned', async t => {
   await host.start({ files: [a], params: params(out + path.sep) });
   assert.ok(host.state().batch, 'the chosen folder is accepted');
   await until(() => host.state().batch?.phase !== 'running');
+});
+
+test('files dropped while others are still being read all join the batch, and the batch cannot start meanwhile', async t => {
+  const { host, file } = await setup(t);
+  const [a, b, c] = await Promise.all(['a.png', 'b.png', 'c.png'].map(name => file(name)));
+  await Promise.all([host.add([a]), host.add([b]), host.add([c])]);
+  assert.deepEqual(host.state().files.map(f => path.basename(f.path)).sort(), ['a.png', 'b.png', 'c.png'], 'no overlapping drop lost the files of another');
+  const params = defaultBatchParams(defaultSettings());
+  const more = host.add([await file('d.png')]);
+  assert.equal(host.state().scanning, true);
+  await assert.rejects(host.start({ files: [a], params }), /still being read/);
+  await more;
+  assert.equal(host.state().scanning, false);
+  // Emptying the window while a drop is being read leaves it empty.
+  const late = host.add([await file('e.png')]);
+  const cleared = host.clear();
+  await Promise.all([late, cleared]);
+  assert.deepEqual(host.state().files, []);
+});
+
+test('files stored only in the cloud are skipped with a notice', async t => {
+  const { host, file } = await setup(t, {}, { isLocal: async f => !f.includes('cloud') });
+  const here = await file('here.png'), cloud = await file('cloud-only.png'), also = await file('cloud-too.png');
+  await host.add([here, cloud, also]);
+  assert.deepEqual(host.state().files.map(f => f.path), [here]);
+  assert.deepEqual(host.state().notices, ['2 files that are only in the cloud were skipped, since reading them would download them.']);
+  await host.clear();
+  assert.deepEqual(host.state().notices, []);
+  await host.add([cloud]);
+  assert.deepEqual(host.state().notices, ['1 file that is only in the cloud was skipped, since reading it would download it.']);
+});
+
+test('dropping onto a finished batch asks first, and the earlier batch can be opened again to revert it', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { host, file, states } = await setup(t);
+  const a = await file('a.jpg', await photo(320, 240, 1).jpeg({ quality: 98 }).toBuffer()), b = await file('b.jpg', await photo(320, 240, 2).jpeg({ quality: 98 }).toBuffer());
+  const original = await readFile(a);
+  await host.add([a]);
+  await host.start({ files: [a], params: defaultBatchParams(defaultSettings()) });
+  await until(() => host.state().batch?.phase === 'finished');
+  const first = host.state().batch!;
+  assert.ok(!(await readFile(a)).equals(original));
+
+  await host.add([b]);
+  assert.equal(host.state().batch?.id, first.id, 'the finished batch stays');
+  assert.deepEqual([host.state().pendingAdd, host.state().files], [1, []]);
+  host.cancelAdd();
+  assert.equal(host.state().pendingAdd, undefined);
+  assert.equal(host.state().batch?.id, first.id);
+  await assert.rejects(host.confirmAdd(), /Nothing is waiting/);
+
+  await host.add([b]);
+  await host.confirmAdd();
+  assert.deepEqual([host.state().batch, host.state().pendingAdd, host.state().files.map(f => f.path)], [undefined, undefined, [b]]);
+  assert.deepEqual(host.state().previous, { id: first.id, files: 1 }, 'the earlier batch is offered');
+  assert.ok(states.some(state => state.previous), 'and the window heard of it');
+
+  await assert.rejects(host.reopen('00000000-0000-4000-8000-000000000000'), /no longer available/);
+  await host.reopen(first.id);
+  const reopened = host.state().batch!;
+  assert.deepEqual([reopened.id, reopened.phase, reopened.items.map(item => [item.name, item.status])], [first.id, 'finished', [['a.jpg', 'done']]]);
+  assert.deepEqual(host.state().files, [], 'the prepared files give way');
+  assert.deepEqual(await host.revert(first.id), []);
+  assert.ok((await readFile(a)).equals(original));
+  await host.add([b]);
+  assert.equal(host.state().batch, undefined, 'a reverted batch is replaced without asking');
+  assert.equal(host.state().previous, undefined);
 });

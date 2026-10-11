@@ -1,7 +1,8 @@
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { Batch, type BatchEnv } from '../core/batch/engine';
-import { MAX_BATCH_FILES, scanBatch, type BatchFile } from '../core/batch/scan';
+import { BatchBackup } from '../core/batch/backup';
+import { MAX_BATCH_ENTRIES, MAX_BATCH_FILES, scanBatch, type BatchFile } from '../core/batch/scan';
 import { BATCH_AUDIO_FORMATS, defaultBatchParams, parseBatchParams } from '../core/batch/spec';
 import { AUDIO_FORMATS } from '../core/media/audioFormat';
 import type { ClopSettings } from '../core/settings/schema';
@@ -20,6 +21,8 @@ export interface BatchHostOptions {
   /** Sends a new state to the window. */
   publish: (state: BatchViewState) => void;
   reveal: (file: string) => void;
+  /** Whether a file's content is on this computer rather than a cloud placeholder; those are left out of a batch. */
+  isLocal?: (file: string) => Promise<boolean>;
   native?: boolean;
 }
 
@@ -29,10 +32,20 @@ const key = (file: string) => { const resolved = path.resolve(file); return proc
 
 export class BatchHost {
   private files: BatchFile[] = [];
-  private scanning = false;
+  private scans = 0;
+  /** Scans run one after another, so overlapping drops each add to the files the last one left. */
+  private scanning: Promise<void> = Promise.resolve();
+  /** Moves on when the window is emptied, so a scan that was already reading finds nothing to add to. */
+  private generation = 0;
   private truncated = false;
+  private entriesCapped = false;
+  private cloud = 0;
   private aggressive?: boolean;
   private batch?: Batch;
+  /** A drop onto a finished batch that can still be reverted, waiting for the window to say it should replace it. */
+  private pending?: { files: string[]; aggressive?: boolean };
+  /** The newest earlier batch that can still be reverted, which the window can open again. */
+  private previous?: { id: string; files: number };
   /** Folders the user picked in the folder chooser; results go only to these, never to a path the window names on its own. */
   private readonly chosen = new Set<string>();
   private timer?: NodeJS.Timeout;
@@ -41,10 +54,18 @@ export class BatchHost {
   state(): BatchViewState {
     const settings = this.options.settings();
     return {
-      files: this.files, scanning: this.scanning, truncated: this.truncated, batch: this.batch?.snapshot(), native: this.options.native ?? true,
+      files: this.files, scanning: this.scans > 0, notices: this.notices(), batch: this.batch?.snapshot(), native: this.options.native ?? true,
+      ...(this.pending ? { pendingAdd: this.pending.files.length } : {}), ...(this.previous ? { previous: this.previous } : {}),
       defaults: defaultBatchParams(settings, this.aggressive), cropSizes: settings.savedCropSizes,
       audioFormats: BATCH_AUDIO_FORMATS.map(format => { const spec = AUDIO_FORMATS[format]; return { format, name: spec.name, lossless: spec.lossless, coverArt: spec.coverArt, ...(spec.bitrateRange ? { bitrates: spec.bitrateRange } : {}) }; }),
     };
+  }
+  private notices() {
+    const notices: string[] = [];
+    if (this.truncated) notices.push(`Only the first ${MAX_BATCH_FILES.toLocaleString('en-US')} files were added.`);
+    if (this.entriesCapped) notices.push(`Clop stopped looking after ${MAX_BATCH_ENTRIES.toLocaleString('en-US')} folders and files. Drop smaller folders to add the rest.`);
+    if (this.cloud) notices.push(`${this.cloud} ${this.cloud === 1 ? 'file that is' : 'files that are'} only in the cloud ${this.cloud === 1 ? 'was' : 'were'} skipped, since reading ${this.cloud === 1 ? 'it' : 'them'} would download ${this.cloud === 1 ? 'it' : 'them'}.`);
+    return notices;
   }
   private publish() { if (this.timer) clearTimeout(this.timer); this.timer = undefined; this.options.publish(this.state()); }
   /** Rows change many times a second while files encode, so the window hears at most ten states a second (BatchManager's 100 ms flush). */
@@ -64,23 +85,69 @@ export class BatchHost {
     return true;
   }
 
-  /** Adds files and folders to the batch being prepared; after a batch ran, they start a new one. Refused while a batch runs. */
+  /**
+   * Adds files and folders to the batch being prepared. After a batch ran, they start a new one; when that batch can still
+   * be reverted the window is asked first (`pendingAdd`), and `confirmAdd` or `cancelAdd` answers. Refused while a batch runs.
+   */
   async add(files: unknown, aggressive?: boolean) {
     this.options.show();
     if (this.running) throw new Error('A batch is running. Wait for it to finish or cancel it before adding files.');
     if (!isPathList(files, MAX_BATCH_FILES)) throw new Error(`Drop up to ${MAX_BATCH_FILES} files and folders at a time.`);
+    if (this.batch?.revertable) { this.pending = { files, aggressive }; this.publish(); return; }
+    await this.scan(files, aggressive);
+  }
+
+  /** Replaces the finished batch with the files of the drop that asked. The finished batch stays on disk and can be opened again (`previous`). */
+  async confirmAdd() {
+    const pending = this.pending;
+    if (!pending) throw new Error('Nothing is waiting to be added.');
+    if (this.running) throw new Error('A batch is running. Wait for it to finish or cancel it before adding files.');
+    this.pending = undefined;
+    await this.scan(pending.files, pending.aggressive);
+  }
+  cancelAdd() { this.pending = undefined; this.publish(); }
+
+  private async scan(files: string[], aggressive?: boolean) {
     if (this.batch) this.reset();
     if (aggressive !== undefined) this.aggressive = aggressive || undefined;
-    this.scanning = true; this.publish();
-    try {
-      const { files: found, truncated } = await scanBatch([...this.files.map(file => file.path), ...files], { owns: this.options.owns, limit: MAX_BATCH_FILES });
-      this.files = found; this.truncated = truncated;
-    } finally { this.scanning = false; this.publish(); }
+    const generation = this.generation;
+    this.scans++; this.publish();
+    const job = this.scanning.then(async () => {
+      await this.findPrevious();
+      if (generation !== this.generation) return;
+      const found = await scanBatch(files, { owns: this.options.owns, limit: MAX_BATCH_FILES, isLocal: this.options.isLocal });
+      if (generation !== this.generation) return;
+      const known = new Set(this.files.map(file => key(file.path))), merged = [...this.files, ...found.files.filter(file => !known.has(key(file.path)))];
+      this.files = merged.slice(0, MAX_BATCH_FILES);
+      this.truncated ||= found.truncated || merged.length > MAX_BATCH_FILES;
+      this.entriesCapped ||= found.entriesCapped; this.cloud += found.cloud;
+    });
+    this.scanning = job.catch(() => {});
+    try { await job; } finally { this.scans--; this.publish(); }
+  }
+
+  private async findPrevious() {
+    const latest = await BatchBackup.latest(this.options.env().workdir, this.batch?.id, this.options.env().platform).catch(() => undefined);
+    this.previous = latest && { id: latest.id, files: latest.results };
+  }
+
+  /** Opens an earlier batch again from its manifest, so its originals can be given back. */
+  async reopen(id: unknown) {
+    if (this.running) throw new Error('Wait for the batch to finish or cancel it first.');
+    if (this.scans) throw new Error('Wait until the files are read first.');
+    if (!isId(id) || this.previous?.id !== id) throw new Error('That batch is no longer available.');
+    const batch = await Batch.restore(id, this.options.env());
+    if (!batch) throw new Error('That batch is no longer available.');
+    this.reset();
+    this.batch = batch; this.previous = undefined;
+    batch.on('change', () => this.publishSoon());
+    this.publish();
   }
 
   /** Starts the prepared files named in `request.files` with `request.params` (`beginProcessing`). */
   async start(request: unknown) {
     if (this.running) throw new Error('A batch is already running.');
+    if (this.scans) throw new Error('The files are still being read. Start once they are listed.');
     const { files, params } = (typeof request === 'object' && request !== null ? request : {}) as { files?: unknown; params?: unknown };
     if (!isPathList(files, MAX_BATCH_FILES)) throw new Error('Choose the files to optimise.');
     const prepared = new Map(this.files.map(file => [key(file.path), file]));
@@ -89,7 +156,7 @@ export class BatchHost {
     const parsed = parseBatchParams(params, folder => path.isAbsolute(folder));
     if (parsed.output.location === 'folder' && !this.chosen.has(key(parsed.output.folder))) throw new Error('Choose the folder for the results with the folder button first.');
     const batch = new Batch(chosen as BatchFile[], parsed, this.options.env());
-    this.batch = batch; this.files = []; this.truncated = false;
+    this.batch = batch; this.files = []; this.truncated = this.entriesCapped = false; this.cloud = 0;
     batch.on('change', () => this.publishSoon());
     this.publish();
     void batch.run().finally(() => this.publish());
@@ -120,11 +187,16 @@ export class BatchHost {
   }
 
   /** Empties the window for a new batch. A running batch carries on and stays in the window. */
-  clear() {
+  async clear() {
     if (this.running) throw new Error('Wait for the batch to finish or cancel it first.');
-    this.reset(); this.publish();
+    this.reset();
+    await this.findPrevious();
+    this.publish();
   }
-  private reset() { this.batch?.removeAllListeners(); this.batch = undefined; this.files = []; this.truncated = false; this.aggressive = undefined; }
+  private reset() {
+    this.batch?.removeAllListeners(); this.batch = undefined; this.files = []; this.pending = undefined; this.generation++;
+    this.truncated = this.entriesCapped = false; this.cloud = 0; this.aggressive = undefined;
+  }
 
   /** Stops a running batch, for quitting. */
   stop() { this.batch?.cancel(); if (this.timer) clearTimeout(this.timer); }

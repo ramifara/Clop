@@ -686,16 +686,18 @@ else {
       env: () => ({ settings, workdir, marker, home, counter: nameCounter ??= { value: settings.lastAutoIncrementingNumber } }),
       saved: value => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); },
     });
+    // A cloud-only OneDrive placeholder would download when read, so watched folders and batches leave it alone.
+    const isLocal = async (file: string) => !bridgeReady || !placeholderReply(await bridge.request({ type: 'attributes', paths: [file] }), 1)[0];
     watchers = (['image', 'video', 'pdf', 'audio'] as const).map(kind => new FolderWatcher(kind, {
       // The stream hint moves with a renamed file, which the cache keyed by path cannot follow; it counts while the size is unchanged.
       settings: () => settings, home, firstLaunch, owns: file => workdir.owns(file), isOptimised: async file => await marker.isOptimised(file) || await marker.hintMatches(file),
-      isLocal: async file => !bridgeReady || !placeholderReply(await bridge.request({ type: 'attributes', paths: [file] }), 1)[0],
+      isLocal,
       handle: (file, dir) => folders.optimise(file, kind, dir), cancel: files => folders.cancel(files), notice: inform,
       disable: () => toggleSetting({ [enabledKey(kind)]: false }),
     }));
     const counter = () => nameCounter ??= { value: settings.lastAutoIncrementingNumber };
     const saveCounter = (value: number) => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); };
-    batch = setupBatch({ here, devUrl, quitting: () => quitting, settings: () => settings, owns: file => workdir.owns(file), env: () => ({ settings: () => settings, workdir, marker, home, counter: counter(), saved: saveCounter }) });
+    batch = setupBatch({ here, devUrl, quitting: () => quitting, settings: () => settings, owns: file => workdir.owns(file), isLocal, env: () => ({ settings: () => settings, workdir, marker, home, counter: counter(), saved: saveCounter }) });
     store.on('change', next => { settings = next; for (const watcher of watchers) void watcher.update(); });
     for (const watcher of watchers) void watcher.update();
     const icon = nativeImage.createFromPath(path.join(here, 'icon.png'));

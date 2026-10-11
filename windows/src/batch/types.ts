@@ -8,10 +8,12 @@ export type { BatchFailure, BatchFile, BatchParams, BatchSnapshot };
 export interface AudioFormatOption { format: NonNullable<BatchParams['audio']['format']>; name: string; lossless: boolean; coverArt: boolean; bitrates?: { lo: number; hi: number } }
 /**
  * What the batch window shows: the files being prepared (`files`), or the batch that ran (`batch`). `defaults` seeds the
- * parameter cards from the settings, `cropSizes` are the saved crop sizes, and `truncated` says a drop held more files than a batch takes.
+ * parameter cards from the settings, `cropSizes` are the saved crop sizes, and `notices` say what a drop left out (too many files,
+ * cloud-only files). `pendingAdd` is the number of dropped items waiting for a yes to replace the finished batch; `previous` is
+ * an earlier batch that can be opened again to revert it.
  */
 export interface BatchViewState {
-  files: BatchFile[]; scanning: boolean; truncated: boolean; batch?: BatchSnapshot;
+  files: BatchFile[]; scanning: boolean; notices: string[]; batch?: BatchSnapshot; pendingAdd?: number; previous?: { id: string; files: number };
   defaults: BatchParams; cropSizes: CropSize[]; audioFormats: AudioFormatOption[]; native: boolean;
 }
 /** The batch window's narrow API (`window.clopBatch`). Files are only ever paths the main process listed itself. */
@@ -29,6 +31,11 @@ export interface BatchApi {
   reveal(file: string): Promise<void>;
   /** A folder for results, or undefined when the dialog was cancelled. */
   chooseFolder(): Promise<string | undefined>;
+  /** Answers the question a drop onto a finished batch raised (`pendingAdd`): replace the batch with the dropped files, or keep it. */
+  confirmAdd(): Promise<void>;
+  cancelAdd(): Promise<void>;
+  /** Opens the earlier batch `previous` names, so its originals can be given back. */
+  reopen(id: string): Promise<void>;
   /** Empties the window for a new batch. */
   clear(): Promise<void>;
   close(): Promise<void>;

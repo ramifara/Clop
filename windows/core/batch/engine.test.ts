@@ -377,8 +377,8 @@ test('an earlier batch can be opened again from its manifest and reverted', asyn
   const second = new Batch((await scanBatch([b, shot])).files, convert, env);
   await second.run();
   assert.deepEqual(statuses(second), ['done', 'done']);
-  assert.equal(await BatchBackup.latest(workdir), second.id, 'the newest batch with something to revert');
-  assert.equal(await BatchBackup.latest(workdir, second.id), first.id);
+  assert.deepEqual(await BatchBackup.latest(workdir), { id: second.id, results: 2 }, 'the newest batch with something to revert');
+  assert.deepEqual(await BatchBackup.latest(workdir, second.id), { id: first.id, results: 1 });
   assert.equal(await Batch.restore(randomUUID(), env), undefined, 'a batch with no manifest is not there');
 
   // As after a restart: nothing of the batch is in memory but its manifest.
@@ -389,7 +389,7 @@ test('an earlier batch can be opened again from its manifest and reverted', asyn
   assert.deepEqual(statuses(reopened), ['reverted', 'reverted']);
   assert.deepEqual(await Promise.all([b, shot].map(digest)), [originals[1], originals[2]]);
   assert.equal(await readFile(mine, 'utf8'), 'my own jpeg');
-  assert.equal(await BatchBackup.latest(workdir), first.id, 'a reverted batch has nothing left to offer');
+  assert.equal((await BatchBackup.latest(workdir))?.id, first.id, 'a reverted batch has nothing left to offer');
 
   const again = (await Batch.restore(first.id, env))!;
   assert.deepEqual(await again.revert(), []);

@@ -54,6 +54,11 @@ export function BatchView() {
   return <div className={`batch ${dropping ? 'dropping' : ''}`} onDragOver={event => { if (accepts(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }} onDragEnter={event => { if (accepts(event)) setDropping(true); }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropping(false); }} onDrop={drop}>
     {!state.native && <div className="preview-banner">Browser preview with sample files. Run Clop to optimise real files.</div>}
     {state.batch ? <Results key={state.batch.id} batch={state.batch} run={run}/> : <Prepare state={state} run={run}/>}
+    {state.pendingAdd !== undefined && <Sheet label="Start a new batch?" onClose={() => void run(() => api.cancelAdd())}>
+      <h2>Start a new batch with the {plural(state.pendingAdd, 'dropped item')}?</h2>
+      <p>This batch can still be reverted. Starting a new one keeps its backups, and you can open it again with Open previous batch to give its originals back.</p>
+      <div className="sheet-actions"><button type="button" autoFocus onClick={() => void run(() => api.cancelAdd())}>Keep this batch</button><button type="button" className="primary" onClick={() => void run(() => api.confirmAdd())}>Start new batch</button></div>
+    </Sheet>}
     {error && <div className="batch-error" role="alert"><span>{error}</span><button type="button" aria-label="Dismiss message" onClick={() => setError('')}><Icon name="close" size={12}/></button></div>}
   </div>;
 }
@@ -71,8 +76,9 @@ function Prepare({ state, run }: { state: BatchViewState; run: Run }) {
   const present = useMemo(() => new Set(files.map(file => file.kind)), [files]);
   const remove = () => { if (selection.selected.size) { setRemoved(new Set([...removed, ...selection.selected])); selection.clear(); } };
   const start = () => run(() => api.start(files.map(file => file.path), params));
+  const previous = state.previous && <button type="button" onClick={() => void run(() => api.reopen(state.previous!.id))}>Open previous batch ({plural(state.previous.files, 'file')})</button>;
   if (state.scanning && empty) return <div className="batch-centre"><span className="spinner"/>Scanning…</div>;
-  if (empty) return <><div className="drop-zone"><Icon name="drop" size={52}/><strong>Drop files and folders here</strong><span>Images, videos, PDFs and audio are added; everything else is ignored. Drop more anytime to keep adding.</span></div><Footer><span className="muted">No files</span><span className="spacer"/><button type="button" onClick={() => void run(() => api.close())}>Close</button><button type="button" className="primary" disabled>Optimise</button></Footer></>;
+  if (empty) return <><div className="drop-zone"><Icon name="drop" size={52}/><strong>Drop files and folders here</strong><span>Images, videos, PDFs and audio are added; everything else is ignored. Drop more anytime to keep adding.</span></div><Footer><span className="muted">No files</span>{state.notices.length > 0 && <span className="hint">{state.notices.join(' ')}</span>}<span className="spacer"/>{previous}<button type="button" onClick={() => void run(() => api.close())}>Close</button><button type="button" className="primary" disabled>Optimise</button></Footer></>;
   return <>
     <div className="table-wrap" tabIndex={0} onKeyDown={event => { if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); remove(); } }}>
       <table className="files" aria-label="Files to optimise" aria-multiselectable="true">
@@ -85,9 +91,10 @@ function Prepare({ state, run }: { state: BatchViewState; run: Run }) {
     <ParamCards params={params} onChange={setParams} present={present} cropSizes={state.cropSizes} audioFormats={state.audioFormats} chooseFolder={() => api.chooseFolder()}/>
     <Footer>
       <span className="muted">{plural(files.length, 'file')}{state.scanning ? ' · scanning…' : ''}</span>
-      <span className="hint">Drop to add more; select and press Delete to remove files.{state.truncated ? ' Only the first 10,000 files were added.' : ''}{params.aggressive ? ' Aggressive optimisation.' : ''}</span>
+      <span className="hint">Drop to add more; select and press Delete to remove files.{state.notices.map(notice => ` ${notice}`)}{params.aggressive ? ' Aggressive optimisation.' : ''}</span>
       <span className="spacer"/>
       {selection.selected.size > 0 && <button type="button" onClick={remove}>Remove {plural(selection.selected.size, 'file')}</button>}
+      {previous}
       <button type="button" onClick={() => void run(() => api.clear())}>Reset</button>
       <button type="button" onClick={() => void run(() => api.close())}>Cancel</button>
       <button type="button" className="primary" disabled={!files.length || state.scanning} onClick={() => void start()}>Optimise</button>

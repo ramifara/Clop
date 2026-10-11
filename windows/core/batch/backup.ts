@@ -56,8 +56,8 @@ export class BatchBackup {
     return backup;
   }
 
-  /** The newest batch (other than `exclude`) whose manifest still holds results to revert, if any. */
-  static async latest(workdir: Workdir, exclude?: string, platform?: NodeJS.Platform): Promise<string | undefined> {
+  /** The newest batch (other than `exclude`) whose manifest still holds results to revert, with how many, if any. */
+  static async latest(workdir: Workdir, exclude?: string, platform?: NodeJS.Platform): Promise<{ id: string; results: number } | undefined> {
     const names = await readdir(workdir.batchBackups).catch(() => [] as string[]);
     const found = await Promise.all(names.map(async name => {
       const id = BATCH_DIR.exec(name)?.[1];
@@ -66,7 +66,8 @@ export class BatchBackup {
       return info?.isFile() ? { id, time: info.mtimeMs } : undefined;
     }));
     for (const { id } of found.filter(item => !!item).sort((a, b) => b.time - a.time)) {
-      if ((await BatchBackup.load(workdir, id, platform))?.results.size) return id;
+      const results = (await BatchBackup.load(workdir, id, platform))?.results.size;
+      if (results) return { id, results };
     }
     return undefined;
   }

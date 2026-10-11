@@ -44,7 +44,10 @@ export function setupBatch(options: BatchWindowOptions) {
         const result = await dialog.showOpenDialog(window!, { title: 'Save results to', properties: ['openDirectory', 'createDirectory'] });
         return result.canceled ? undefined : result.filePaths[0];
       });
-      case 'clear': host.clear(); return;
+      case 'confirm-add': await host.confirmAdd(); return;
+      case 'cancel-add': host.cancelAdd(); return;
+      case 'reopen': await host.reopen(args[0]); return;
+      case 'clear': await host.clear(); return;
       case 'close': window.hide(); return;
       default: throw new Error('Unknown batch action.');
     }

@@ -15,7 +15,7 @@ const defaults: BatchViewState['defaults'] = {
   audio: { compression: 35, convertLossless: false, coverArt: 'optimise', coverArtSquaring: 'landscapeOnly', allowLarger: true },
 };
 let state: BatchViewState = {
-  files, scanning: false, truncated: false, defaults, cropSizes: [...DEFAULT_CROP_SIZES], native: false,
+  files, scanning: false, notices: [], defaults, cropSizes: [...DEFAULT_CROP_SIZES], native: false,
   audioFormats: [
     { format: 'aac', name: 'AAC (M4A)', lossless: false, coverArt: true, bitrates: { lo: 48, hi: 256 } }, { format: 'mp3', name: 'MP3', lossless: false, coverArt: true, bitrates: { lo: 64, hi: 320 } },
     { format: 'opus', name: 'Opus (OGG)', lossless: false, coverArt: false, bitrates: { lo: 32, hi: 160 } }, { format: 'wav', name: 'WAV', lossless: true, coverArt: false }, { format: 'flac', name: 'FLAC', lossless: true, coverArt: true },
@@ -48,6 +48,7 @@ const browser: BatchApi = {
   failures: async () => state.batch?.items.filter(item => item.status === 'failed').map(item => ({ path: item.path, name: item.name, error: item.error!, log: `${item.error}\n\nheif-dec: Unsupported feature: Unsupported codec (4.3000)` })) ?? [],
   reveal: unavailable,
   chooseFolder: async () => 'C:\\Users\\You\\Pictures\\Optimised',
+  confirmAdd: unavailable, cancelAdd: unavailable, reopen: unavailable,
   clear: async () => update({ ...state, files, batch: undefined }),
   close: async () => {},
 };

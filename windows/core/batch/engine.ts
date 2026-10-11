@@ -115,6 +115,9 @@ export class Batch extends EventEmitter {
   private changed() { this.emit('change'); }
   private get workDir() { return path.join(this.backup.dir, 'work'); }
 
+  /** Whether the batch still has originals to give back: it is over, its backups are there and a result replaced something. */
+  get revertable() { return (this.phase === 'finished' || this.phase === 'cancelled') && !this.backupsDeleted && this.items.some(item => item.status === 'done' && !item.unchanged); }
+
   snapshot(): BatchSnapshot { return { id: this.id, phase: this.phase, items: this.items.map(item => ({ ...item })), backups: this.backup.dir, backupsDeleted: this.backupsDeleted }; }
   /** The files that failed, with the tool output behind each failure (the failures sheet). */
   failures(): BatchFailure[] { return this.items.filter(item => item.status === 'failed').map(item => ({ path: item.path, name: item.name, error: item.error ?? 'Failed', ...(this.logs.has(item) ? { log: this.logs.get(item) } : {}) })); }

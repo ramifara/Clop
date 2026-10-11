@@ -12,6 +12,7 @@ const api: BatchApi = {
   start: (files, params) => invoke('start', { files, params }),
   cancel: id => invoke('cancel', id), revert: id => invoke('revert', id), deleteBackups: id => invoke('delete-backups', id),
   failures: id => invoke('failures', id), reveal: file => invoke('reveal', file), chooseFolder: () => invoke('choose-folder'),
+  confirmAdd: () => invoke('confirm-add'), cancelAdd: () => invoke('cancel-add'), reopen: id => invoke('reopen', id),
   clear: () => invoke('clear'), close: () => invoke('close'),
 };
 contextBridge.exposeInMainWorld('clopBatch', api);
