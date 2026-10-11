@@ -54,7 +54,7 @@ test('Zed: the member lands in context_servers and every comment and trailing co
 
 test('VS Code: a tab-indented mcp.json with comments gets a stdio server under servers', async t => {
   const p = await profile(t), original = await p.place('vscode', 'vscode-mcp.json');
-  const expected = original.replace('\t"servers": {\n', `\t"servers": {\n\t\t"clop": {\n\t\t  "type": "stdio",\n\t\t  "command": ${Q},\n\t\t  "args": ["mcp", "serve"]\n\t\t},\n`);
+  const expected = original.replace('\t"servers": {\n', `\t"servers": {\n\t\t"clop": {\n\t\t\t"type": "stdio",\n\t\t\t"command": ${Q},\n\t\t\t"args": ["mcp", "serve"]\n\t\t},\n`);
   await roundTrip(p, 'vscode', original, expected);
   assert.equal(p.client('vscode-insiders').configs[0].path, path.join(p.folders.appData, 'Code - Insiders', 'User', 'mcp.json'));
 });
@@ -147,6 +147,21 @@ test('files that cannot be edited safely are refused and left alone', async t =>
     assert.equal(await readFile(file, 'utf8'), content);
   }
   assert.equal(await configState(p.client('claude-code')), 'unusable');
+});
+
+test('the entry is written in the file\'s own indent: four spaces or tabs', async t => {
+  const p = await profile(t);
+  const file = configOf(p.client('cursor')).path;
+  await mkdir(path.dirname(file), { recursive: true });
+  for (const unit of ['    ', '\t']) {
+    const before = `{\n${unit}"theme": "x",\n${unit}"mcpServers": {\n${unit}${unit}"other": { "command": "x" }\n${unit}}\n}\n`;
+    await writeFile(file, before);
+    await installClient(p.client('cursor'), SERVER);
+    const entry = [`"clop": {`, `${unit}"command": ${Q},`, `${unit}"args": ["mcp", "serve"]`, '},'].map(line => `${unit}${unit}${line}`).join('\n');
+    assert.equal(await readFile(file, 'utf8'), before.replace(`${unit}${unit}"other"`, `${entry}\n${unit}${unit}"other"`));
+    await removeClient(p.client('cursor'));
+    assert.equal(await readFile(file, 'utf8'), before);
+  }
 });
 
 test('a member whose key is written with escapes is found as the parser reads it', async t => {
