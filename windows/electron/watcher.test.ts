@@ -318,3 +318,16 @@ test('a file named in .clopignore does not keep the files of a burst cancelled',
   await until(() => state.handled.length === before + 1, 'a file of the burst was still left alone after the burst ended');
   assert.equal(state.handled.at(-1)![0], 'a.png');
 });
+
+test('files held while the helper started are told about when it stops instead', async t => {
+  let helper: 'ready' | 'starting' | 'stopped' = 'starting';
+  const { dir, state, watcher } = await setup(t, {}, { helper: () => helper });
+  await watcher.update();
+  await image(path.join(dir, 'early.png'));
+  await pause(300);
+  assert.deepEqual(state.notices, []);
+  helper = 'stopped'; watcher.resume();
+  await until(() => state.notices.length === 1, 'the held file was dropped without a word');
+  assert.match(state.notices[0], /helper is not running/);
+  assert.deepEqual(state.handled, []);
+});
