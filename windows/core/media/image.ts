@@ -138,7 +138,7 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
       Object.assign(readable, { file: sdr, decoded: true });
       meta = await decode(sdr).metadata();
     }
-    let format = opts.format ?? await defaultFormat(source as Source, readable.file, animated ? false : opts);
+    let format = opts.format ?? await defaultFormat(source as Source, readable.file, animated ? false : opts, lossless);
     // A JPEG keeps its pixels only when jpegoptim works on it as it is; edited or converted, it becomes PNG.
     if (lossless && format === 'jpeg' && (edited || source !== 'jpeg')) format = 'png';
     // x265 encodes at most 12 bits per sample, so a lossless HEIC of a 16-bit source would lose precision.
@@ -163,7 +163,8 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
       result = { file: smaller, format: 'png' };
     }
     const bytes = await size(result.file);
-    if (!edited && !converting && bytes >= originalBytes) return unchanged();
+    // Tone mapping was asked for (`convertHDRToSDR`), so an HDR original is not kept for being smaller.
+    if (!edited && !converting && !(opts.convertHDRToSDR && readable.toneMapped) && bytes >= originalBytes) return unchanged();
     let output = path.join(outputDir, `${opts.name ?? path.parse(input).name}.${result.format}`);
     if (path.resolve(output) === path.resolve(input)) output = path.join(outputDir, `${opts.name ?? path.parse(input).name}-optimised.${result.format}`);
     await retryBusy(() => rename(result.file, output));
@@ -176,8 +177,10 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
  * The format of an optimisation that did not ask for one: the Compatibility lists' target (`imageConversionTarget`, none for an
  * animation, which a still format would cut to one frame), keeping transparency. TIFF, BMP and SVG have no optimiser of their own, so they become PNG when unlisted.
  */
-async function defaultFormat(source: Source, file: string, conversion: ImageConversionSettings | false): Promise<ImageFormat> {
+async function defaultFormat(source: Source, file: string, conversion: ImageConversionSettings | false, lossless = false): Promise<ImageFormat> {
   const target = conversion ? imageConversionTarget(source, conversion) : undefined;
+  // The lossless tier changes no pixels, and lossless JPEG is PNG, which would swell a lossy WebP, AVIF, HEIC or JPEG XL several times over: those keep their format.
+  if (target === 'jpeg' && lossless && IMAGE_FORMATS.includes(source as ImageFormat)) return source as ImageFormat;
   if (target === 'jpeg') {
     const meta = await decode(file).metadata();
     return meta.hasAlpha && !(await decode(file).stats()).isOpaque ? 'png' : 'jpeg';

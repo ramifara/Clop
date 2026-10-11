@@ -71,7 +71,7 @@ function tool(name: Parameters<typeof run>[0], args: string[], dir: string, { si
  * names, since the Windows builds of libheif and libjxl open files through the ANSI code page. Returns
  * `file` itself when it needs nothing.
  */
-export async function readableImage(file: string, format: string, opts: DecodeOptions = {}): Promise<{ file: string; decoded: boolean; hdr?: Colour }> {
+export async function readableImage(file: string, format: string, opts: DecodeOptions = {}): Promise<{ file: string; decoded: boolean; hdr?: Colour; toneMapped?: boolean }> {
   const dir = path.dirname(file), name = path.basename(file), png = path.join(dir, 'decoded.png');
   let decoded = file;
   if (format === 'heic') decoded = await decodeHEIC(file, opts);
@@ -87,7 +87,7 @@ export async function readableImage(file: string, format: string, opts: DecodeOp
       if (opts.keepHDR) return { file: decoded, decoded: decoded !== file, hdr: colour };
       const sdr = path.join(dir, 'sdr.png');
       await toneMapToSDR(decoded, sdr, colour, opts.signal);
-      return { file: sdr, decoded: true };
+      return { file: sdr, decoded: true, toneMapped: true };
     }
   }
   return { file: decoded, decoded: decoded !== file };

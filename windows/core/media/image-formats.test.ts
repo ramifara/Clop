@@ -275,5 +275,18 @@ test('convertHDRToSDR makes the lossless tier tone-map an HDR photo it would oth
   assert.deepEqual([kept.unchanged, kept.format], [true, 'heic']);
   const tonemapped = await optimiseImage(heic, w.out, { compression: lossless, convertHDRToSDR: true, name: 'sdr' });
   assert.notEqual(tonemapped.unchanged, true);
-  assert.equal(tonemapped.format, 'png', 'lossless keeps the SDR pixels exactly, so a JPEG becomes a PNG');
+  assert.notEqual(tonemapped.path, heic);
+  assert.equal(tonemapped.format, 'heic', 'the lossless tier keeps the format and writes the pixels as SDR');
+});
+
+test('the lossless tier keeps a lossy WebP as a WebP instead of converting it to a PNG, but still converts what it cannot write', async t => {
+  const w = await workspace(t); if (!w) return;
+  const picture = await w.file('lossy.webp', photo(320, 240).webp({ quality: 60 }));
+  const kept = await optimiseImage(picture, w.out, { compression: lossless, name: 'a' });
+  assert.equal(kept.format, 'webp');
+  assert.ok(kept.unchanged || kept.bytes < 4 * (await stat(picture)).size, 'not several times the lossy original');
+  assert.equal((await optimiseImage(picture, w.out, { compression: at(30), name: 'b' })).format, 'jpeg', 'other tiers still convert');
+  const bmp = path.join(w.dir, 'graphic.bmp');
+  await run('ffmpeg', ['-v', 'error', '-i', await w.file('graphic.png', graphic(160, 120).png()), bmp]);
+  assert.equal((await optimiseImage(bmp, w.out, { compression: lossless, name: 'c' })).format, 'png');
 });
