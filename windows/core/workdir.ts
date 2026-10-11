@@ -174,6 +174,15 @@ export class Workdir {
     return restored;
   }
 
+  /** The backups the notes in the working directory name: the originals that are away from their path right now. */
+  private async journalled(): Promise<string[]> {
+    const dir = path.join(this.root, PLACING), backups: string[] = [];
+    for (const name of await readdir(dir).catch(() => [] as string[])) {
+      try { const { backup } = JSON.parse(await readFile(path.join(dir, name), 'utf8')) as { backup?: unknown }; if (typeof backup === 'string') backups.push(path.resolve(backup)); } catch { /* A note that cannot be read names nothing. */ }
+    }
+    return backups;
+  }
+
   /** Puts `backup` back at `original`, byte for byte, then deletes it. */
   async restore(backup: string, original: string): Promise<string> {
     await copyTo(backup, original);
@@ -195,9 +204,11 @@ export class Workdir {
 
   private async sweepAll(maxAgeMs: number, now: number) {
     let removed = 0;
-    if (!await linkAmong(this.root)) for (const dir of [this.backups, this.temp]) removed += await sweep(dir, maxAgeMs, now, this.protectedDirs);
+    // A backup a note names is the only copy of an original that is away from its path, so it stays however old it is.
+    const keep = new Set([...this.protectedDirs, ...await this.journalled()]);
+    if (!await linkAmong(this.root)) for (const dir of [this.backups, this.temp]) removed += await sweep(dir, maxAgeMs, now, keep);
     for (const dir of this.legacy) {
-      removed += await sweep(dir, maxAgeMs, now, this.protectedDirs);
+      removed += await sweep(dir, maxAgeMs, now, keep);
       await rmdir(dir).catch(() => {});
     }
     return removed;

@@ -236,6 +236,22 @@ test('repair puts back an original a placement left away from its path, from its
   assert.deepEqual(await readdir(path.join(workdir.root, 'placing')), []);
 });
 
+test('the cleaner leaves the backup a note names, so a start after a long stop can still put the original back', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-noted-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const workdir = await new Workdir(path.join(dir, 'work')).ensure();
+  const gone = path.join(dir, 'video.mp4'), spare = path.join(dir, 'spare.mp4');
+  await writeFile(gone, 'the only copy'); await writeFile(spare, 'a plain backup');
+  const backup = (await workdir.backup(gone, { move: true }))!, plain = (await workdir.backup(spare))!;
+  await workdir.journal(gone, backup);
+  // The next start comes a month later: the cleaner would take both backups were it not for the note.
+  assert.equal(await workdir.cleanup(DAY, later(30)), 1);
+  assert.equal(await exists(backup), true);
+  assert.equal(await exists(plain), false);
+  assert.deepEqual(await workdir.repair(), [gone]);
+  assert.equal(await readFile(gone, 'utf8'), 'the only copy');
+});
+
 test('a moved backup that a FAT or exFAT drive left looking old is copied afresh, so the cleaner sees it as just arrived', async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-arrival-'));
   t.after(() => rm(dir, { recursive: true, force: true }));

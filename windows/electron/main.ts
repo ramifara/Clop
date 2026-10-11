@@ -1101,8 +1101,8 @@ else {
       workdirProblem = `Clop cannot use the working directory ${settings.workdir}: ${message(error)} Using the default folder instead.`;
       return open(path.join(userData, 'work'));
     });
-    // A placement the last run never finished (a crash, a forced shutdown) gets its original back before anything else touches the folders.
-    void workdir.repair().then(files => { if (files.length) inform(`Clop put back ${files.length === 1 ? path.basename(files[0]) : `${files.length} files`} that it was replacing when it last stopped. ${files.length === 1 ? 'It is' : 'They are'} where ${files.length === 1 ? 'it was' : 'they were'}, as before.`); }, error => console.warn(`Could not check for unfinished placements: ${message(error)}`));
+    // A placement the last run never finished (a crash, a forced shutdown) gets its original back before anything else touches the folders: the cleaner starts after it.
+    await workdir.repair().then(files => { if (files.length) inform(`Clop put back ${files.length === 1 ? path.basename(files[0]) : `${files.length} files`} that it was replacing when it last stopped. ${files.length === 1 ? 'It is' : 'They are'} where ${files.length === 1 ? 'it was' : 'they were'}, as before.`); }, error => console.warn(`Could not check for unfinished placements: ${message(error)}`));
     // The running session's files stay until the next start, however short the cleanup interval is.
     const session = sessionDir = path.join(workdir.temp, `session-${Date.now()}`);
     workdir.protect(session);
