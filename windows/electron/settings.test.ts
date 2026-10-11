@@ -50,6 +50,10 @@ test('a value the setting cannot hold is refused instead of silently ignored', (
   assert.throws(() => rendererSettings({ enabledKeys: ['Not a key'] }), /enabledKeys/);
   assert.throws(() => rendererSettings({ videoEncoder: 'rm -rf' }), /videoEncoder/);
   assert.deepEqual(rendererSettings({ keyComboModifiers: ['Control', 'Alt'], enabledKeys: ['C', 'Space'] }), { keyComboModifiers: ['Control', 'Alt'], enabledKeys: ['C', 'Space'] });
+  assert.throws(() => rendererSettings({ keyComboModifiers: ['Shift'] }), /Shift alone/);
+  assert.throws(() => rendererSettings({ keyComboModifiers: [] }), /at least one/i);
+  assert.throws(() => rendererSettings({ quickResizeKeys: ['1', 'F5'] }), /F5 cannot downscale/);
+  assert.deepEqual(rendererSettings({ quickResizeKeys: ['1', '9'] }), { quickResizeKeys: ['1', '9'] });
 });
 test('the window can write only what agents may write, plus these Windows-side keys, so a new row cannot widen the IPC surface unnoticed', () => {
   const beyondAgents = RENDERER_SETTINGS.filter(key => !MCP_WRITABLE.has(key)).sort();

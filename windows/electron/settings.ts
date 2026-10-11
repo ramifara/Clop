@@ -2,6 +2,7 @@ import { SETTING_ENTRIES } from '../core/settings/entries';
 import { settingsSchema, type ClopSettings, type CompressionQuality, type SettingKey, type SettingSpec } from '../core/settings/schema';
 import type { ImageOptions } from '../src/types';
 import { parseCropSize } from './crop';
+import { shortcutProblem } from '../core/shortcuts';
 export const modes = ['balanced', 'aggressive', 'lossless'] as const;
 export const formats = ['auto', 'png', 'jpeg', 'webp', 'avif', 'gif', 'heic', 'jxl'] as const;
 export function parseOptions(value: unknown): ImageOptions {
@@ -50,5 +51,8 @@ export function rendererSettings(value: unknown): Record<string, unknown> {
   // The store ignores a value it cannot read; the window is told instead.
   const invalid = Object.entries(value).filter(([key, entry]) => (settingsSchema[key as SettingKey] as SettingSpec).parse(entry) === undefined).map(([key]) => key);
   if (invalid.length) throw new Error(`${invalid.join(', ')} ${invalid.length === 1 ? 'is not a valid value' : 'are not valid values'}.`);
+  // Shortcuts that would take over typing (Shift alone) or that nothing can press are refused here, before they are saved.
+  const problem = shortcutProblem(value);
+  if (problem) throw new Error(problem);
   return value as Record<string, unknown>;
 }
