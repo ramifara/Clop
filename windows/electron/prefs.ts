@@ -18,8 +18,8 @@ export interface PrefsHost {
   chooseFolder(title: string, defaultPath?: string): Promise<string | undefined>;
   chooseProgram(title: string): Promise<string | undefined>;
   apps(): Promise<AppEntry[]>;
-  /** Opens the pipeline editor; false when this build has none. */
-  openEditor(request: { pipeline?: string; fileType?: MediaName }): boolean | void | Promise<boolean | void>;
+  /** Opens the pipeline editor window, on its preset zones when `tab` is `zones`. */
+  openEditor(tab?: 'zones'): void | Promise<void>;
   openExternal(url: string): Promise<void>;
   version(): { name: string; platform: string };
   home: string;
@@ -160,12 +160,7 @@ export function createPrefs(host: PrefsHost) {
       case 'quiet': return quiet(request.folder, request.quiet);
       case 'editor': return editor(request.kind as MediaName, request.op);
       case 'ignore': return ignore(request.op, request.entry);
-      case 'pipeline-editor': {
-        if (request.pipeline !== undefined && (typeof request.pipeline !== 'string' || request.pipeline.length > 200)) throw new Error('Choose a pipeline to edit.');
-        if (request.fileType !== undefined) oneOf(request.fileType, KINDS, 'a file type');
-        const opened = await host.openEditor({ pipeline: request.pipeline as string | undefined, fileType: request.fileType as MediaName | undefined });
-        return opened === false ? { message: 'The pipeline editor is not part of this version yet. Create pipelines with the clop command or through an agent.' } : {};
-      }
+      case 'pipeline-editor': await host.openEditor(request.tab === undefined ? undefined : oneOf(request.tab, ['zones'] as const, 'a pipeline editor tab')); return {};
       case 'open': await host.openExternal(LINKS[oneOf(request.target, Object.keys(LINKS) as (keyof typeof LINKS)[], 'a link')]); return {};
       case 'version': return { version: host.version() };
       default: throw new Error('Unknown settings action.');

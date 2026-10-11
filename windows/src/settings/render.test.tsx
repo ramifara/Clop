@@ -78,8 +78,8 @@ test('saved pipelines are listed by type, with unreadable ones counted', () => {
   assert.match(html, /Web ready/);
   assert.match(html, /Any file/);
   assert.match(text(html), /1 saved pipeline\(s\) could not be read/);
-  assert.match(text(html), /Video New video pipeline No pipelines yet/);
-  assert.match(html, /New PDF pipeline/);
+  assert.match(text(html), /Video No pipelines yet/);
+  assert.match(html, /Open the pipeline editor/);
 });
 
 test('automation shows what runs on each source, naming a referenced saved pipeline by its own name', () => {

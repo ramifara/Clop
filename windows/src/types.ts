@@ -104,8 +104,8 @@ export type PrefsRequest =
   | { action: 'quiet'; folder: string; quiet: boolean }
   | { action: 'editor'; kind: MediaName; op: 'choose' | 'clear' }
   | { action: 'ignore'; op: 'add' | 'remove' | 'choose'; entry?: string }
-  /** Opens the pipeline editor (arrives with the editor window), on a pipeline when named. */
-  | { action: 'pipeline-editor'; pipeline?: string; fileType?: MediaName }
+  /** Opens the pipeline editor window, on its preset zones when `tab` is `zones`. */
+  | { action: 'pipeline-editor'; tab?: 'zones' }
   | { action: 'open'; target: 'releases' | 'source' | 'upstream' | 'issues' }
   | { action: 'version' };
 export interface PrefsReply {

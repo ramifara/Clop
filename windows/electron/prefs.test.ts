@@ -23,7 +23,7 @@ function harness(platform: NodeJS.Platform = process.platform, apps = [{ name: '
   const host: PrefsHost = {
     settings: () => settings, defaults: () => defaultSettings({ home, desktop: path.join(home, 'Desktop'), userData: path.join(home, 'AppData') }),
     set: async partial => { settings = parseSettings(partial, settings); }, chooseFolder: async () => picks.shift(), chooseProgram: async () => picks.shift(),
-    apps: async () => apps, openEditor: request => { opened.push(request); }, openExternal: async url => { links.push(url); }, version: () => ({ name: '1.2.3', platform: 'win32' }), home, platform,
+    apps: async () => apps, openEditor: tab => { opened.push(tab); }, openExternal: async url => { links.push(url); }, version: () => ({ name: '1.2.3', platform: 'win32' }), home, platform,
   };
   return { host, prefs: createPrefs(host), picks, opened, links, get: () => settings as ClopSettings };
 }
@@ -147,12 +147,9 @@ test('template previews are only for template settings and reasonable lengths', 
 test('the pipeline editor and external links are validated, and links are fixed', async () => {
   const h = harness();
   await h.prefs({ action: 'pipeline-editor' });
-  await h.prefs({ action: 'pipeline-editor', pipeline: 'abc', fileType: 'video' });
-  assert.deepEqual(h.opened, [{ pipeline: undefined, fileType: undefined }, { pipeline: 'abc', fileType: 'video' }]);
-  const none = createPrefs({ ...h.host, openEditor: () => false });
-  assert.match((await none({ action: 'pipeline-editor' })).message!, /not part of this version/);
-  await assert.rejects(h.prefs({ action: 'pipeline-editor', pipeline: 3 }), /Choose a pipeline/);
-  await assert.rejects(h.prefs({ action: 'pipeline-editor', fileType: 'gif' }), /file type/);
+  await h.prefs({ action: 'pipeline-editor', tab: 'zones' });
+  assert.deepEqual(h.opened, [undefined, 'zones']);
+  for (const tab of ['library', 3, null]) await assert.rejects(h.prefs({ action: 'pipeline-editor', tab }), /pipeline editor tab/, String(tab));
   await h.prefs({ action: 'open', target: 'releases' });
   assert.deepEqual(h.links, [LINKS.releases]);
   for (const target of ['https://evil.example', 'file:///C:/Windows', undefined]) await assert.rejects(h.prefs({ action: 'open', target }), /Choose a link/);

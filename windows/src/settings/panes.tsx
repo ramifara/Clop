@@ -9,9 +9,10 @@ import { useSettings } from './context';
 const KIND_TITLES: Record<MediaName, string> = { image: 'Image', video: 'Video', audio: 'Audio', pdf: 'PDF' };
 const KINDS = ['image', 'video', 'audio', 'pdf'] as const;
 
-function EditButton({ label, pipeline, fileType }: { label: string; pipeline?: string; fileType?: MediaName }) {
+/** Opens the pipeline editor window, on its preset zones when `zones`. */
+function EditButton({ label = 'Open the pipeline editor', zones = false }: { label?: string; zones?: boolean }) {
   const { prefs } = useSettings();
-  return <button className="button" onClick={() => void prefs({ action: 'pipeline-editor', pipeline, fileType })}>{label}</button>;
+  return <button className="button" onClick={() => void prefs({ action: 'pipeline-editor', ...(zones ? { tab: 'zones' as const } : {}) })}>{label}</button>;
 }
 
 /** The saved pipeline library, by the file type each pipeline is for. */
@@ -19,11 +20,11 @@ export function SavedPipelines() {
   const { settings } = useSettings();
   const pipelines = settings.savedPipelines as unknown as PipelineLike[];
   const sections: [string, MediaName | undefined][] = [...KINDS.map(kind => [KIND_TITLES[kind], kind] as [string, MediaName]), ['Any type', undefined]];
-  return <div className="pipelines">{sections.map(([title, type]) => {
+  return <div className="pipelines"><div className="buttons"><EditButton/></div>{sections.map(([title, type]) => {
     const own = pipelines.filter(pipeline => ('reason' in pipeline ? undefined : pipeline.fileType) === type && (type !== undefined || !('reason' in pipeline)));
     return <section key={title} aria-label={`${title} pipelines`}>
-      <header><strong>{title}</strong><EditButton label={type ? `New ${type === 'pdf' ? 'PDF' : type} pipeline` : 'New pipeline'} fileType={type}/></header>
-      {own.length ? <ul>{own.map((pipeline, index) => <li key={'id' in pipeline ? pipeline.id : index}><span className="name">{pipelineLabel(pipeline)}</span><code title={'rawText' in pipeline ? pipeline.rawText : undefined}>{'rawText' in pipeline ? pipeline.rawText : ''}</code>{'id' in pipeline && <EditButton label="Edit" pipeline={pipeline.id}/>}</li>)}</ul> : <small>No pipelines yet</small>}
+      <header><strong>{title}</strong></header>
+      {own.length ? <ul>{own.map((pipeline, index) => <li key={'id' in pipeline ? pipeline.id : index}><span className="name">{pipelineLabel(pipeline)}</span><code title={'rawText' in pipeline ? pipeline.rawText : undefined}>{'rawText' in pipeline ? pipeline.rawText : ''}</code></li>)}</ul> : <small>No pipelines yet</small>}
     </section>;
   })}
   {pipelines.some(pipeline => 'reason' in pipeline) && <small>{pipelines.filter(pipeline => 'reason' in pipeline).length} saved pipeline(s) could not be read by this version; they are kept as they are.</small>}</div>;
@@ -44,7 +45,7 @@ export function Automation({ kind, source }: { kind?: MediaName; source?: 'clipb
       <span className="source" title={group.source}>{kind ? sourceName(group.source) : `${KIND_TITLES[group.type]}${source ? '' : ` · ${sourceName(group.source)}`}`}</span>
       <span className="steps">{group.names.join(' → ')}</span>
     </li>)}</ul> : <small>{source ? 'Nothing runs automatically.' : 'No pipelines are attached to the clipboard or to a watched folder.'}</small>}
-    <EditButton label="Edit in the pipeline editor" fileType={kind}/>
+    <EditButton label="Edit in the pipeline editor"/>
   </div>;
 }
 
@@ -57,7 +58,7 @@ export function PresetZones() {
       <strong>{zone.reason ? 'Unreadable zone' : zone.name || 'Zone'}</strong>
       {!zone.reason && <small>{[zone.type ? KIND_TITLES[zone.type] : 'Any type', zone.pipeline ? pipelineLabel(zone.pipeline, settings.savedPipelines as unknown as PipelineLike[]) : ''].filter(Boolean).join(' · ')}</small>}
     </li>)}</ul> : <small>No preset zones yet. Click a zone to assign or create a pipeline, or add one with the clop command.</small>}
-    <EditButton label="Edit in the pipeline editor"/>
+    <EditButton label="Edit in the pipeline editor" zones/>
   </div>;
 }
 
