@@ -3,6 +3,7 @@ import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { ErrorCode, McpError, type ElicitRequestFormParams } from '@modelcontextprotocol/sdk/types.js';
+import { samePath } from '../core/fileops';
 import { VIDEO_EXTENSIONS } from '../core/media/detect';
 import { resolveHome } from '../core/template';
 import { backendOptions, type BackendOptions } from './backend';
@@ -31,6 +32,8 @@ export interface MCPOptions {
   openURL?: (url: string) => Promise<void>;
   /** How long a person gets to answer a question. `CLOP_MCP_ELICIT_TIMEOUT` seconds, else 120 s. */
   elicitTimeoutMs?: number;
+  /** The executables the server card may name as the app: this process's own, and the portable app's launcher. */
+  appExecutables?: string[];
   /** How long clop_start_server waits for the user to allow agents. */
   startWaitMs?: number;
   /** Where the commands' own stderr goes: the client's log, by default. */
@@ -179,15 +182,27 @@ function card(call: Call): Record<string, unknown> {
   try { const value = JSON.parse(readFileSync(path.join(userData(call), 'mcp.json'), 'utf8')); return value && typeof value === 'object' ? value : {}; } catch { return {}; }
 }
 
+/**
+ * The app the server card names, when it is the app this server belongs to. The card is a file in the user's data folder,
+ * so a path in it is only a hint: running whatever it names would let anything that can write there start a program.
+ */
+function cardApp(call: Call): string | undefined {
+  const app = (card(call).app as { path?: unknown } | undefined)?.path;
+  if (typeof app !== 'string' || !/\.exe$/i.test(app) || !exists(app)?.isFile()) return undefined;
+  const env = call.options.env ?? process.env;
+  const known = call.options.appExecutables ?? [process.execPath, env.PORTABLE_EXECUTABLE_FILE ?? ''].filter(Boolean);
+  return known.some(file => samePath(app, file)) ? app : undefined;
+}
+
 /** Hands `clop://mcp/<action>` to the app the card names, launching it when it is not running. */
 async function openControlURL(call: Call, action: 'start' | 'stop') {
   const url = `clop://mcp/${action}`;
   if (call.options.openURL) return call.options.openURL(url);
-  const app = (card(call).app as { path?: unknown } | undefined)?.path;
+  const app = cardApp(call);
   // The CLI runs inside the app's Electron as Node; the app itself must not.
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const [command, args, verbatim] = typeof app === 'string' && exists(app)?.isFile() ? [app, [url], false]
+  const [command, args, verbatim] = app ? [app, [url], false]
     : process.platform === 'win32' ? [process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `start "" "${url}"`], true] : [undefined, [], false];
   if (!command) throw new ClopMCPError(`Could not open ${url}: Clop's server card names no app.`);
   await new Promise<void>((resolve, reject) => {

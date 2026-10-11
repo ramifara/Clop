@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { stat, writeFile } from 'node:fs/promises';
+import { chmod, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -142,4 +142,27 @@ test('video speed-ups get frames: keep or drop written into each changeSpeed ste
   assert.equal(withFrames('changeSpeed( factor: 2 ) -> changeSpeed(factor: 0.5) -> changeSpeed()', 'keep'), 'changeSpeed( factor: 2, frames: keep ) -> changeSpeed(factor: 0.5) -> changeSpeed(frames: keep)');
   assert.equal(withFrames('changeSpeed(factor: 3, frames: keep)', 'drop'), 'changeSpeed(factor: 3, frames: keep)');
   assert.equal(speedSteps('runScript(code: "changeSpeed(factor: 2)")').length, 0, 'quoted text is never rewritten');
+});
+
+test('start and stop open only the app Clop itself runs, never a program a card names', async t => {
+  if (process.platform === 'win32') return t.skip('runs a shell script as the app');
+  const f = await folder(t);
+  const marker = (name: string) => f.file(name), script = (name: string) => `#!/bin/sh\necho "$1" > "${marker(name)}.ran"\n`;
+  const evil = f.file('evil.exe'), real = f.file('Clop for Windows.exe'), notExe = f.file('tool.sh');
+  for (const [file, name] of [[evil, 'evil'], [real, 'real'], [notExe, 'tool']] as const) { await writeFile(file, script(name)); await chmod(file, 0o755); }
+  const card = (app: string) => writeFile(path.join(f.userData, 'mcp.json'), JSON.stringify({ app: { path: app } }));
+  const ran = (name: string) => readFile(`${marker(name)}.ran`, 'utf8').then(text => text.trim(), () => undefined);
+  const { call } = await connect(t, f, { extra: { openURL: undefined, appExecutables: [real, notExe] } });
+  await card(evil);
+  const refused = await call('clop_stop_server');
+  assert.equal(refused.error, true);
+  assert.match(refused.text, /names no app/);
+  await card(notExe);
+  assert.equal((await call('clop_stop_server')).error, true, 'an app has to be an .exe');
+  await card(real);
+  assert.equal((await call('clop_stop_server')).error, false);
+  for (let i = 0; i < 50 && !await ran('real'); i++) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(await ran('real'), 'clop://mcp/stop');
+  assert.equal(await ran('evil'), undefined, 'the card cannot make Clop start a program');
+  assert.equal(await ran('tool'), undefined);
 });
