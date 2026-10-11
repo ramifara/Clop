@@ -247,6 +247,15 @@ test('pipelines are chosen for the kind a file turns out to be, not by its name'
   const id = await engine.importBuffer(await sampleImage(), 'download.bin', 'drop', balanced, { late: late as never });
   assert.deepEqual([kinds, ran, staged], [['image'], ['image'], [id]]);
 });
+test('a result that a pipeline deleted is not marked ready', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine, dir } = f, gone = path.join(dir, 'deleted.png');
+  const automation = { skipOptimisation: false, fallback: false, run: async () => ({ file: gone, anyRan: true, warnings: [] }) };
+  const id = await engine.importBuffer(await sampleImage(), 'shot.png', 'clipboard', balanced, { automation });
+  assert.equal(engine.get(id).result.status, 'error');
+  assert.match(engine.get(id).result.error ?? '', /deleted/);
+  assert.throws(() => engine.output(id), /Wait for this result/);
+});
 test('names an imported file as asked and reports files it cannot read', async t => {
   const f = await fixture(t); if (!f) return;
   const { engine, dir } = f;

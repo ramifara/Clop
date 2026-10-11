@@ -331,6 +331,11 @@ export class ItemEngine extends EventEmitter {
         if (media?.kind === 'video') Object.assign(r, { width: media.width, height: media.height });
         if (media?.durationMs) r.durationMs = media.durationMs;
       }
+    } else if (outcome.anyRan) {
+      // The pipelines ended on a file that is gone (a final `delete`): there is no result to copy, drag or reveal.
+      Object.assign(r, { status: 'error', error: 'A pipeline deleted this file, so there is no result to show.', progress: undefined, notes: outcome.warnings.length ? outcome.warnings : undefined });
+      e.shown = true; this.changed();
+      return;
     } else if (fresh) {
       // Nothing ran and nothing was optimised: the card shows the original as it is.
       Object.assign(r, { format: e.inputFormat, outputBytes: r.originalBytes, unchanged: true });
