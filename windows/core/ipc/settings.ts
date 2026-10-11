@@ -22,12 +22,15 @@ export interface SettingsAccess {
   update<T>(change: (current: ClopSettings) => { patch?: unknown; result: T }): Promise<{ settings: ClopSettings; result: T }>;
 }
 
-/** Switches only the user may flip: an agent that could turn them on would need no permission at all. */
-const USER_ONLY: readonly SettingKey[] = ['mcpEnabled', 'mcpAllowScriptSteps'];
+/**
+ * Switches only the user may flip: an agent that could turn on the MCP ones would need no permission at all, and one that
+ * could hide the tray icon or start Clop at login could keep working out of the user's sight.
+ */
+const USER_ONLY: readonly SettingKey[] = ['mcpEnabled', 'mcpAllowScriptSteps', 'showMenubarIcon', 'launchAtLogin'];
 /**
  * What an agent may change with `set`: the keys of the macOS bridge's registry (`MCPSettingsBridge.keys` in
  * Clop/MCPSettings.swift) that Windows uses, plus the Windows-only display switches. macOS also lets an agent write
- * `mcpAllowScriptSteps`; here it is the user's alone, since it is the very permission script steps need.
+ * `mcpAllowScriptSteps` and `showMenubarIcon`; here those and the Windows-only `launchAtLogin` are the user's alone (`USER_ONLY`).
  */
 export const MCP_WRITABLE: ReadonlySet<SettingKey> = new Set<SettingKey>([
   'optimisedImageBehaviour', 'optimisedVideoBehaviour', 'optimisedAudioBehaviour', 'optimisedPDFBehaviour', 'convertedImageBehaviour', 'convertedVideoBehaviour', 'convertedAudioBehaviour',
@@ -45,9 +48,9 @@ export const MCP_WRITABLE: ReadonlySet<SettingKey> = new Set<SettingKey>([
   'imageFormatsToSkip', 'formatsToConvertToJPEG', 'formatsToConvertToPNG', 'enableAutomaticAudioOptimisations', 'minAudioSizeKB', 'maxAudioSizeMB', 'maxAudioFileCount',
   'sameFolderNameTemplateAudio', 'specificFolderNameTemplateAudio', 'convertedSameFolderNameTemplateAudio', 'convertedSpecificFolderNameTemplateAudio', 'audioCompression', 'formatsToConvertToAAC',
   'formatsToConvertToMP3', 'enableAutomaticPDFOptimisations', 'pdfDPI', 'minPDFSizeKB', 'maxPDFSizeMB', 'maxPDFFileCount', 'sameFolderNameTemplatePDF', 'specificFolderNameTemplatePDF', 'workdir',
-  'showMenubarIcon', 'allowClopToAppearInScreenshots', 'pauseAutomaticOptimisations', 'floatingResultActions', 'compactResultActions',
+  'allowClopToAppearInScreenshots', 'pauseAutomaticOptimisations', 'floatingResultActions', 'compactResultActions',
   // Windows only.
-  'keepDropZoneVisible', 'floatingResultsAlwaysOnTop', 'launchAtLogin', 'defaultImageFormat', 'persistDebugLogs',
+  'keepDropZoneVisible', 'floatingResultsAlwaysOnTop', 'defaultImageFormat', 'persistDebugLogs',
 ]);
 /** Programs Clop starts ("Edit with"). On macOS they are writable like any setting; an exe path runs anything, so here an agent needs the script permission for them. */
 const PROGRAM_KEYS: readonly SettingKey[] = ['editorAppImage', 'editorAppVideo', 'editorAppPDF', 'editorAppAudio'];

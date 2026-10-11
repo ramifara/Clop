@@ -132,6 +132,10 @@ test('agents write only the keys the macOS bridge lists, and never plant script 
   assert.match((await mcp({ action: 'set', key: 'editorAppImage', value: 'C:\\evil.exe' })).error!, /names a program/);
   assert.equal((await mcp({ action: 'set', key: 'imageCompression', value: '70' })).ok, true);
   assert.equal(MCP_WRITABLE.has('mcpAllowScriptSteps'), false);
+  for (const key of ['showMenubarIcon', 'launchAtLogin']) {
+    assert.match((await mcp({ action: 'set', key, value: 'false' })).error!, new RegExp(`${key} can only be changed by the user, in Clop Settings\\.`), key);
+    assert.match((await mcp({ action: 'update', values: { [key]: true } })).error!, /can only be changed by the user/, key);
+  }
 
   const pipeline = (id: string, text: string) => ({ id, name: id, steps: parseSteps(text), skipOptimisation: true, hideResult: false });
   const userScript = pipeline('USER', 'runScript(code: "echo mine")');
