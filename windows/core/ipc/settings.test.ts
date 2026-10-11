@@ -47,6 +47,15 @@ test('values are parsed by type, with the words macOS accepts', () => {
   assert.match((parseSettingValue('savedCropSizes', '{', s) as { error: string }).error, /takes JSON/);
 });
 
+test('a list with a comma in an item reads back as a JSON array that writes back unchanged', () => {
+  const s = defaultSettings(), dirs = ['C:\\Photos, 2026', 'D:\\Shots'];
+  const text = formatSettingValue('imageDirs', dirs);
+  assert.equal(text, JSON.stringify(dirs));
+  assert.deepEqual(parseSettingValue('imageDirs', text, s), { value: dirs });
+  assert.equal(formatSettingValue('imageDirs', ['~/Desktop', '~/Downloads']), '~/Desktop, ~/Downloads', 'plain lists print as before');
+  assert.deepEqual(parseSettingValue('imageDirs', '[not json, ~/a', s), { value: ['[not json', '~/a'] });
+});
+
 test('the schema narrows to the words asked for, best matches first', () => {
   assert.deepEqual(matchSettings('strip metadata').slice(0, 1), ['stripMetadata']);
   assert.ok(matchSettings('where optimised videos are saved').includes('optimisedVideoBehaviour'));

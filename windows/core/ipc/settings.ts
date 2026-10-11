@@ -87,9 +87,16 @@ export function formatSettingValue(key: SettingKey, value: unknown): string {
   const s = spec(key);
   if (isCompression(key)) { const c = value as CompressionQuality; return `${c.tier}:${c.factor}`; }
   if (value === null || value === undefined) return '';
-  if (s.type === 'list') return (value as string[]).join(', ');
+  // Commas are valid in paths, so a list that holds one is printed as the JSON array `set` also reads.
+  if (s.type === 'list') { const items = value as string[]; return items.some(item => item.includes(',')) || items[0]?.startsWith('[') ? JSON.stringify(items) : items.join(', '); }
   if (s.type === 'object') return JSON.stringify(value);
   return String(value);
+}
+
+/** A list written as a JSON array of strings, which can hold the commas that the plain form splits on. */
+function jsonList(text: string): string[] | undefined {
+  if (!text.startsWith('[')) return undefined;
+  try { const value: unknown = JSON.parse(text); return Array.isArray(value) && value.every(item => typeof item === 'string') ? value.map(item => item.trim()).filter(Boolean) : undefined; } catch { return undefined; }
 }
 
 /** Parses the string form of `key`. Returns the stored value, or a sentence saying what the key takes. */
@@ -120,7 +127,7 @@ export function parseSettingValue(key: SettingKey, raw: string, current: ClopSet
       return match === undefined ? { error: `${key} takes one of: ${s.values?.join(', ')}. Got '${raw}'` } : checked(match, '');
     }
     case 'list': {
-      const items = raw.split(',').map(item => item.trim()).filter(Boolean);
+      const items = jsonList(trimmed) ?? raw.split(',').map(item => item.trim()).filter(Boolean);
       const unknown = s.values ? items.filter(item => !s.values!.includes(item)) : [];
       if (unknown.length) return { error: `${key} does not know ${unknown.join(', ')}. It takes any of: ${s.values!.join(', ')}` };
       return checked(items, `${key} does not accept ${raw}.`);
