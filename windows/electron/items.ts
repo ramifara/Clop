@@ -34,8 +34,11 @@ export interface ItemPlacement {
   /** Puts the original back; resolves with where it now is, or undefined when the shelf's own copy is the original. */
   restore(): Promise<string | undefined>;
 }
-/** What the attached pipelines did to a file (`runPipelines` in core/pipeline/triggers.ts). */
-export type ItemPipelineOutcome = Pick<PipelinesOutcome, 'file' | 'anyRan' | 'warnings'>;
+/**
+ * What the attached pipelines did to a file (`runPipelines` in core/pipeline/triggers.ts). `started` is the file they started
+ * from: when it is outside the shelf (a watched or placed file), restoring cannot undo what they did to it.
+ */
+export type ItemPipelineOutcome = Pick<PipelinesOutcome, 'file' | 'anyRan' | 'warnings'> & { started?: string };
 /** The pipelines attached to where a file came from, which run once, after or instead of its optimisation. */
 export interface ItemAutomation {
   /** Every pipeline skips the plain optimisation, so they start from the original. */
@@ -56,6 +59,8 @@ interface Entry {
   placement?: ItemPlacement; placedPath?: string; jobs: Set<AbortController>; automation?: ItemAutomation;
   /** A result is being placed outside the shelf: dismissing it now must keep what is needed to restore it. */
   placing?: boolean;
+  /** A pipeline changed a file outside the shelf, which restoring cannot give back. */
+  changedOutside?: string;
 }
 /** `placement` puts each result back where the file came from; `staged` hears the result's id as soon as it is in the shelf; `automation` runs attached pipelines. */
 export interface ImportExtra { placement?: ItemPlacement; staged?: (id: string) => void; automation?: ItemAutomation }
@@ -181,7 +186,7 @@ export class ItemEngine extends EventEmitter {
       e.automation = undefined;
       if (automation?.skipOptimisation) {
         const outcome = await automation.run(this.pipelineRun(e, undefined, signal));
-        if (outcome.anyRan || !automation.fallback) return await this.finishPipelines(id, e, outcome, signal, options);
+        if (outcome.anyRan || !automation.fallback) return await this.finishPipelines(id, e, outcome, signal, options, { fresh: true });
         r.notes = outcome.warnings.length ? outcome.warnings : undefined;
       }
       let output: MediaOutput, width = r.originalWidth, height = r.originalHeight;
@@ -198,6 +203,8 @@ export class ItemEngine extends EventEmitter {
       // PDF.swift gives an optimised PDF its source's dates; the audio optimiser does it itself, and macOS leaves video dates alone.
       // Before placing, so a placed copy keeps them too.
       if (r.kind === 'pdf' && !output.unchanged && this.settings().preserveDates) { const { atime, mtime } = await stat(e.originalPath); await utimes(output.path, atime, mtime); }
+      // A file a pipeline left earlier is no longer the result once the card re-optimises.
+      e.placedPath = undefined;
       if (e.placement) {
         // Once placing starts it finishes, even if the item is dismissed meanwhile, and the item stays restorable.
         e.placing = true;
@@ -209,9 +216,11 @@ export class ItemEngine extends EventEmitter {
       for (const warning of output.warnings ?? []) console.warn(warning);
       // Video, PDF and audio previews show the content, which optimising leaves as it was.
       const preview = r.kind !== 'image' || output.unchanged ? r.originalPreview : await imageThumbnail(output.path, DECODED.has(output.format));
-      Object.assign(r, { status: 'ready', options, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes, preview,
+      // With pipelines still to run, the result is not ready yet: copying or dragging it now would hand out the file before them.
+      const following = automation && !automation.skipOptimisation;
+      Object.assign(r, { status: following ? 'processing' : 'ready', options, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes, preview,
         durationMs: output.durationMs ?? r.durationMs, pages: output.pages ?? r.pages, progress: undefined, unchanged: !!output.unchanged, restored: false });
-      if (automation && !automation.skipOptimisation) {
+      if (following) {
         const outcome = await automation.run(this.pipelineRun(e, e.placedPath ?? (output.unchanged ? undefined : output.path), signal));
         return await this.finishPipelines(id, e, outcome, signal, options);
       }
@@ -243,16 +252,21 @@ export class ItemEngine extends EventEmitter {
   }
   /**
    * Shows what the pipelines left: the card follows their final file (its size, format and preview), and lists their warnings
-   * and failures. Pipelines that did nothing leave the card as it was, or show the original unchanged when nothing ran before them.
+   * and failures. Pipelines that did nothing leave the card as it was, or, when they ran on a `fresh` item that nothing optimised,
+   * show the original unchanged. A final file of another kind (a video made a GIF, a PDF page made an image) becomes the item's
+   * new original, so the card's actions work on it.
    */
-  private async finishPipelines(id: string, e: Entry, outcome: ItemPipelineOutcome, signal: AbortSignal, options: ImageOptions) {
+  private async finishPipelines(id: string, e: Entry, outcome: ItemPipelineOutcome, signal: AbortSignal, options: ImageOptions, { fresh = false } = {}) {
     const r = e.result;
     signal.throwIfAborted();
+    // Pipelines that replaced optimisation work on the user's file where it is, with no placement to undo them: its original is in the backups.
+    if (fresh && outcome.anyRan && outcome.started && !within(e.directory, outcome.started)) e.changedOutside ??= outcome.started;
     const info = outcome.anyRan ? await stat(outcome.file).catch(() => undefined) : undefined;
     if (info?.isFile()) {
       const kind = await detectKind(outcome.file, { signal }).catch(() => undefined) ?? r.kind;
       e.placedPath = outcome.file;
       e.revision++;
+      if (kind !== r.kind) await this.rebase(e, outcome.file, kind, signal);
       Object.assign(r, { format: path.extname(outcome.file).slice(1).toLowerCase() || r.format, outputBytes: info.size, unchanged: false, restored: false });
       if (kind === 'image') {
         // The preview is made from a copy in the item's folder, so nothing is ever written beside a file in the user's folders.
@@ -267,13 +281,23 @@ export class ItemEngine extends EventEmitter {
         if (media?.kind === 'video') Object.assign(r, { width: media.width, height: media.height });
         if (media?.durationMs) r.durationMs = media.durationMs;
       }
-    } else if (r.status === 'processing' && !e.shown) {
+    } else if (fresh) {
       // Nothing ran and nothing was optimised: the card shows the original as it is.
       Object.assign(r, { format: e.inputFormat, outputBytes: r.originalBytes, unchanged: true });
     }
     Object.assign(r, { status: 'ready', options, progress: undefined, notes: outcome.warnings.length ? outcome.warnings : undefined });
     e.shown = true; this.changed();
     if (this.entries.get(id) === e) this.emit('ready', id);
+  }
+  /** Makes a pipeline's file of another kind the item's original: a copy in the shelf, with its own size and preview. Restoring then gives back that file. */
+  private async rebase(e: Entry, file: string, kind: MediaKind, signal: AbortSignal) {
+    const dir = path.join(e.directory, `original-${e.revision}`);
+    await mkdir(dir, { recursive: true });
+    const original = path.join(dir, path.basename(file)), r = e.result;
+    await copyFile(file, original);
+    const staged = kind === 'image' ? await this.stageImage(original, dir, r) : await this.stageMedia(original, dir, { ...r, kind });
+    Object.assign(r, { ...staged.result, kind, status: 'processing' });
+    Object.assign(e, { originalPath: staged.originalPath, outputPath: staged.originalPath, inputFormat: staged.inputFormat, placement: undefined });
   }
   /** "Run pipeline…" from the card: runs on the current result, or on a fresh copy of the original when there is none. */
   runPipeline(id: string, run: (input: ItemPipelineRun) => Promise<ItemPipelineOutcome>) {
@@ -305,6 +329,7 @@ export class ItemEngine extends EventEmitter {
   }
   restore(id: string) { return this.schedule(this.kindOf(id), async () => {
     const e = this.get(id);
+    if (e.changedOutside) throw new Error(`A pipeline changed ${path.basename(e.changedOutside)}, so Clop leaves it as it is. Its original is in the backups.`);
     // A pipeline's file outside the shelf is no longer the result once the original is back.
     e.placedPath = e.placement ? await e.placement.restore() : undefined;
     e.outputPath = e.originalPath;
@@ -348,6 +373,11 @@ export function mediaExtension(info: VideoInfo | AudioInfo | undefined) {
   const names = info.format.split(','), has = (name: string) => names.includes(name);
   if (info.kind === 'video') return has('mp4') ? 'mp4' : has('webm') && /^(vp8|vp9|av1)$/.test(info.codec ?? '') ? 'webm' : has('matroska') ? 'mkv' : has('avi') ? 'avi' : has('mpeg') ? 'mpg' : 'mp4';
   return has('mp4') ? 'm4a' : has('mp3') ? 'mp3' : has('ogg') ? (info.codec === 'opus' ? 'opus' : 'ogg') : has('flac') ? 'flac' : has('wav') ? 'wav' : has('aiff') ? 'aiff' : has('aac') ? 'aac' : 'm4a';
+}
+/** Whether `file` is inside `dir`. */
+function within(dir: string, file: string) {
+  const relative = path.relative(dir, file);
+  return !!relative && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 /** Removes an item's folder. One still locked (by Defender, say) is left to the working directory's cleaner. */
 const discard = (entry: Entry) => rm(entry.directory, { recursive: true, force: true, maxRetries: 3 }).catch(() => {});

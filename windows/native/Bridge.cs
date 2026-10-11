@@ -30,13 +30,15 @@ namespace ClopWindows {
     static void OpenInPackagedApp(string aumid, string file) {
       Guid shellItem = new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), itemArray = new Guid("b63ea76d-1f85-456f-a19c-48159efa858b");
       IntPtr item = IntPtr.Zero, array = IntPtr.Zero;
+      object manager = null;
       try {
         Marshal.ThrowExceptionForHR(SHCreateItemFromParsingName(file, IntPtr.Zero, ref shellItem, out item));
         Marshal.ThrowExceptionForHR(SHCreateShellItemArrayFromShellItem(item, ref itemArray, out array));
-        var manager = (IApplicationActivationManager)new ApplicationActivationManager();
+        manager = new ApplicationActivationManager();
         uint process;
-        Marshal.ThrowExceptionForHR(manager.ActivateForFile(aumid, array, "open", out process));
+        Marshal.ThrowExceptionForHR(((IApplicationActivationManager)manager).ActivateForFile(aumid, array, "open", out process));
       } finally {
+        if (manager != null) Marshal.ReleaseComObject(manager);
         if (array != IntPtr.Zero) Marshal.Release(array);
         if (item != IntPtr.Zero) Marshal.Release(item);
       }
@@ -347,8 +349,16 @@ namespace ClopWindows {
         }
         if (type == "open-with") {
           // The app process validates both: an AUMID from the Start menu's app list, and an absolute path to an existing file.
-          OpenInPackagedApp(Convert.ToString(command["aumid"]), Convert.ToString(command["file"]));
-          Emit(new { type = "reply", id, ok = true }); return;
+          // Activating a packaged app can take seconds on a cold start, and this thread pumps the mouse hook, so it runs on a
+          // thread of its own, STA for the shell's COM objects, as `apps` does.
+          string request = id, aumid = Convert.ToString(command["aumid"]), file = Convert.ToString(command["file"]);
+          var opener = new Thread(() => {
+            var json = new JavaScriptSerializer();
+            try { OpenInPackagedApp(aumid, file); EmitFrom(json, new { type = "reply", id = request, ok = true }); }
+            catch (Exception error) { EmitFrom(json, new { type = "reply", id = request, ok = false, error = error.Message }); }
+          });
+          opener.IsBackground = true; opener.SetApartmentState(ApartmentState.STA); opener.Start();
+          return;
         }
         throw new InvalidOperationException("Unknown Windows bridge command.");
       } catch (Exception error) { Emit(new { type = "reply", id, ok = false, error = error.Message }); }

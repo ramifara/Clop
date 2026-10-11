@@ -52,20 +52,22 @@ export interface AutomationOptions {
   source?: string;
   /** Hears the outcome before the card is ready, to hide it (`hideResult`) or add forked results. */
   done?: (outcome: PipelinesOutcome) => void;
+  /** Optimise first even when every pipeline would skip it: macOS skips it for copied images only, never for copied videos, PDFs or audio. */
+  alwaysOptimise?: boolean;
 }
 /**
  * The automation for a file from a source with attached `pipelines`, or undefined when there are none: they run after the usual
  * optimisation, or instead of it when every one skips it (`skipsPreOptimisation`).
  */
-export function attachedAutomation(pipelines: readonly Pipeline[], { host, context, fallback, source, done }: AutomationOptions): ItemAutomation | undefined {
+export function attachedAutomation(pipelines: readonly Pipeline[], { host, context, fallback, source, done, alwaysOptimise = false }: AutomationOptions): ItemAutomation | undefined {
   if (!pipelines.length) return;
   return {
-    skipOptimisation: pipelinesSkipOptimisation(pipelines), fallback,
+    skipOptimisation: !alwaysOptimise && pipelinesSkipOptimisation(pipelines), fallback,
     run: async (input: ItemPipelineRun): Promise<ItemPipelineOutcome> => {
       const file = input.optimised ?? source ?? await input.fresh();
       const outcome = await runForApp(host, pipelines, file, context, input.signal);
       done?.(outcome);
-      return { file: outcome.file, anyRan: outcome.anyRan, warnings: outcomeNotes(outcome) };
+      return { file: outcome.file, anyRan: outcome.anyRan, warnings: outcomeNotes(outcome), started: file };
     },
   };
 }
@@ -118,29 +120,39 @@ const exeName = (file: string) => path.win32.basename(file).replace(/\.exe$/i, '
 export async function resolveApp(app: string, lookup: AppLookup): Promise<string> {
   const wanted = app.trim().replace(/^"(.*)"$/, '$1');
   if (!wanted) throw new Error('openWith needs the name of an app.');
+  // Whatever names a program, it is never run from a watched folder: a file arriving there could be loaded into it. AUMIDs are not paths.
+  const checked = (target: string) => {
+    const inside = isAumid(target) ? undefined : lookup.watched.find(dir => { const relative = path.win32.relative(dir.toLowerCase(), target.toLowerCase()); return !!relative && !relative.startsWith('..') && !path.win32.isAbsolute(relative); });
+    if (inside) throw new Error(`${target} is inside the watched folder ${inside}, so Clop does not run it.`);
+    return target;
+  };
   const apps = await lookup.apps();
   const known = apps.find(entry => same(entry.path, wanted)) ?? apps.find(entry => same(entry.name, wanted))
-    ?? apps.find(entry => !entry.path.includes('!') && same(exeName(entry.path), exeName(wanted)) && !/[\\/]/.test(wanted));
-  if (known) return known.path;
+    ?? apps.find(entry => !isAumid(entry.path) && same(exeName(entry.path), exeName(wanted)) && !/[\\/]/.test(wanted));
+  if (known) return checked(known.path);
   if (/^[\w .+-]+$/.test(exeName(wanted)) && !/[\\/]/.test(wanted)) {
     const registered = await lookup.appPath(`${exeName(wanted)}.exe`);
-    if (registered && await lookup.isFile(registered)) return registered;
+    if (registered && await lookup.isFile(registered)) return checked(registered);
   }
   if (path.win32.isAbsolute(wanted) && /\.exe$/i.test(wanted)) {
     if (!lookup.allowExe) throw new Error(`This pipeline cannot open programs by path: ${wanted}. Use an app's name from the Start menu.`);
-    const inside = lookup.watched.find(dir => { const relative = path.win32.relative(dir.toLowerCase(), wanted.toLowerCase()); return !!relative && !relative.startsWith('..') && !path.win32.isAbsolute(relative); });
-    if (inside) throw new Error(`${wanted} is inside the watched folder ${inside}, so Clop does not run it.`);
+    checked(wanted);
     if (await lookup.isFile(wanted)) return wanted;
   }
   throw new Error(`App '${app}' not found. Use the name of an app in the Start menu, or one you have running.`);
 }
+/** A packaged app's ID (`Publisher.App_hash!App`), as opposed to a program's path. */
+export const isAumid = (target: string) => !path.win32.isAbsolute(target);
 /** Watched folders of every kind, expanded. */
 export const watchedFolders = (settings: Pick<ClopSettings, 'imageDirs' | 'videoDirs' | 'pdfDirs' | 'audioDirs'>, home?: string) =>
   [...settings.imageDirs, ...settings.videoDirs, ...settings.pdfDirs, ...settings.audioDirs].map(dir => path.resolve(expandHome(dir, home)));
 
-/** The App Paths default value in `reg query` output, with its environment variables expanded. */
+/**
+ * The App Paths default value in `reg query … /ve` output, with its environment variables expanded. The value's own name is
+ * localised (`(Default)`, `(Standard)`), so the line is found by its type.
+ */
 export function appPathFromReg(output: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const match = /^\s*\(Default\)\s+REG_(?:EXPAND_)?SZ\s+(.+?)\s*$/m.exec(output);
+  const match = /\s{2,}REG_(?:EXPAND_)?SZ\s{2,}(.+?)\s*$/m.exec(output);
   if (!match) return;
   const value = match[1].replace(/^"(.*)"$/, '$1').replace(/%([^%]+)%/g, (whole, name: string) => Object.entries(env).find(([key]) => same(key, name))?.[1] ?? whole);
   return path.win32.isAbsolute(value) ? value : undefined;
