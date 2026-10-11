@@ -81,14 +81,15 @@ test('a dump holds the app facts, redacted settings, the tool report and the log
   await mkdir(logs);
   await writeFile(path.join(logs, 'clop.log'), '2026-10-11T10:00:00.000Z log started\n');
   const facts = { version: '0.2.0', electron: '44.7.0', node: '24.1.0', platform: 'win32', arch: 'x64', packaged: true, portable: false, workdir: 'C:\\work', created: new Date(Date.UTC(2026, 9, 11)), settingsFile: 'C:\\settings.json' };
-  const input = { info: appInfo(facts), settings: { workdir: 'C:\\work', proxyPassword: 'hunter2', nested: { accessToken: 't' } }, binaries: binariesReport([{ name: 'ffmpeg', path: 'C:\\bin\\ffmpeg.exe' }, { name: 'gs' }]), logs };
+  const input = { info: appInfo(facts), settings: { workdir: 'C:\\work', proxyPassword: 'hunter2', nested: { accessToken: 't' } }, binaries: binariesReport([{ name: 'ffmpeg', path: 'C:\\bin\\ffmpeg.exe' }, { name: 'gs' }]), logs, recent: '2026-10-11T10:00:01.000Z warn the latest line\n' };
   const out = path.join(dir, 'dumps');
   let latest = '';
   for (let day = 1; day <= 7; day++) latest = await writeDump(out, input, new Date(Date.UTC(2026, 9, day, 8)));
   assert.equal(path.basename(latest), dumpName(new Date(Date.UTC(2026, 9, 7, 8))));
   assert.deepEqual((await readdir(out)).sort(), [3, 4, 5, 6, 7].map(day => dumpName(new Date(Date.UTC(2026, 9, day, 8)))));
   const files = unzip(await readFile(latest));
-  assert.deepEqual([...files.keys()], ['app-info.txt', 'settings.json', 'binaries.txt', 'logs/clop.log']);
+  assert.deepEqual([...files.keys()], ['app-info.txt', 'settings.json', 'binaries.txt', 'recent-console.log', 'logs/clop.log']);
+  assert.equal(files.get('recent-console.log')!.toString(), '2026-10-11T10:00:01.000Z warn the latest line\n');
   assert.match(files.get('app-info.txt')!.toString(), /^Clop for Windows v0\.2\.0\nsystem: win32 \(win32 x64\)\nelectron: 44\.7\.0/);
   assert.deepEqual(JSON.parse(files.get('settings.json')!.toString()), { workdir: 'C:\\work', proxyPassword: REDACTED, nested: { accessToken: REDACTED } });
   assert.doesNotMatch(files.get('settings.json')!.toString(), /hunter2/);

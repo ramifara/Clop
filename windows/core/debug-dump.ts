@@ -74,11 +74,14 @@ export interface DumpInput {
   binaries: string;
   /** The folder with the app's log files. */
   logs: string;
+  /** The latest console lines held in memory, which exist even when the log file is off. */
+  recent?: string;
 }
-export const dumpEntries = async ({ info, settings, binaries, logs }: DumpInput): Promise<ZipEntry[]> => [
+export const dumpEntries = async ({ info, settings, binaries, logs, recent }: DumpInput): Promise<ZipEntry[]> => [
   { name: 'app-info.txt', data: Buffer.from(info, 'utf8') },
   { name: 'settings.json', data: Buffer.from(`${JSON.stringify(redact(settings), null, 2)}\n`, 'utf8') },
   { name: 'binaries.txt', data: Buffer.from(binaries, 'utf8') },
+  ...recent ? [{ name: 'recent-console.log', data: Buffer.from(recent, 'utf8') }] : [],
   ...await readLogs(logs),
 ];
 

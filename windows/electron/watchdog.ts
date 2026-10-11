@@ -20,7 +20,7 @@ export interface WatchdogOptions {
 
 export class Watchdog {
   private readonly interval: number; private readonly lag: number; private readonly cooldown: number; private readonly logEvery: number;
-  private hung = new Map<string, { since: number; offered: boolean }>();
+  private hung = new Map<string, { since: number; offered: boolean; label: string }>();
   private waited = new Map<string, number>();
   private lastSample: number | undefined;
   private lastLag = -Infinity;
@@ -28,12 +28,12 @@ export class Watchdog {
     this.interval = intervalMs; this.lag = lagMs; this.cooldown = cooldownMs; this.logEvery = logEveryMs;
   }
 
-  /** The window `id` stopped responding. Offers a reload unless it is already offered, or the user chose to wait a moment ago. */
-  unresponsive(id: string, at: number): WatchdogAction[] {
+  /** The window `id` (called `label` in messages) stopped responding. Offers a reload unless it is already offered, or the user chose to wait a moment ago. */
+  unresponsive(id: string, at: number, label = id): WatchdogAction[] {
     if (this.hung.has(id)) return [];
     const waitedAt = this.waited.get(id), offer = waitedAt === undefined || at - waitedAt >= this.cooldown;
-    this.hung.set(id, { since: at, offered: offer });
-    return [{ kind: 'log', level: 'warn', text: `The ${id} window is not responding.` }, ...(offer ? [{ kind: 'offer-reload' as const, window: id }] : [])];
+    this.hung.set(id, { since: at, offered: offer, label });
+    return [{ kind: 'log', level: 'warn', text: `The ${label} window is not responding.` }, ...(offer ? [{ kind: 'offer-reload' as const, window: id }] : [])];
   }
 
   /** The window `id` responds again: the offer, if still open, is withdrawn. */
@@ -41,7 +41,7 @@ export class Watchdog {
     const hang = this.hung.get(id);
     if (!hang) return [];
     this.hung.delete(id);
-    return [{ kind: 'log', level: 'info', text: `The ${id} window responds again after ${at - hang.since} ms.` }, ...(hang.offered ? [{ kind: 'withdraw-offer' as const, window: id }] : [])];
+    return [{ kind: 'log', level: 'info', text: `The ${hang.label} window responds again after ${at - hang.since} ms.` }, ...(hang.offered ? [{ kind: 'withdraw-offer' as const, window: id }] : [])];
   }
 
   /** The user answered the offer with "wait": the window is not offered again for a while. */
