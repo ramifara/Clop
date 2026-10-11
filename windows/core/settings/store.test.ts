@@ -176,6 +176,23 @@ test('a store on a file other processes write starts each change from the file a
   assert.equal((await readJson(file)).stripMetadata, false, 'the owner writes what it holds');
 });
 
+test('the app\'s store on the shared file keeps what a command saved before the app was reachable, and announces it', async t => {
+  const dir = await folder(t), file = path.join(dir, 'settings.json');
+  await writeFile(file, JSON.stringify({ stripMetadata: true }));
+  const app = new SettingsStore(file, paths, true), command = new SettingsStore(file, paths, true);
+  await app.load(); await command.load();
+  const heard: SettingKey[][] = [];
+  app.on('change', (_settings, changed) => heard.push(changed));
+  // A command that found no pipe saved a setting under the lock; the app then saves another one.
+  await command.set({ preserveDates: false });
+  await app.set({ lastAutoIncrementingNumber: 7 });
+  const stored = await readJson(file);
+  assert.deepEqual([stored.preserveDates, stored.lastAutoIncrementingNumber], [false, 7], 'the command\'s change is not written over');
+  assert.equal(app.get('preserveDates'), false);
+  assert.deepEqual(heard, [['preserveDates'], ['lastAutoIncrementingNumber']], 'the command\'s change reaches the app\'s listeners');
+  assert.deepEqual((await readdir(dir)).sort(), ['settings.json']);
+});
+
 test('stores in different processes that edit one list at the same time keep every entry, and a dead process\'s lock does not block them', async t => {
   const dir = await folder(t), file = path.join(dir, 'settings.json');
   await writeFile(file, JSON.stringify({ imageDirs: [] }));

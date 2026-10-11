@@ -18,8 +18,10 @@ export class SettingsStore extends EventEmitter<{ change: [settings: ClopSetting
   /** Set when the file exists but could not be read or moved aside; saving would destroy it. */
   private unreadable?: Error;
   /**
-   * `shared`: other processes write this file too (the headless CLI and MCP server, next to a terminal command or another server).
-   * Each change then starts from the file as it is when its turn comes, not from what was read at startup, so it keeps what they saved.
+   * `shared`: other processes write this file too (the headless CLI and MCP server, next to a terminal command or another server, and
+   * the app itself while a command falls back to the headless store before the app's pipe is up).
+   * Each change then starts from the file as it is when its turn comes, not from what was read at startup, so it keeps what they saved;
+   * keys that differ from what this store held are announced as a change.
    */
   constructor(readonly file: string, private readonly paths: Partial<DefaultPaths> = {}, private readonly shared = false) {
     super();
@@ -95,7 +97,12 @@ export class SettingsStore extends EventEmitter<{ change: [settings: ClopSetting
     let value: unknown;
     try { value = JSON.parse(text); } catch {}
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`Clop could not read its settings file ${this.file} (it is not a JSON object), so it did not save this change.`);
-    if (!isLegacySettings(value)) this.current = parseSettings(value, defaultSettings(this.paths));
+    if (isLegacySettings(value)) return;
+    // What another process saved since this store last looked is a change here too: whoever listens (the app's windows, its watchers) hears of it.
+    const previous = this.current, next = parseSettings(value, defaultSettings(this.paths));
+    const changed = SETTING_KEYS.filter(key => !isDeepStrictEqual(next[key], previous[key]));
+    this.current = next;
+    if (changed.length) this.emit('change', next, changed);
   }
 
   private async apply(partial: unknown): Promise<ClopSettings> {

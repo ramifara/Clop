@@ -1078,7 +1078,7 @@ else {
     setupWatchdog();
     Menu.setApplicationMenu(null);
     const userData = app.getPath('userData');
-    store = new SettingsStore(path.join(userData, 'settings.json'), { home: app.getPath('home'), desktop: app.getPath('desktop'), userData });
+    store = new SettingsStore(path.join(userData, 'settings.json'), { home: app.getPath('home'), desktop: app.getPath('desktop'), userData }, true);
     // Watching guards against apps that rewrite many files in its first seconds on the first launch.
     const firstLaunch = !await stat(store.file).then(() => true, () => false);
     // An unreadable settings file is left alone; the defaults are used and the reason is shown once the windows exist.
