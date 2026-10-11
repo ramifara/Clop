@@ -268,6 +268,14 @@ test('a pipeline that changes a file the optimiser left as it was cannot be rest
   assert.equal(engine.get(id).result.status, 'ready');
   await assert.rejects(engine.restore(id), /A pipeline changed watched\.jpg/);
 });
+test('an import whose folder cannot be made leaves nothing behind that Stop all would wait for', async t => {
+  const f = await fixture(t); if (!f) return;
+  const blocked = path.join(f.dir, 'not-a-folder');
+  await writeFile(blocked, 'x');
+  const engine = new ItemEngine(blocked);
+  await assert.rejects(engine.importBuffer(await sampleImage(), 'a.png', 'drop', balanced));
+  assert.equal((engine as unknown as { staging: Set<unknown> }).staging.size, 0);
+});
 test('names an imported file as asked and reports files it cannot read', async t => {
   const f = await fixture(t); if (!f) return;
   const { engine, dir } = f;

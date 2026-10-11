@@ -132,9 +132,9 @@ export class ItemEngine extends EventEmitter {
     // A long name loses the end of its stem, never its extension, which says what the file is.
     const base = path.basename(name), { name: stemPart, ext: extPart } = path.parse(base);
     const id = randomUUID(), directory = path.join(this.root, id), display = (base.length > 160 ? stemPart.slice(0, 160 - extPart.slice(0, 12).length) + extPart.slice(0, 12) : base) || 'Clipboard';
-    await mkdir(path.join(directory, 'original'), { recursive: true });
     let entry: Entry;
     try {
+      await mkdir(path.join(directory, 'original'), { recursive: true });
       // A short name keeps the session's paths well under Windows' 260 characters, which some bundled tools need.
       const { name: stem, ext } = path.parse(safeFileName(display)), staged = path.join(directory, 'original', `${stem.slice(0, 64) || 'file'}${ext.slice(0, 12)}`);
       await write(staged);
