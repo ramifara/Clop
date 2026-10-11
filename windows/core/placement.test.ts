@@ -150,6 +150,21 @@ test('sameFolder is idempotent: a file already named by the template keeps its n
   assert.equal(fresh.dest, path.join(source, 'img-optimised.png'));
 });
 
+test('an original replaced under its own name is never missing, and stays as it was when the placement fails', async t => {
+  const { env, original, bytes, produced, workdir } = await setup(t, behaviour('inPlace'));
+  // The backup is a copy while the original is still in place; the result then takes its place in one rename.
+  const present: boolean[] = [], backup = workdir.backup.bind(workdir);
+  workdir.backup = async (file, options) => { const made = await backup(file, options); present.push(await exists(original)); return made; };
+  const placed = await placeOutput(env, { produced, original, type: 'image' });
+  assert.deepEqual(present, [true], 'the original was still there when the backup was done');
+  assert.deepEqual(await readFile(placed.backup!), bytes);
+  assert.equal(placed.originalRemoved, true);
+  // A produced file that is gone fails the placement; the original is untouched, with no restore step to get wrong.
+  const failed = await setup(t, behaviour('inPlace'));
+  await assert.rejects(placeOutput(failed.env, { produced: path.join(failed.dir, 'gone.png'), original: failed.original, type: 'image' }));
+  assert.deepEqual(await readFile(failed.original), failed.bytes);
+});
+
 test('a sameFolder template that already matches the file replaces it only after keeping a backup that restores it', async t => {
   const { env, produced, source, workdir, result } = await setup(t, { ...behaviour('sameFolder'), sameFolderNameTemplateImage: '%f-%n' });
   const family = path.join(source, 'family-photo.png'), bytes = Buffer.from('the only copy of the family photo');

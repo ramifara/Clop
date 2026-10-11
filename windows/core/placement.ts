@@ -143,14 +143,16 @@ export async function planPlacement(env: PlacementEnv, args: { produced: string;
 }
 
 /**
- * Port of `executePlacement`: the file I/O. For `inPlace` the original moves into `workdir.backups`
- * first (restore it with `workdir.restore`), then `produced` is copied to the destination. The copy is
- * atomic, so an interrupted placement never leaves a half-written file. The placed file is marked optimised.
+ * Port of `executePlacement`: the file I/O. For `inPlace` the original goes into `workdir.backups` first (restore it
+ * with `workdir.restore`), then `produced` is copied to the destination. The copy is atomic, so an interrupted placement never
+ * leaves a half-written file. A result that takes the original's own path is copied into the backups and renamed over the
+ * original, so that path is never empty (and a failed placement leaves the original as it was); a result under another name
+ * moves the original away, as a conversion leaves no file under the old name. The placed file is marked optimised.
  */
 export async function executePlacement(env: PlacementEnv, plan: PlacementPlan, produced: string, original: string): Promise<PlacedOutput> {
   if (!plan.dest) return { path: produced, originalRemoved: false };
   const { dest } = plan, { workdir } = env;
-  let backup: string | undefined, originalRemoved = false, replaced: string | undefined;
+  let backup: string | undefined, originalRemoved = false, moved = false, replaced: string | undefined;
   // A different file already at the destination (a template collision, or `shot.webp` beside `shot.png`) would be lost to the copy, so keep it first.
   const same = (a: string, b: string) => samePath(a, b, platformOf(env));
   if (!same(dest, original) && !same(dest, produced) && await exists(dest)) {
@@ -164,12 +166,21 @@ export async function executePlacement(env: PlacementEnv, plan: PlacementPlan, p
       backup = await workdir.latestBackup(original);
     } else {
       // Overwriting without a backup would lose the only copy, so a failed backup fails the placement.
-      backup = await workdir.backup(original, { move: true, force: true }).catch(error => { throw new Error(`Could not back up ${original} before replacing it: ${error instanceof Error ? error.message : error}`); });
+      moved = !same(dest, original);
+      backup = await workdir.backup(original, { move: moved, force: true }).catch(error => { throw new Error(`Could not back up ${original} before replacing it: ${error instanceof Error ? error.message : error}`); });
       originalRemoved = backup !== undefined;
     }
   }
-  try { await copyTo(produced, dest); } catch (error) {
-    if (originalRemoved && backup) await moveTo(backup, original).catch(() => {});
+  try {
+    try { await copyTo(produced, dest); } catch (error) {
+      // Windows will not rename over a read-only file or one that is held open; then the original moves out of the way, as it always did.
+      if (moved || !backup || !['EPERM', 'EACCES', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      await moveTo(original, backup);
+      moved = true;
+      await copyTo(produced, dest);
+    }
+  } catch (error) {
+    if (moved && backup) await moveTo(backup, original).catch(() => {});
     throw error;
   }
   await (env.marker ?? defaultMarker()).markOptimised(dest).catch(() => {});
