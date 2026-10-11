@@ -54,7 +54,9 @@ test('a value the setting cannot hold is refused instead of silently ignored', (
   assert.throws(() => rendererSettings({ batchModeFileCountThreshold: -1, stripMetadata: 'yes' }), /batchModeFileCountThreshold, stripMetadata are not valid values/);
   assert.throws(() => rendererSettings({ enabledKeys: ['Not a key'] }), /enabledKeys/);
   assert.throws(() => rendererSettings({ videoEncoder: 'rm -rf' }), /videoEncoder/);
-  assert.deepEqual(rendererSettings({ keyComboModifiers: ['Control', 'Alt'], enabledKeys: ['C', 'Space'] }), { keyComboModifiers: ['Control', 'Alt'], enabledKeys: ['C', 'Space'] });
+  assert.deepEqual(rendererSettings({ keyComboModifiers: ['Shift', 'Alt'], enabledKeys: ['C', 'Space'] }), { keyComboModifiers: ['Shift', 'Alt'], enabledKeys: ['C', 'Space'] });
+  assert.throws(() => rendererSettings({ keyComboModifiers: ['Super'] }), /Windows key alone/);
+  assert.throws(() => rendererSettings({ keyComboModifiers: ['Control', 'Alt'] }), /AltGr/);
   assert.throws(() => rendererSettings({ keyComboModifiers: ['Shift'] }), /Shift alone/);
   assert.throws(() => rendererSettings({ keyComboModifiers: [] }), /at least one/i);
   assert.throws(() => rendererSettings({ quickResizeKeys: ['1', 'F5'] }), /F5 cannot downscale/);

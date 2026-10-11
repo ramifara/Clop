@@ -87,9 +87,9 @@ test('hints show the shortcuts that are on and drop with them', () => {
   assert.equal(find(on, 'Optimise clipboard').accelerator, 'Control+Shift+C');
   assert.equal(find(on, 'Pause automatic optimisations').accelerator, undefined, 'P is off by default on Windows');
   assert.equal(find(trayMenu(state({ shortcuts: shortcutsFor({ ...settings, enabledKeys: ['P'] }) }), recorder().actions), 'Pause automatic optimisations').accelerator, 'Control+Shift+P');
-  const off = trayMenu(state({ shortcuts: shortcutsFor({ ...settings, enabledKeys: ['Z'], keyComboModifiers: ['Alt', 'Control'] }) }), recorder().actions);
+  const off = trayMenu(state({ shortcuts: shortcutsFor({ ...settings, enabledKeys: ['Z'], keyComboModifiers: ['Alt', 'Shift'] }) }), recorder().actions);
   assert.equal(find(off, 'Optimise clipboard').accelerator, undefined);
-  assert.equal(find(off, 'Revert last optimisations').accelerator, 'Control+Alt+Z');
+  assert.equal(find(off, 'Revert last optimisations').accelerator, 'Shift+Alt+Z');
 });
 
 test('update checks sit above the screenshots switch, and About holds the version and the debug dump', () => {

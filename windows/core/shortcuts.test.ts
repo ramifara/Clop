@@ -18,16 +18,16 @@ test('every key the macOS list has is still accepted, for a user who turns it on
 });
 
 test('modifiers follow the accelerator order whatever order they are saved in, and resize keys add the number keys', () => {
-  const found = shortcutsFor({ ...base(), keyComboModifiers: ['Alt', 'Control'], enabledKeys: ['C'], quickResizeKeys: ['5', '9'] });
+  const found = shortcutsFor({ ...base(), keyComboModifiers: ['Alt', 'Shift'], enabledKeys: ['C'], quickResizeKeys: ['5', '9'] });
   assert.deepEqual(found, [
-    { accelerator: 'Control+Alt+C', action: { kind: 'optimiseClipboard' } },
-    { accelerator: 'Control+Alt+5', action: { kind: 'resize', factor: 0.5 } },
-    { accelerator: 'Control+Alt+9', action: { kind: 'resize', factor: 0.9 } },
+    { accelerator: 'Shift+Alt+C', action: { kind: 'optimiseClipboard' } },
+    { accelerator: 'Shift+Alt+5', action: { kind: 'resize', factor: 0.5 } },
+    { accelerator: 'Shift+Alt+9', action: { kind: 'resize', factor: 0.9 } },
   ]);
 });
 
 test('every plan survives the settings parser with its modifiers', () => {
-  for (const modifiers of [['Control', 'Shift'], ['Alt', 'Shift'], ['Super'], ['Control', 'Alt', 'Super']]) {
+  for (const modifiers of [['Control', 'Shift'], ['Alt', 'Shift'], ['Super', 'Shift'], ['Control', 'Alt', 'Super']]) {
     const settings = parseSettings({ keyComboModifiers: modifiers, quickResizeKeys: ['1', '9'] });
     assert.deepEqual(settings.keyComboModifiers, modifiers);
     for (const { accelerator } of shortcutsFor(settings)) assert.deepEqual(accelerator.split('+').slice(0, -1).sort(), [...modifiers].sort(), accelerator);
@@ -44,7 +44,9 @@ test('trigger keys that would take ordinary typing register nothing', () => {
   assert.deepEqual(keys({ keyComboModifiers: ['Shift'] }), []);
   assert.deepEqual(keys({ keyComboModifiers: ['Control'] }), [], 'Ctrl+C, Ctrl+Z and the rest belong to every app');
   assert.deepEqual(keys({ keyComboModifiers: ['Alt'] }), []);
-  assert.equal(keys({ keyComboModifiers: ['Super'] }).length, 5);
+  assert.deepEqual(keys({ keyComboModifiers: ['Super'] }), [], 'Win+C, Win+A, Win+Space and Win+- belong to the shell');
+  assert.deepEqual(keys({ keyComboModifiers: ['Control', 'Alt'] }), [], 'Ctrl+Alt is AltGr on many keyboards');
+  assert.equal(keys({ keyComboModifiers: ['Control', 'Alt', 'Shift'] }).length, 5);
 });
 
 test('validation says why a change cannot be saved', () => {
@@ -52,8 +54,10 @@ test('validation says why a change cannot be saved', () => {
   assert.match(shortcutProblem({ keyComboModifiers: ['Shift'] })!, /Shift alone/);
   assert.match(shortcutProblem({ keyComboModifiers: ['Control'] })!, /Ctrl alone/);
   assert.match(shortcutProblem({ keyComboModifiers: ['Alt'] })!, /Alt alone/);
+  assert.match(shortcutProblem({ keyComboModifiers: ['Super'] })!, /Windows key alone/);
+  assert.match(shortcutProblem({ keyComboModifiers: ['Alt', 'Control'] })!, /AltGr/);
   assert.match(shortcutProblem({ quickResizeKeys: ['1', 'F5'] })!, /F5 cannot downscale/);
-  assert.equal(shortcutProblem({ keyComboModifiers: ['Control', 'Alt'], quickResizeKeys: ['1'], enabledKeys: ['C'] }), undefined);
+  assert.equal(shortcutProblem({ keyComboModifiers: ['Control', 'Alt', 'Shift'], quickResizeKeys: ['1'], enabledKeys: ['C'] }), undefined);
   assert.equal(shortcutProblem({}), undefined);
 });
 
@@ -145,7 +149,7 @@ test('what Windows keeps for itself is never registered, whatever order the modi
   assert.equal(reservedBy('Control+Shift+C'), undefined);
   assert.deepEqual(keys({ enabledKeys: ['Escape', 'C'] }), ['Control+Shift+C']);
   assert.deepEqual(keys({ keyComboModifiers: ['Alt'], enabledKeys: ['Tab'] }), []);
-  assert.deepEqual(keys({ keyComboModifiers: ['Super'], enabledKeys: ['L', 'C'] }), ['Super+C']);
+  assert.deepEqual(keys({ keyComboModifiers: ['Super', 'Control'], enabledKeys: ['C'] }), ['Control+Super+C']);
 });
 
 test('a change that would turn on a reserved accelerator is refused whichever setting it touches', () => {
