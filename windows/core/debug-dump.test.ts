@@ -38,6 +38,11 @@ test('secrets are blanked by key name at any depth, and nothing else changes', (
   assert.deepEqual(redact(defaultSettings()), JSON.parse(JSON.stringify(defaultSettings())));
 });
 
+test('script steps are blanked in a dump: their code and path, and the text of a pipeline that has one', () => {
+  const settings = { savedPipelines: [{ id: 'A', rawText: 'runScript(code: "curl -H token:abc")', steps: [{ runScript: { code: 'curl -H token:abc' } }, { convert: { to: 'webp', location: 'sameFolder' } }] }, { id: 'B', rawText: 'convert(to: webp)', steps: [{ runScript: { path: 'C:\\Users\\me\\fix.ps1' } }] }] };
+  assert.deepEqual(redact(settings), { savedPipelines: [{ id: 'A', rawText: REDACTED, steps: [{ runScript: { code: REDACTED } }, { convert: { to: 'webp', location: 'sameFolder' } }] }, { id: 'B', rawText: 'convert(to: webp)', steps: [{ runScript: { path: REDACTED } }] }] });
+});
+
 test('the zip reads back with every entry intact, names in UTF-8 and empty files allowed', async () => {
   const entries: ZipEntry[] = [{ name: 'a.txt', data: Buffer.from('hello hello hello hello') }, { name: 'logs/ü ñ.log', data: Buffer.from('päivää') }, { name: 'empty.txt', data: Buffer.alloc(0) }, { name: 'big.bin', data: Buffer.alloc(300_000, 7) }];
   const files = unzip(await zip(entries, new Date(2026, 9, 11, 12, 30, 40)));

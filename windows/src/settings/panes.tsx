@@ -97,6 +97,6 @@ export function About() {
       <button className="button" onClick={() => void prefs({ action: 'open', target: 'issues' })}>Report a problem</button>
       {native && <button className="button" onClick={() => void prefs({ action: 'debug-dump' })}>Save debug dump</button>}
     </Links>
-    {native && <small>The debug dump is a zip of Clop's settings, logs and tool report, saved on this PC and shown in Explorer. Attach it to a bug report; nothing is sent anywhere.</small>}
+    {native && <small>The debug dump is a zip of Clop's settings, logs and tool report, saved on this PC and shown in Explorer. It names your folders and files (so your Windows user name) and holds your pipelines with script code blanked. Attach it to a bug report; nothing is sent anywhere.</small>}
   </div>;
 }
