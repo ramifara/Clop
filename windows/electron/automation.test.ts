@@ -128,10 +128,10 @@ test('a file saved again while its result was made is left as it is, and one tha
   assert.equal(await folderPlacement(file, 'image', f.env).place(output, staged), file);
   assert.equal(await readFile(file, 'utf8'), 'small');
   await writeFile(file, 'second save, longer'); await writeFile(result, 'small');
-  await assert.rejects(folderPlacement(file, 'image', f.env).place(output, staged), /saved\.png changed while Clop was optimising it/);
+  await assert.rejects(folderPlacement(file, 'image', f.env).place(output, staged), /saved\.png changed since Clop read it/);
   assert.equal(await readFile(file, 'utf8'), 'second save, longer');
   await rm(file);
-  await assert.rejects(folderPlacement(file, 'image', f.env).place(output, staged), /changed while/);
+  await assert.rejects(folderPlacement(file, 'image', f.env).place(output, staged), /changed since Clop read it/);
   assert.equal(await exists(file), false, 'a deleted file is not brought back');
 });
 test('folders in the hidden-results list keep their results quiet, and cancelled files are stopped and removed', async t => {

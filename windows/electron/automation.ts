@@ -52,7 +52,7 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
   return {
     async place(output: MediaOutput, staged?: string) {
       // A file saved again while its result was made would go to the backups and be replaced by this out-of-date result. The shelf's copy keeps the size and modification time the file had when it was read.
-      if (!placed && staged && await changedSince(file, staged)) throw new Error(`${path.basename(file)} changed while Clop was optimising it, so Clop left it as it is.`);
+      if (!placed && staged && await changedSince(file, staged)) throw new Error(`${path.basename(file)} changed since Clop read it, so Clop left it as it is.`);
       // A result that is not smaller is the original itself.
       if (output.unchanged) { if (placed) return (await restore())!; await mark(file); return file; }
       const e = env(), before = e.counter.value;
