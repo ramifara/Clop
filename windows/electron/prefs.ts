@@ -46,6 +46,12 @@ const SAMPLES = { image: ['Screenshot.png', 'jpeg'], video: ['Recording.mov', 'm
 const TEMPLATE_KEY = /^(converted)?[Ss](ame|pecific)FolderNameTemplate(Image|Video|Audio|PDF)$/;
 export const TEMPLATE_KEYS = ['customNameTemplateForClipboardImages', ...(['Image', 'Video', 'Audio', 'PDF'] as const).flatMap(kind => [`sameFolderNameTemplate${kind}`, `specificFolderNameTemplate${kind}`, `convertedSameFolderNameTemplate${kind}`, `convertedSpecificFolderNameTemplate${kind}`])] as SettingKey[];
 
+/** The format lists the Settings window toggles one extension of, each with the list that loses an extension the first gains (`SettingsView.swift` removes it from the other when a chip goes on). */
+const FORMAT_LISTS = {
+  imageFormatsToSkip: undefined, videoFormatsToSkip: undefined, audioFormatsToSkip: undefined, formatsToConvertToMP4: undefined, formatsToConvertToOutputAudio: undefined,
+  formatsToConvertToJPEG: 'formatsToConvertToPNG', formatsToConvertToPNG: 'formatsToConvertToJPEG', formatsToConvertToAAC: 'formatsToConvertToMP3', formatsToConvertToMP3: 'formatsToConvertToAAC',
+} as const satisfies Partial<Record<SettingKey, SettingKey | undefined>>;
+
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const text = (value: unknown, what: string, max = MAX_PATH) => {
   if (typeof value !== 'string' || !value.trim() || value.length > max || value.includes('\0')) throw new Error(`Choose ${what}.`);
@@ -160,6 +166,21 @@ export function createPrefs(host: PrefsHost) {
     return {};
   }
 
+  /** One chip of a format list, switched on or off against the list as it is when its turn comes; going on takes the extension out of the list it excludes. */
+  async function format(key: unknown, given: unknown, on: unknown): Promise<PrefsReply> {
+    if (typeof key !== 'string' || !Object.hasOwn(FORMAT_LISTS, key)) throw new Error('Choose a format list.');
+    if (typeof given !== 'string' || !/^[a-z0-9]{1,10}$/.test(given) || typeof on !== 'boolean') throw new Error('Choose a file extension to turn on or off.');
+    const list = key as keyof typeof FORMAT_LISTS, other = FORMAT_LISTS[list];
+    await host.update(settings => {
+      const current = settings[list] as string[];
+      return {
+        [list]: on ? (current.includes(given) ? current : [...current, given]) : current.filter(item => item !== given),
+        ...(on && other && (settings[other] as string[]).includes(given) ? { [other]: (settings[other] as string[]).filter(item => item !== given) } : {}),
+      };
+    });
+    return {};
+  }
+
   function template(key: unknown, value: unknown): PrefsReply {
     if (!TEMPLATE_KEYS.includes(key as SettingKey)) throw new Error('Choose a name template setting.');
     if (typeof value !== 'string' || value.length > MAX_TEMPLATE) throw new Error(`Use a template up to ${MAX_TEMPLATE} characters long.`);
@@ -185,6 +206,7 @@ export function createPrefs(host: PrefsHost) {
       case 'folder': return folder(request.kind as MediaName, request.op, request.folder);
       case 'quiet': return quiet(request.folder, request.quiet);
       case 'editor': return editor(request.kind as MediaName, request.op);
+      case 'format': return format(request.key, request.format, request.on);
       case 'ignore': return ignore(request.op, request.entry);
       case 'pipeline-editor': await host.openEditor(request.tab === undefined ? undefined : oneOf(request.tab, ['zones'] as const, 'a pipeline editor tab')); return {};
       case 'open': await host.openExternal(LINKS[oneOf(request.target, Object.keys(LINKS) as (keyof typeof LINKS)[], 'a link')]); return {};

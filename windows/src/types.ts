@@ -122,6 +122,8 @@ export type PrefsRequest =
   | { action: 'folder'; kind: MediaName; op: 'add' | 'remove'; folder?: string }
   | { action: 'quiet'; folder: string; quiet: boolean }
   | { action: 'editor'; kind: MediaName; op: 'choose' | 'clear' }
+  /** One chip of a format list: turned on or off against the stored list. */
+  | { action: 'format'; key: SettingKey; format: string; on: boolean }
   | { action: 'ignore'; op: 'add' | 'remove' | 'choose'; entry?: string }
   /** Opens the pipeline editor window, on its preset zones when `tab` is `zones`. */
   | { action: 'pipeline-editor'; tab?: 'zones' }

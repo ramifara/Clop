@@ -197,3 +197,24 @@ test('anything that is not a known action is refused', async () => {
   const h = harness();
   for (const bad of [null, 'folder', [], { action: 'rm' }, {}]) await assert.rejects(h.prefs(bad), /settings action|Unknown/);
 });
+
+test('format chips switch against the stored list, and a format converted one way leaves the other list', async () => {
+  const h = harness();
+  // Two chips clicked before the first write lands both stay.
+  await Promise.all([h.prefs({ action: 'format', key: 'imageFormatsToSkip', format: 'bmp', on: true }), h.prefs({ action: 'format', key: 'imageFormatsToSkip', format: 'webp', on: true })]);
+  assert.deepEqual(h.get().imageFormatsToSkip, [...defaultSettings({ home, desktop: '', userData: '' }).imageFormatsToSkip, 'bmp', 'webp']);
+  await h.prefs({ action: 'format', key: 'imageFormatsToSkip', format: 'bmp', on: false });
+  assert.ok(!h.get().imageFormatsToSkip.includes('bmp'));
+  // wav starts under MP3; turning it on under AAC takes it out of MP3 (and the other way round for the image pair).
+  assert.ok(h.get().formatsToConvertToMP3.includes('wav'));
+  await h.prefs({ action: 'format', key: 'formatsToConvertToAAC', format: 'wav', on: true });
+  assert.ok(h.get().formatsToConvertToAAC.includes('wav') && !h.get().formatsToConvertToMP3.includes('wav'));
+  await h.prefs({ action: 'format', key: 'formatsToConvertToMP3', format: 'flac', on: true });
+  assert.ok(h.get().formatsToConvertToMP3.includes('flac') && !h.get().formatsToConvertToAAC.includes('flac'));
+  await h.prefs({ action: 'format', key: 'formatsToConvertToPNG', format: 'webp', on: true });
+  assert.ok(h.get().formatsToConvertToPNG.includes('webp') && !h.get().formatsToConvertToJPEG.includes('webp'));
+  // Turning one off leaves the other list alone.
+  await h.prefs({ action: 'format', key: 'formatsToConvertToPNG', format: 'webp', on: false });
+  assert.ok(!h.get().formatsToConvertToJPEG.includes('webp'));
+  for (const bad of [{ key: 'workdir', format: 'png', on: true }, { key: 'imageFormatsToSkip', format: '.png', on: true }, { key: 'imageFormatsToSkip', format: 'png', on: 'yes' }]) await assert.rejects(h.prefs({ action: 'format', ...bad }), /Choose/);
+});
