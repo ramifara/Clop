@@ -102,6 +102,8 @@ export async function copyStep(run: RunState, to: string) {
   const dest = await fileDestination(run, to);
   await keepCollision(run, dest);
   run.current = await copyTo(run.current, dest);
+  // Marked, so a watcher over the folder it lands in does not take the copy for a new file and copy it again.
+  await run.mark(run.current);
 }
 
 export async function moveStep(run: RunState, to: string) {

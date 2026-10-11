@@ -17,6 +17,7 @@ test('copy, move and rename resolve templates, captures and folders, and carry o
   assert.equal(copied.file, path.join(w.files, 'copies', `12-shot-12-${year}.png`));
   assert.deepEqual(await readFile(copied.file), await readFile(input));
 
+  assert.equal(await w.marker.isOptimised(copied.file), true, 'a copy is marked, so a watcher does not copy it again');
   const moved = await w.run(`move(to: ${quoted(path.join(w.dir, 'sorted') + '/')}) -> rename(to: "%f-done")`, copied.file);
   assert.equal(moved.file, path.join(w.dir, 'sorted', `12-shot-12-${year}-done.png`), 'the template tokens name the file the run started with');
   assert.deepEqual(await readdir(path.join(w.files, 'copies')), []);
