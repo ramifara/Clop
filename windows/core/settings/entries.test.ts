@@ -125,7 +125,7 @@ test('name templates apply under Same folder and path templates under Specific f
  */
 const PENDING_KEYS = [
   'allowClopToAppearInScreenshots', 'autoHideClipboardResultAfter', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter',
-  'convertHDRToSDR', 'defaultLinkExpiration',
+  'convertHDRToSDR', 'defaultLinkExpiration', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnUpload',
   'enableFloatingResults', 'enabledKeys', 'followCursorScreen', 'formatsToConvertToJPEG', 'formatsToConvertToMP4',
   'formatsToConvertToOutputAudio', 'formatsToConvertToPNG', 'keyComboModifiers', 'onlyShowDropZoneOnOption', 'onlyShowPresetZonesOnControlTapped', 'optimiseHEICAVIFClipboard',
   'optimiseTIFF', 'quickResizeKeys', 'showMenubarIcon',
