@@ -248,3 +248,16 @@ test('the MCP gate refuses pipeline text that opens a program by path, whether o
   assert.equal(mcpRefusal('mcp', 'openWith(app: "C:\\\\evil.exe")', { ...settings, mcpAllowScriptSteps: true }), undefined, 'allowed script steps allow it');
   assert.equal(mcpRefusal(undefined, 'openWith(app: "C:\\\\evil.exe")', settings), undefined, 'a person using the CLI needs no permission');
 });
+
+test('an agent edit built on a stale read is refused as stale, never as a planted script step', async () => {
+  const { store, userScript } = agentLibrary();
+  const stale = [userScript];
+  // The user edits their own script pipeline between the agent's read and its write.
+  const edited = { ...userScript, name: 'Mine, renamed' };
+  store.current.savedPipelines = [edited];
+  const added = { id: 'X', name: 'X', steps: parseSteps('convert(to: webp)'), skipOptimisation: false, hideResult: false };
+  const reply = await handleSettingsRequest({ action: 'update', values: { savedPipelines: [...stale, added] }, base: { savedPipelines: stale }, origin: 'mcp' }, store);
+  assert.deepEqual(reply, { ok: false, error: SETTINGS_CHANGED });
+  // Built again on the current settings, the same edit goes through.
+  assert.equal((await handleSettingsRequest({ action: 'update', values: { savedPipelines: [edited, added] }, base: { savedPipelines: [edited] }, origin: 'mcp' }, store)).ok, true);
+});

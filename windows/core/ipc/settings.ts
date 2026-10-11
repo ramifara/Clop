@@ -288,6 +288,9 @@ export async function handleSettingsRequest(req: SettingsRequest, store: Setting
       const written = await store.update((current): { patch?: unknown; result: Refusal } => {
         const gate = mcpRefusal(req.origin, req.pipeline, current);
         if (gate) return refuse(gate);
+        // A payload built on values that have changed since is refused first, whatever else is wrong with it: the client reads again and
+        // builds a new one, so the checks below always see an edit made on the current settings (a stale one could look like a planted script step).
+        if (req.base && !unchanged(req.base, current)) return refuse(SETTINGS_CHANGED);
         for (const [key, value] of Object.entries(values)) {
           if (!isKey(key)) return refuse(`no setting named '${key}'.`);
           const refused = req.origin === 'mcp' ? keyRefusal(key, current, true) : undefined;
@@ -297,7 +300,6 @@ export async function handleSettingsRequest(req: SettingsRequest, store: Setting
         // The payload itself is checked: the `pipeline` text an agent sends alongside proves nothing.
         const refusal = req.origin === 'mcp' ? libraryRefusal(values, current) : undefined;
         if (refusal) return refuse(refusal);
-        if (req.base && !unchanged(req.base, current)) return refuse(SETTINGS_CHANGED);
         const unusable = shortcutProblem(Object.fromEntries((['keyComboModifiers', 'enabledKeys', 'quickResizeKeys'] as const).filter(key => key in values).map(key => [key, spec(key).parse(values[key])])), current);
         if (unusable) return refuse(unusable);
         return { patch: values, result: undefined };
