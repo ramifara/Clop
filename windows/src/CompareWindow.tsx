@@ -149,19 +149,30 @@ function VideoSide({ side, register }: { side: CompareSide; register: (element: 
 function AudioCompare({ sources, badge }: { sources: CompareSources; badge: ReactNode }) {
   const players = useRef(new Map<'original' | 'result', HTMLAudioElement>());
   const [playing, setPlaying] = useState<'original' | 'result'>();
-  const [position, setPosition] = useState(0);
+  /** The live position of the audible side, and the shared start (only a scrub moves it) the other side begins from. */
+  const [position, setPosition] = useState(0), [anchor, setAnchor] = useState(0);
+  const lastPlayed = useRef<'original' | 'result'>(undefined);
   const [durations, setDurations] = useState<Record<string, number>>({});
+  const durationOf = (which: 'original' | 'result') => durations[which] ?? ((which === 'original' ? sources.original : sources.result).durationMs ?? 0) / 1000;
   function toggle(which: 'original' | 'result') {
     for (const [other, player] of players.current) if (other !== which) player.pause();
     const player = players.current.get(which); if (!player) return;
     if (playing === which) { player.pause(); setPlaying(undefined); return; }
-    player.currentTime = Math.min(position, player.duration || position);
+    // A switch to the other side (or a first play) starts at the shared anchor, kept inside this side's length; the same side resumes where it paused.
+    if (lastPlayed.current !== which) player.currentTime = Math.min(Math.max(anchor, 0), durationOf(which));
+    lastPlayed.current = which;
+    setPosition(player.currentTime);
     void player.play().then(() => setPlaying(which), () => setPlaying(undefined));
   }
-  function scrub(time: number) { setPosition(time); for (const player of players.current.values()) player.currentTime = Math.min(time, player.duration || time); }
+  function scrub(which: 'original' | 'result', time: number) {
+    const clamped = Math.max(0, Math.min(time, durationOf(which)));
+    setAnchor(clamped); lastPlayed.current = which;
+    const player = players.current.get(which); if (player) player.currentTime = clamped;
+    if (playing === which) setPosition(clamped);
+  }
   return <div className="audio-stack">
     {([['Original', sources.original, 'original'], ['Optimised', sources.result, 'result']] as const).map(([title, side, which]) => {
-      const duration = durations[which] ?? (side.durationMs ?? 0) / 1000;
+      const duration = durationOf(which), shownTime = Math.min(playing === which ? position : anchor, duration);
       return <section key={which} className="audio-side">
         <header><strong>{title}</strong><small>{side.format.toUpperCase()}</small></header>
         <div className="audio-art" style={{ backgroundImage: `url("${sources.item.originalPreview}")` }}>
@@ -169,9 +180,9 @@ function AudioCompare({ sources, badge }: { sources: CompareSources; badge: Reac
         </div>
         <audio ref={element => { if (element) players.current.set(which, element); else players.current.delete(which); }} src={side.url} preload="metadata"
           onLoadedMetadata={event => { const value = event.currentTarget.duration; if (Number.isFinite(value)) setDurations(all => ({ ...all, [which]: value })); }}
-          onTimeUpdate={event => { if (playing === which) setPosition(event.currentTarget.currentTime); }} onEnded={() => setPlaying(undefined)}/>
-        <input type="range" aria-label={`${title} position`} min="0" max={Math.max(duration, 0.01)} step="0.01" value={Math.min(position, duration)} disabled={!duration} onChange={event => scrub(Number(event.target.value))}/>
-        <div className="times"><span>{clock(Math.min(position, duration))}</span><span>{clock(duration)}</span></div>
+          onTimeUpdate={event => { if (playing === which) setPosition(event.currentTarget.currentTime); }} onEnded={() => { setPlaying(undefined); lastPlayed.current = undefined; }}/>
+        <input type="range" aria-label={`${title} position`} min="0" max={Math.max(duration, 0.01)} step="0.01" value={shownTime} disabled={!duration} onChange={event => scrub(which, Number(event.target.value))}/>
+        <div className="times"><span>{clock(shownTime)}</span><span>{clock(duration)}</span></div>
         <div className="side-labels"><span>Size: {humanSize(side.bytes)}</span>{side.bitrate && <span>Bitrate: {side.bitrate} kbps</span>}</div>
       </section>;
     })}
