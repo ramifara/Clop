@@ -28,7 +28,8 @@ import { spawn } from 'node:child_process';
 import type { AppEntry, AppState, ImageOptions, ItemResult } from '../src/types';
 import { publishPipe, startPipeServer, type PipeServer } from './pipe-server';
 import { clopURLs, type ClopURL } from './clop-url';
-import { installPortableCLI, isPortable, portableCLIInstalled, refreshPortableCLI, removePortableCLI } from './cli-install';
+import { installPortableCLI, isPortable, portableCLIDir, portableCLIInstalled, refreshPortableCLI, removePortableCLI } from './cli-install';
+import { mcpSettings } from './mcp';
 import { mirrorConsoleToFile } from './debug-log';
 import { newPipePath, type OptimisationRequest } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
@@ -38,6 +39,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 let main: BrowserWindow, floating: BrowserWindow, tray: Tray, engine: ItemEngine;
 let settings = defaultSettings(), notice: string | undefined, quitting = false, bridgeReady = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
+let mcp: ReturnType<typeof mcpSettings>;
 let dropActive = false, dragging = false, importsRunning = 0, hovered = false;
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
@@ -468,10 +470,21 @@ async function openClopURL(link: ClopURL) {
   finally { askingMCP = false; }
   if (response === 0) await updateSettings({ mcpEnabled: true });
 }
+/** clop.exe, which agents run as the MCP server: beside the installed app, or the copy the portable app's tray item installs. */
+function mcpServerPath() {
+  if (!app.isPackaged || process.platform !== 'win32') return undefined;
+  return isPortable() ? path.join(portableCLIDir(), 'clop.exe') : path.join(path.dirname(process.execPath), 'cli', 'clop.exe');
+}
+const mcpServerMissing = () => !app.isPackaged ? 'The MCP server is the installed clop.exe, which development builds do not have.'
+  : isPortable() ? 'Install the command-line tool from the tray menu first: the MCP server is the clop command.' : "Clop's command-line tool is missing from this install, so the MCP server cannot run.";
+async function confirmScripts() {
+  const { response } = await dialog.showMessageBox(main, { type: 'warning', buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1, title: 'Clop', message: 'Allow agents to write scripts?', detail: 'A script step runs arbitrary code inside a pipeline.\n\nWithout human verification, it can result in irretrievable file losses as scripts are not sandboxed in any way.' });
+  return response === 0;
+}
 function toggleCLI() {
   const appDir = path.dirname(process.execPath);
   (cliInstalled ? removePortableCLI(process.resourcesPath, appDir) : installPortableCLI(process.resourcesPath, appDir))
-    .then(() => { cliInstalled = !cliInstalled; updateTray(); inform(cliInstalled ? 'Open a new terminal to use the clop command.' : 'The clop command is removed.'); })
+    .then(() => { cliInstalled = !cliInstalled; updateTray(); void mcp.writeCard().catch(() => {}); inform(cliInstalled ? 'Open a new terminal to use the clop command.' : 'The clop command is removed.'); })
     .catch(error => inform(message(error)));
 }
 function updateTray() {
@@ -496,7 +509,9 @@ function updateTray() {
 // A failed tray toggle rebuilds the menu so its checkbox shows the setting that is actually in effect.
 function toggleSetting(value: unknown) { updateSettings(value).catch(error => { updateTray(); inform(message(error)); }); }
 async function updateSettings(value: unknown) {
+  const wasEnabled = settings.mcpEnabled;
   settings = await store.set(value);
+  if (settings.mcpEnabled !== wasEnabled && app.isPackaged) void mcp.writeCard().catch(error => console.warn(`Could not write the MCP server card: ${message(error)}`));
   if (!settings.enableClipboardOptimiser || paused()) pickup.cancel();
   floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop);
   syncFloating();
@@ -545,6 +560,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
       if (isReady(target) && copiesBack(target)) await copy([target], sequence);
       break;
     }
+    case 'mcp': return mcp.handle(args[0]);
     case 'window':
       switch (args[0]) {
         case 'hide': BrowserWindow.fromWebContents(event.sender)?.hide(); break;
@@ -587,6 +603,10 @@ else {
     const seeded = settingsError ? undefined : seedBuiltinPipelines(settings.savedPipelines, settings.builtinPipelinesSeededVersion);
     if (seeded) settings = await store.set(seeded).catch(error => { settingsError = error; return settings; });
     mirrorConsoleToFile(path.join(userData, 'logs', 'clop.log'), () => settings.persistDebugLogs);
+    mcp = mcpSettings({
+      userData, home: app.getPath('home'), cliPath: mcpServerPath(), missing: mcpServerMissing(), version: app.getVersion(), appPath: process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath,
+      setSwitches: updateSettings, switches: () => settings, confirmScripts, reveal: file => shell.showItemInFolder(file), copy: text => clipboard.writeText(text),
+    });
     // Earlier versions kept originals in `images`. It ages out with the cleanup interval instead of being migrated.
     const open = async (root: string) => new Workdir(root, { home: app.getPath('home'), legacy: [path.join(userData, 'images')] }).ensure();
     workdir = await open(settings.workdir).catch(async error => {
@@ -647,6 +667,10 @@ else {
     // An installed copy owns clop:// links; a portable copy only takes them when nothing else has.
     const exe = process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath;
     if (app.isPackaged && process.platform === 'win32' && (!isPortable() || !app.getApplicationNameForProtocol('clop://') || app.isDefaultProtocolClient('clop', exe))) app.setAsDefaultProtocolClient('clop', exe);
+    if (app.isPackaged) {
+      void mcp.writeCard().catch(error => console.warn(`Could not write the MCP server card: ${message(error)}`));
+      void mcp.repair().then(names => { if (names.length) console.log(`Repointed Clop's MCP server in ${names.join(', ')}`); }, error => console.warn(`Could not check the MCP clients: ${message(error)}`));
+    }
     if (isPortable() && (cliInstalled = await portableCLIInstalled())) { updateTray(); void refreshPortableCLI(process.resourcesPath, path.dirname(process.execPath)).catch(error => inform(message(error))); }
     for (const link of clopURLs(process.argv.slice(1))) void openClopURL(link).catch(error => inform(message(error)));
     const files = process.argv.slice(1).filter(arg => path.isAbsolute(arg) && mediaKind(arg));
