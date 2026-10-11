@@ -59,10 +59,10 @@ export function ResolutionField({ label, value, onCommit, min = 0 }: { label: st
 /** Chips for a list of file extensions; each one on is in the setting. Extensions the setting already holds that are not offered stay as chips too. */
 export function FormatSelect({ options, value, onChange, label }: { options: readonly string[]; value: readonly string[]; onChange(next: string[]): void; label: string }) {
   const all = [...options, ...value.filter(item => !options.includes(item))];
-  return <div className="chips" role="group" aria-label={label}>
+  return <div className="s-chips" role="group" aria-label={label}>
     {all.map(item => {
       const on = value.includes(item);
-      return <button key={item} type="button" className={`chip ${on ? 'on' : ''}`} aria-pressed={on} onClick={() => onChange(on ? value.filter(other => other !== item) : [...value, item])}>{item}</button>;
+      return <button key={item} type="button" className={`s-chip ${on ? 'on' : ''}`} aria-pressed={on} onClick={() => onChange(on ? value.filter(other => other !== item) : [...value, item])}>{item}</button>;
     })}
   </div>;
 }
@@ -92,7 +92,7 @@ export function NameTemplateField({ settingKey, value, onCommit, placeholder }: 
       onChange={event => edit(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') flush(); }} onBlur={flush}/>
     <div className="template-preview" aria-live="polite">{preview ? <><span>{preview.input}</span><b aria-hidden>→</b><strong>{preview.output}</strong></> : <span>&nbsp;</span>}</div>
     <button type="button" className="link" aria-expanded={help} onClick={() => setHelp(!help)}>{help ? 'Hide variables' : 'Variables'}</button>
-    {help && <div className="chips variables">{TEMPLATE_VARIABLES.map(([token, name]) => <button key={token} type="button" className="chip" title={name} onClick={() => insert(token)}><code>{token}</code> {name}</button>)}</div>}
+    {help && <div className="s-chips variables">{TEMPLATE_VARIABLES.map(([token, name]) => <button key={token} type="button" className="s-chip" title={name} onClick={() => insert(token)}><code>{token}</code> {name}</button>)}</div>}
   </div>;
 }
 
@@ -126,5 +126,5 @@ export function AcceleratorRecorder({ value, mode, onRecord, label }: { value: s
 }
 
 export function Chip({ children, on, onClick, title }: { children: ReactNode; on?: boolean; onClick(): void; title?: string }) {
-  return <button type="button" className={`chip ${on ? 'on' : ''}`} aria-pressed={on} title={title} onClick={onClick}>{children}</button>;
+  return <button type="button" className={`s-chip ${on ? 'on' : ''}`} aria-pressed={on} title={title} onClick={onClick}>{children}</button>;
 }

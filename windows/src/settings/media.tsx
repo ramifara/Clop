@@ -36,7 +36,7 @@ export function Compression({ settingKey }: { settingKey: CompressionKey }) {
   const { draft, edit } = useDraft(auto ? 50 : Math.max(5, value.factor), factor => change({ [settingKey]: { tier: video ? 'smaller' : tier, factor } }), 300);
   const hint = tiers.find(choice => choice.tier === tier)?.hint;
   return <div className="compression">
-    {tiers.length > 0 && <div className="chips" role="group" aria-label="Compression mode">
+    {tiers.length > 0 && <div className="s-chips" role="group" aria-label="Compression mode">
       {tiers.map(choice => <Chip key={choice.tier} on={choice.tier === tier} onClick={() => change({ [settingKey]: { tier: choice.tier, factor: value.factor } })}>{choice.label}</Chip>)}
     </div>}
     {usesFactor && <div className="slider-row">
@@ -56,7 +56,7 @@ export function PdfDpi() {
   const { settings, change } = useSettings();
   const dpi = settings.pdfDPI;
   return <div className="compression">
-    <div className="chips" role="group" aria-label="PDF image resolution">
+    <div className="s-chips" role="group" aria-label="PDF image resolution">
       {PDF_DPI_PRESETS.map(preset => <Chip key={preset} on={dpi === preset} onClick={() => change({ pdfDPI: preset })}>{preset === 0 ? 'Auto' : `${preset} dpi`}</Chip>)}
       <NumberField label="Custom DPI" value={dpi} min={0} max={300} unit="dpi" accept={value => value === 0 || value >= 48} onCommit={value => change({ pdfDPI: value })}/>
     </div>
@@ -96,7 +96,7 @@ export function FpsCap() {
   const { settings, change } = useSettings();
   const target = settings.targetVideoFPS;
   return <div className="compression">
-    <div className="chips">
+    <div className="s-chips">
       <Switch label="Cap frames per second" checked={settings.capVideoFPS} onChange={value => change({ capVideoFPS: value })}/><small>Cap at</small>
       {FPS_CAPS.map(cap => <Chip key={cap.value} on={target === cap.value} onClick={() => change({ targetVideoFPS: cap.value })}>{cap.label}</Chip>)}
     </div>
@@ -105,5 +105,5 @@ export function FpsCap() {
 
 export function MinFps() {
   const { settings, change } = useSettings();
-  return <div className="chips" role="group" aria-label="Lowest frame rate">{MIN_FPS.map(fps => <Chip key={fps} on={settings.minVideoFPS === fps} onClick={() => change({ minVideoFPS: fps })}>{fps} fps</Chip>)}</div>;
+  return <div className="s-chips" role="group" aria-label="Lowest frame rate">{MIN_FPS.map(fps => <Chip key={fps} on={settings.minVideoFPS === fps} onClick={() => change({ minVideoFPS: fps })}>{fps} fps</Chip>)}</div>;
 }

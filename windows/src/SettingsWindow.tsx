@@ -98,7 +98,7 @@ export function SettingsWindow({ state, refresh }: { state: AppState; refresh():
         <input ref={search} type="search" aria-label="Search settings" placeholder="Search settings" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') setQuery(''); if (event.key === 'Enter' && results?.[0]) open(results[0].tab, results[0].id); }}/>
         {query && <button aria-label="Clear search" onClick={() => setQuery('')}><Icon name="close" size={10}/></button>}
       </div>
-      {results ? <SearchResults results={results} query={query} onOpen={entry => open(entry.tab, entry.id)}/> : <div className="tabs" role="tablist" aria-orientation="vertical">
+      {results ? <SearchResults results={results} query={query} onOpen={entry => open(entry.tab, entry.id)}/> : <div className="s-tabs" role="tablist" aria-orientation="vertical">
         {TAB_GROUPS.map(group => <div key={group.title || 'top'} className="tab-group">
           {group.title && <h2>{group.title}</h2>}
           {group.tabs.map(name => <button key={name} role="tab" aria-selected={name === tab} className={name === tab ? 'selected' : ''} onClick={() => open(name)}><Icon name={TAB_ICONS[name]} size={15}/>{SETTINGS_TABS[name]}</button>)}
@@ -113,7 +113,7 @@ export function SettingsWindow({ state, refresh }: { state: AppState; refresh():
           {banner && <p className="pending-banner" role="note">{banner}</p>}
           <div className="group">{rows.map(entry => <EntryRow key={entry.id} entry={entry} flash={flash === entry.id} note={!banner}/>)}</div>
         </section>)}
-      </SettingsContext.Provider> : <p className="loading">Loading…</p>}
+      </SettingsContext.Provider> : <p className="s-loading">Loading…</p>}
     </main>
     {toast && <div className={`toast ${toast.error ? 'error' : ''}`} role={toast.error ? 'alert' : 'status'}>{toast.text}<button aria-label="Dismiss" onClick={() => setToast(undefined)}><Icon name="close" size={10}/></button></div>}
   </div>;

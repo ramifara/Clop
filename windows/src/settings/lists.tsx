@@ -107,7 +107,7 @@ export function TriggerKeys() {
     if (!why) change({ keyComboModifiers: ordered });
   };
   return <div className="list">
-    <div className="chips">{KEY_MODIFIERS.map(modifier => <Chip key={modifier} on={modifiers.includes(modifier)} onClick={() => save(modifiers.includes(modifier) ? modifiers.filter(other => other !== modifier) : [...modifiers, modifier])}>{modifierLabel(modifier)}</Chip>)}</div>
+    <div className="s-chips">{KEY_MODIFIERS.map(modifier => <Chip key={modifier} on={modifiers.includes(modifier)} onClick={() => save(modifiers.includes(modifier) ? modifiers.filter(other => other !== modifier) : [...modifiers, modifier])}>{modifierLabel(modifier)}</Chip>)}</div>
     <div className="buttons"><AcceleratorRecorder mode="modifiers" label="Record trigger keys" value={modifiers.join('+')} onRecord={({ modifiers: held }) => save(held)}/><small>Or click and press the keys together.</small></div>
     {problem && <small className="problem" role="alert">{problem}</small>}
   </div>;
@@ -131,6 +131,6 @@ export function ResizeKeys() {
   const { settings, change } = useSettings(), modifiers = useModifiers(), keys = settings.quickResizeKeys as ClopSettings['quickResizeKeys'];
   return <div className="list">
     <small>Hold {describeAccelerator(modifiers.join('+')) || 'the trigger keys'} and press a number to downscale to that percentage.</small>
-    <div className="chips">{RESIZE_KEYS.map(key => <Chip key={key} on={keys.includes(key)} title={`${describeAccelerator(formatAccelerator(modifiers, key))} downscales to ${Number(key) * 10}%`} onClick={() => change({ quickResizeKeys: keys.includes(key) ? keys.filter(other => other !== key) : [...keys, key] })}>{key}<small>{Number(key) * 10}%</small></Chip>)}</div>
+    <div className="s-chips">{RESIZE_KEYS.map(key => <Chip key={key} on={keys.includes(key)} title={`${describeAccelerator(formatAccelerator(modifiers, key))} downscales to ${Number(key) * 10}%`} onClick={() => change({ quickResizeKeys: keys.includes(key) ? keys.filter(other => other !== key) : [...keys, key] })}>{key}<small>{Number(key) * 10}%</small></Chip>)}</div>
   </div>;
 }

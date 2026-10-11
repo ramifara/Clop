@@ -54,7 +54,7 @@ export function PresetZones() {
   const { settings } = useSettings();
   const zones = settings.presetZones as unknown as { id?: string; name?: string; type?: MediaName; pipeline?: PipelineLike; reason?: string }[];
   return <div className="list">
-    {zones.length ? <ul className="zones">{zones.map((zone, index) => <li key={zone.id ?? index}>
+    {zones.length ? <ul className="s-zones">{zones.map((zone, index) => <li key={zone.id ?? index}>
       <strong>{zone.reason ? 'Unreadable zone' : zone.name || 'Zone'}</strong>
       {!zone.reason && <small>{[zone.type ? KIND_TITLES[zone.type] : 'Any type', zone.pipeline ? pipelineLabel(zone.pipeline, settings.savedPipelines as unknown as PipelineLike[]) : ''].filter(Boolean).join(' · ')}</small>}
     </li>)}</ul> : <small>No preset zones yet. Click a zone to assign or create a pipeline, or add one with the clop command.</small>}

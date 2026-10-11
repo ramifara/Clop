@@ -53,8 +53,8 @@ test('a setting drawn as a switch, a choice and a number shows its value', () =>
 
 test('format chips mark the formats the setting holds, and keep one that is not offered', () => {
   const html = render(<EntryRow entry={SETTING_ENTRIES.find(row => row.keys[0] === 'videoFormatsToSkip')!} flash={false}/>, { ...defaultSettings(), videoFormatsToSkip: ['mkv', 'ogv'] });
-  assert.match(html, /chip on[^>]*>mkv/);
-  assert.match(html, /chip on[^>]*>ogv/);
+  assert.match(html, /s-chip on[^>]*>mkv/);
+  assert.match(html, /s-chip on[^>]*>ogv/);
   assert.match(html, /aria-pressed="false"[^>]*>mp4/);
 });
 
