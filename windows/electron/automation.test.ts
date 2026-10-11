@@ -238,12 +238,24 @@ test('watching and optimising together optimise each file exactly once, in place
   await settled(2);
   assert.deepEqual(handled, ['inplace.png', 'beside.png']);
   assert.ok(await stat(path.join(f.dir, 'beside-optimised.png')).then(() => true, () => false));
-  // A BMP becomes a JPEG in its place, and its original goes to the backups.
-  f.state.settings = { ...f.state.settings, optimisedImageBehaviour: 'inPlace' };
+  // A BMP becomes a JPEG in its place (the converted-file setting says so; its default leaves the BMP and puts the JPEG beside it), and its original goes to the backups.
+  f.state.settings = { ...f.state.settings, optimisedImageBehaviour: 'inPlace', convertedImageBehaviour: 'inPlace' };
   await run('ffmpeg', ['-y', '-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=320x240', '-frames:v', '1', path.join(f.root, 'converted.bmp')]);
   await rename(path.join(f.root, 'converted.bmp'), path.join(f.dir, 'converted.bmp'));
   await settled(3);
   assert.deepEqual(handled, ['inplace.png', 'beside.png', 'converted.bmp']);
   assert.deepEqual((await readdir(f.dir)).sort(), ['beside-optimised.png', 'beside.png', 'converted.jpeg', 'inplace.png']);
   assert.deepEqual(f.engine.list().map(item => item.status), ['ready', 'ready', 'ready']);
+});
+test('a watched file that comes out in another format is placed by the converted-file settings, the card\'s format menu by the manual ones', async t => {
+  const f = await setup(t, { convertedImageBehaviour: 'sameFolder', convertedSameFolderNameTemplateImage: '%f-auto', manualConvertedImageBehaviour: 'inPlace' } as Partial<ClopSettings>); if (!f) return;
+  const file = path.join(f.dir, 'shot.png'), result = path.join(f.root, 'result.jpeg');
+  await writeFile(file, 'png bytes'); await writeFile(result, 'jpeg');
+  const output = { path: result, bytes: 4, format: 'jpeg' };
+  assert.equal(await folderPlacement(file, 'image', f.env).place(output), path.join(f.dir, 'shot-auto.jpeg'));
+  assert.equal(await folderPlacement(file, 'image', f.env).place(output, undefined, true), path.join(f.dir, 'shot.jpeg'));
+  // The same format is an optimisation, by the optimised-file setting (over the file, by default).
+  const same = path.join(f.root, 'result.png');
+  await writeFile(same, 'png');
+  assert.equal(await folderPlacement(file, 'image', f.env).place({ path: same, bytes: 3, format: 'png' }), file);
 });

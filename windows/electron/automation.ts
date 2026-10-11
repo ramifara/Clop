@@ -2,7 +2,7 @@ import { rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { copyTo, exists, samePath } from '../core/fileops';
 import type { OptimisedMarker } from '../core/marker';
-import { executePlacement, planPlacement, type PlacementEnv } from '../core/placement';
+import { executePlacement, placedExtension, planPlacement, type PlacementEnv } from '../core/placement';
 import type { ClopSettings } from '../core/settings/schema';
 import type { MediaKind, MediaOutput } from '../core/media/types';
 import type { ImageOptions } from '../src/types';
@@ -50,13 +50,15 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
     return target;
   }
   return {
-    async place(output: MediaOutput, staged?: string) {
+    async place(output: MediaOutput, staged?: string, manual = false) {
       // A file saved again while its result was made would go to the backups and be replaced by this out-of-date result. The shelf's copy keeps the size and modification time the file had when it was read.
       if (!placed && staged && await changedSince(file, staged)) throw new Error(`${path.basename(file)} changed since Clop read it, so Clop left it as it is.`);
       // A result that is not smaller is the original itself.
       if (output.unchanged) { if (placed) return (await restore())!; await mark(file); return file; }
       const e = env(), before = e.counter.value;
-      const plan = await planPlacement(e, { produced: output.path, original: file, type: kind });
+      // A result in another format is a conversion, placed by the settings for converted files: the card's format menu by the manual ones.
+      const converted = placedExtension(output.path, file) !== path.extname(file);
+      const plan = await planPlacement(e, { produced: output.path, original: file, type: kind, kind: converted ? manual ? 'manualConvert' : 'autoConvert' : 'optimised' });
       // `temporary` keeps results in the shelf only.
       if (!plan.dest) return output.path;
       const result = await executePlacement(e, plan, output.path, file);
