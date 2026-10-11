@@ -256,3 +256,13 @@ test('a file named in .clopignore is not optimised with the files held at first 
   await pause(300);
   assert.deepEqual(names(), ['real.png']);
 });
+test('pausing while a file settles stops it from being optimised', async t => {
+  const { dir, state, watcher } = await setup(t, {}, {}, { settleMs: 400 });
+  await watcher.update();
+  await image(path.join(dir, 'late.png'));
+  await pause(300);
+  state.settings = { ...state.settings, pauseAutomaticOptimisations: true };
+  await watcher.update();
+  await pause(600);
+  assert.deepEqual(state.handled, []);
+});

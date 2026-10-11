@@ -231,6 +231,9 @@ export class FolderWatcher {
     if (this.cancelled.has(id) || !(await stat(file).then(info => info.isFile(), () => false))) return;
     // A writer still holding the file is waited for; one that never lets go leaves the file alone rather than failing on it.
     if (!await writable(file, { delayMs: this.timing.settleMs })) return;
+    // Pausing or switching the kind off while the file settled stops it.
+    const now = this.host.settings();
+    if (!this.watching || !watchSettings(this.kind, now).enabled || now.pauseAutomaticOptimisations) return;
     this.dispatch(file, dir);
   }
 
