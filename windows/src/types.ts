@@ -9,6 +9,7 @@ import type { SettingMeta } from '../core/settings/controls';
 import type { MediaName } from '../core/settings/entries';
 import type { SettingKey } from '../core/settings/schema';
 import type { SettingsTab } from '../core/settings/tabs';
+import type { Invocation } from '../core/cards/actions';
 export type OutputFormat = 'auto' | 'png' | 'jpeg' | 'webp' | 'avif' | 'gif' | 'heic' | 'jxl';
 /** `crop` is the crop window's crop size, applied to the original before the scale and longest edge (images and videos). */
 export interface ImageOptions {
@@ -31,7 +32,7 @@ export interface ItemResult {
   notes?: string[];
 }
 /** A saved pipeline the card's "Run pipeline…" menu offers. */
-export interface PipelineChoice { id: string; name: string; text: string }
+export interface PipelineChoice { id: string; name: string; text: string; /** Set when the pipeline works on one kind of file only. */ fileType?: MediaKind }
 export type { ClopSettings, CropSize };
 /** A region relative to the displayed image, frame or page: 0–1 with a top-left origin. */
 export type CropRect = NonNullable<CropSize['cropRect']>;
@@ -58,8 +59,14 @@ export interface AppEntry { name: string; path: string; running: boolean }
 export interface PresetTiles { revealed: boolean; tiles: PresetTile[]; add: boolean }
 /** Where the Settings window was last asked to open (a tray item or `clop://settings/…` link); `nonce` changes with each request so the same target can be asked for again. */
 export interface SettingsRequest { tab: SettingsTab; row?: string; nonce: number }
-export interface AppState { items: ItemResult[]; settings: ClopSettings; native: boolean; platform: string; dropActive?: boolean; notice?: string; presets?: PresetTiles; settingsRequest?: SettingsRequest }
 export type { EditorCommand, EditorReply, EditorState, PipelineIssue, PresetTile };
+/** `compact` is the results layout showing (the list, or full cards) and `cards` how many full cards fit. */
+export interface AppState {
+  items: ItemResult[]; settings: ClopSettings; native: boolean; platform: string; dropActive?: boolean; notice?: string; presets?: PresetTiles; settingsRequest?: SettingsRequest;
+  layout?: { compact: boolean; cards: number };
+  /** Every saved pipeline a card button or menu can run, for the buttons set to run one. */
+  pipelines?: PipelineChoice[];
+}
 export interface ClopApi {
   state(): Promise<AppState>; subscribe(callback: (state: AppState) => void): () => void;
   importFiles(files: File[], aggressive?: boolean): Promise<void>; importUrl(url: string, aggressive?: boolean): Promise<void>; clipboard(): Promise<void>;
@@ -72,8 +79,12 @@ export interface ClopApi {
   pipelines(id: string): Promise<PipelineChoice[]>; runPipeline(id: string, pipelineId: string): Promise<void>;
   mcp(request: McpRequest): Promise<McpState>;
   window(action: 'hide' | 'close' | 'main' | 'float' | 'quit' | 'minimize' | 'interactive' | 'passthrough' | 'dismiss-notice' | 'editor' | 'presets'): Promise<void>;
-  /** Opens (or brings forward) a result's crop or compare window. */
-  openCrop(id: string): Promise<void>; openCompare(id: string): Promise<void>;
+  /** Opens (or brings forward) a result's crop, compare or preview window. */
+  openCrop(id: string): Promise<void>; openCompare(id: string): Promise<void>; openPreview(id: string): Promise<void>;
+  /** Pops up the right-click menu of results (the batch menu for several), or one of its submenus by name, at the pointer. */
+  cardMenu(ids: string[], menu?: string): Promise<void>;
+  /** Runs a menu or button action on results; the main process checks it against the card action table. */
+  cardAction(ids: string[], invocation: Invocation): Promise<void>;
   /** The crop window's picture; `page` is 1-based (PDF), `time` a fraction of the video's duration. */
   cropSource(id: string, view?: { page?: number; time?: number }): Promise<CropSource>;
   crop(id: string, request: CropRequest): Promise<void>;

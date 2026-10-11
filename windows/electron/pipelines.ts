@@ -82,6 +82,11 @@ export function pipelineChoices(settings: Pick<ClopSettings, 'savedPipelines'>, 
     .sort((a, b) => Number(isBuiltin(a)) - Number(isBuiltin(b)))
     .map(pipeline => ({ id: pipeline.id, name: pipeline.name ?? (pipeline.rawText || formatSteps(pipeline.steps)), text: pipeline.rawText ?? formatSteps(pipeline.steps) }));
 }
+/** Every saved pipeline a button can run, for the renderer to match to a card's kind. */
+export function allPipelineChoices(settings: Pick<ClopSettings, 'savedPipelines'>): PipelineChoice[] {
+  return settings.savedPipelines.filter(isReadable).sort((a, b) => Number(isBuiltin(a)) - Number(isBuiltin(b)))
+    .map(pipeline => ({ id: pipeline.id, name: pipeline.name ?? (pipeline.rawText || formatSteps(pipeline.steps)), text: pipeline.rawText ?? formatSteps(pipeline.steps), ...(pipeline.fileType ? { fileType: pipeline.fileType } : {}) }));
+}
 /** The saved pipeline the card asked for by id, refused unless the card offers it for this result. */
 export function chosenPipeline(settings: Pick<ClopSettings, 'savedPipelines'>, kind: MediaKind, id: unknown): Pipeline {
   if (typeof id !== 'string' || !id || id.length > 200) throw new Error('Choose a saved pipeline.');

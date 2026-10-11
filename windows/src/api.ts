@@ -1,3 +1,4 @@
+import { parseInvocation, planFor } from '../core/cards/actions';
 import type { AppState, ClopApi, EditorReply, EditorState } from './types';
 /** An error's message without Electron's IPC prefix. */
 export const errorText = (error: unknown) => error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': Error: /, '') : String(error);
@@ -69,5 +70,22 @@ const browser: ClopApi = {
   cropSizes: () => request('crop-sizes'),
   saveCropSizes: sizes => request('save-crop-sizes', { sizes }),
   compareSources: (id, view) => request('compare-sources', { id, view }),
+  openPreview: async id => { window.open(`/?preview=${encodeURIComponent(id)}`, `clop-preview-${id}`, 'width=900,height=700'); },
+  cardMenu: async () => { throw new Error('Right-click menus open in the Clop app.'); },
+  // The browser preview can re-optimise, restore, dismiss and download; the other actions need the desktop app.
+  cardAction: async (ids, invocation) => {
+    const { items } = await request('state');
+    for (const id of ids) {
+      const item = items.find(entry => entry.id === id);
+      if (!item) continue;
+      const plan = planFor(item, parseInvocation(item.kind, invocation));
+      if (plan.type === 'apply') await request('apply', { id, options: { ...item.options, ...plan.options } });
+      else if (plan.type === 'ui' && plan.ui === 'restore') await request('restore', { id });
+      else if (plan.type === 'ui' && plan.ui === 'dismiss') await request('dismiss', { id });
+      else if (plan.type === 'ui' && ['saveAs', 'reveal'].includes(plan.ui)) download(id);
+      else if (plan.type === 'ui' && plan.ui === 'copy') await browser.copy(id);
+      else throw new Error('This action works in the Clop app.');
+    }
+  },
 };
 export const api = window.clop ?? browser;

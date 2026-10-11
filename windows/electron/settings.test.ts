@@ -56,3 +56,8 @@ test('the window can write only what agents may write, plus these Windows-side k
   // None of these chooses a program, script or folder. Add a key here only after deciding that of it.
   assert.deepEqual(beyondAgents, ['adaptiveVideoSize', 'audioFormat', 'audioFormatsToSkip', 'defaultLinkExpiration', 'enabledKeys', 'formatsToConvertToOutputAudio', 'keyComboModifiers', 'quickResizeKeys', 'videoEncoder', 'workdirCleanupInterval']);
 });
+test('card options accept an extra compression and the HEIC and JPEG XL formats, and nothing else', () => {
+  assert.deepEqual(parseOptions({ mode: 'balanced', format: 'heic', scale: 1, compression: { tier: 'custom', factor: 40, extra: 1 } }), { mode: 'balanced', format: 'heic', scale: 1, compression: { tier: 'custom', factor: 40 } });
+  assert.equal(parseOptions({ mode: 'balanced', format: 'jxl', scale: 1 }).format, 'jxl');
+  for (const bad of [null, 'adaptive', { tier: 'lossless', factor: 40 }, { tier: 'custom', factor: 4 }, { tier: 'custom', factor: 101 }, { tier: 'custom', factor: 40.5 }, { tier: 'custom' }]) assert.throws(() => parseOptions({ mode: 'balanced', format: 'auto', scale: 1, compression: bad }), /compression factor/, JSON.stringify(bad));
+});
