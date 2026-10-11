@@ -152,3 +152,26 @@ test('an update is refused while the settings file could not be read', async t =
   await assert.rejects(store.update(() => { ran = true; return { patch: { keepDropZoneVisible: true }, result: 0 }; }), /will not save changes/);
   assert.equal(ran, false);
 });
+
+test('a store on a file other processes write starts each change from the file as it is, so it keeps what they saved', async t => {
+  const dir = await folder(t), file = path.join(dir, 'settings.json');
+  await writeFile(file, JSON.stringify({ stripMetadata: true }));
+  const first = new SettingsStore(file, paths, true), other = new SettingsStore(file, paths, true);
+  await first.load(); await other.load();
+  // Another process saves a setting after this one loaded the file.
+  await other.set({ preserveDates: false });
+  // This one then saves only a counter (as a headless `%i` run does), or edits through `update`.
+  await first.set({ lastAutoIncrementingNumber: 7 });
+  assert.deepEqual([(await readJson(file)).preserveDates, (await readJson(file)).lastAutoIncrementingNumber], [false, 7]);
+  await other.set({ stripMetadata: false });
+  await first.update(current => ({ patch: { autoCopyToClipboard: !current.autoCopyToClipboard }, result: undefined }));
+  const stored = await readJson(file);
+  assert.deepEqual([stored.stripMetadata, stored.preserveDates, stored.lastAutoIncrementingNumber], [false, false, 7]);
+  assert.equal(first.get('stripMetadata'), false);
+  // A store that owns the file (the app) keeps its own copy, as before.
+  const owner = new SettingsStore(file, paths);
+  await owner.load();
+  await other.set({ stripMetadata: true });
+  await owner.set({ lastAutoIncrementingNumber: 8 });
+  assert.equal((await readJson(file)).stripMetadata, false, 'the owner writes what it holds');
+});

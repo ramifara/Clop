@@ -15,7 +15,11 @@ export class SettingsStore extends EventEmitter<{ change: [settings: ClopSetting
   private queue: Promise<unknown> = Promise.resolve();
   /** Set when the file exists but could not be read or moved aside; saving would destroy it. */
   private unreadable?: Error;
-  constructor(readonly file: string, private readonly paths: Partial<DefaultPaths> = {}) {
+  /**
+   * `shared`: other processes write this file too (the headless CLI and MCP server, next to a terminal command or another server).
+   * Each change then starts from the file as it is when its turn comes, not from what was read at startup, so it keeps what they saved.
+   */
+  constructor(readonly file: string, private readonly paths: Partial<DefaultPaths> = {}, private readonly shared = false) {
     super();
     this.current = defaultSettings(paths);
   }
@@ -69,13 +73,24 @@ export class SettingsStore extends EventEmitter<{ change: [settings: ClopSetting
   update<T>(change: (current: ClopSettings) => { patch?: unknown; result: T }): Promise<{ settings: ClopSettings; result: T }> {
     return this.enqueue(async () => {
       if (this.unreadable) throw this.unreadable;
+      await this.reread();
       const { patch, result } = change(this.current);
       return { settings: patch === undefined ? this.current : await this.apply(patch), result };
     });
   }
 
+  /** A shared file is read again before a change is built on it; one that cannot be read now leaves the settings as they are. */
+  private async reread() {
+    if (!this.shared) return;
+    try {
+      const value: unknown = JSON.parse(await readFile(this.file, 'utf8'));
+      if (typeof value === 'object' && value !== null && !Array.isArray(value) && !isLegacySettings(value)) this.current = parseSettings(value, defaultSettings(this.paths));
+    } catch {}
+  }
+
   private async apply(partial: unknown): Promise<ClopSettings> {
     if (this.unreadable) throw this.unreadable;
+    await this.reread();
     const previous = this.current, next = parseSettings(partial, previous);
     const changed = SETTING_KEYS.filter(key => !isDeepStrictEqual(next[key], previous[key]));
     if (!changed.length) return previous;

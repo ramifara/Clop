@@ -64,7 +64,7 @@ class HeadlessBackend implements Backend {
   private loadStore() {
     const { userData, home } = this.options;
     return this.store ??= (async () => {
-      const store = new SettingsStore(path.join(userData, 'settings.json'), { home, desktop: path.join(home, 'Desktop'), userData });
+      const store = new SettingsStore(path.join(userData, 'settings.json'), { home, desktop: path.join(home, 'Desktop'), userData }, true);
       await store.load();
       return store;
     })();
