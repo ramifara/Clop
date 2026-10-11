@@ -188,7 +188,7 @@ The keyboard shortcuts tab stores trigger keys, action keys and resize keys as E
 Some settings have rows but nothing in Clop for Windows reads them yet. They stay editable, so a value you set is kept (and imported from macOS settings), search finds them, and the row says "Not used by Clop for Windows yet" (a section where nothing works yet shows that once, as a banner). A test pins the list, so it shrinks on purpose as features arrive:
 
 - Keyboard shortcuts: `keyComboModifiers`, `enabledKeys`, `quickResizeKeys` (the fixed keys in [Shortcuts](#shortcuts) apply until the configurable-shortcuts change).
-- Floating results: `enableFloatingResults`, `floatingResultActions`, `compactResultActions`, `followCursorScreen`, `hideFloatingResultTooltips`, `alwaysShowCompactResults`, `formatPickerStyle`, `showCopyClearButtons`, the four `dismiss…On{Drop,Upload}` settings, `autoHideFloatingResults`, `autoHideFloatingResultsAfter`, `autoHideClipboardResultAfter`, `showCompactImages`, `autoClearAllCompactResultsAfter`.
+- Floating results: `enableFloatingResults`, `followCursorScreen`, `autoHideFloatingResults`, `autoHideFloatingResultsAfter`, `autoHideClipboardResultAfter` (the other floating-result settings are read by the cards and the compact list, see [Result cards](#result-cards-right-click-menus-and-the-compact-list)).
 - Clipboard and conversion: `optimiseTIFF`, `optimiseHEICAVIFClipboard`, `convertHDRToSDR`, `formatsToConvertToJPEG`, `formatsToConvertToPNG`, `formatsToConvertToMP4`, `formatsToConvertToOutputAudio`.
 - Elsewhere: `showMenubarIcon`, `defaultLinkExpiration`, `allowClopToAppearInScreenshots`, `onlyShowDropZoneOnOption`, `onlyShowPresetZonesOnControlTapped`.
 
