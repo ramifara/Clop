@@ -45,6 +45,7 @@
     "extraResources": [{ "from": "native", "to": "native", "filter": ["**/*", "!clop.cs", "!installer.nsh"] }, { "from": "dist-electron/cli.mjs", "to": "cli.mjs" }, { "from": "../LICENSE", "to": "LICENSE" }, { "from": "README.md", "to": "README.md" }, { "from": ".tools/win32-x64/bin", "to": "bin" }],
     "extraFiles": [{ "from": "dist-electron/clop.exe", "to": "cli/clop.exe" }],
     "asarUnpack": ["node_modules/sharp/**/*", "node_modules/@img/**/*"],
+    "electronFuses": { "runAsNode": true, "enableNodeOptionsEnvironmentVariable": false, "enableNodeCliInspectArguments": false, "enableEmbeddedAsarIntegrityValidation": true },
     "win": { "target": ["nsis", "portable"], "icon": "assets/icon.ico" },
     "nsis": { "artifactName": "Clop-Windows-${version}-${arch}-Setup.${ext}", "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "include": "native/installer.nsh" },
     "portable": { "artifactName": "Clop-Windows-${version}-${arch}-Portable.${ext}" },
