@@ -125,10 +125,10 @@ test('name templates apply under Same folder and path templates under Specific f
  */
 const PENDING_KEYS = [
   'allowClopToAppearInScreenshots', 'alwaysShowCompactResults', 'autoClearAllCompactResultsAfter', 'autoHideClipboardResultAfter', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter',
-  'batchModeFileCountThreshold', 'compactResultActions', 'convertHDRToSDR', 'defaultLinkExpiration', 'dismissCompactResultOnDrop', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnDrop',
+  'compactResultActions', 'convertHDRToSDR', 'defaultLinkExpiration', 'dismissCompactResultOnDrop', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnDrop',
   'dismissFloatingResultOnUpload', 'enableFloatingResults', 'enabledKeys', 'floatingResultActions', 'followCursorScreen', 'formatPickerStyle', 'formatsToConvertToJPEG', 'formatsToConvertToMP4',
   'formatsToConvertToOutputAudio', 'formatsToConvertToPNG', 'hideFloatingResultTooltips', 'keyComboModifiers', 'onlyShowDropZoneOnOption', 'onlyShowPresetZonesOnControlTapped', 'optimiseHEICAVIFClipboard',
-  'optimiseTIFF', 'quickResizeKeys', 'showCompactImages', 'showCopyClearButtons', 'showMenubarIcon', 'useBatchModeForFolders',
+  'optimiseTIFF', 'quickResizeKeys', 'showCompactImages', 'showCopyClearButtons', 'showMenubarIcon',
 ];
 
 test('the rows that do nothing yet are exactly the pinned list, each with a reason', () => {
