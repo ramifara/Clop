@@ -1,0 +1,14 @@
+# Codex settings
+model = "gpt-6-codex"
+approval_policy = "on-request" # ask first
+
+[mcp_servers.docs]
+command = "docs-mcp"
+args = [
+  "--stdio",
+  "--verbose",
+]
+
+# Profiles below
+[profiles.fast]
+model = "gpt-6-mini"

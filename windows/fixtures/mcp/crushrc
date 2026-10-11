@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Crush settings
+set model claude-sonnet-5
+mcp add filesystem --command npx --args -y \
+  --args @modelcontextprotocol/server-filesystem
