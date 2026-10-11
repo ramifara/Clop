@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { centeredMaxRect, extendedCanvas, FULL, handlePoint, marquee, moved, oriented, resized, sizedRect, targetSize, toBox, toRect, type Box } from './crop-geometry';
+import { centeredMaxRect, extendedCanvas, FULL, handlePoint, keptSize, marquee, moved, oriented, resized, sizedRect, targetSize, toBox, toRect, type Box } from './crop-geometry';
 
 const view = { width: 400, height: 200 };
 const close = (actual: Record<string, number>, expected: Record<string, number>) => {
@@ -65,4 +65,11 @@ test('fits presets: centred largest regions, orientations, typed sizes and the r
   // Extending a landscape page to 1:2 doubles its width; a portrait one grows taller.
   assert.deepEqual(extendedCanvas({ width: 300, height: 300 }, .5, 'landscape'), { width: 600, height: 300 });
   assert.deepEqual(extendedCanvas({ width: 300, height: 300 }, .5, 'portrait'), { width: 300, height: 600 });
+});
+
+test('a cropped result is downscaled from the area its crop keeps', () => {
+  assert.deepEqual(keptSize(undefined, 400, 200), { width: 400, height: 200 });
+  assert.deepEqual(keptSize({ width: 200, height: 200, name: '', longEdge: false, smartCrop: false }, 400, 200), { width: 200, height: 200 });
+  assert.deepEqual(keptSize({ width: 300, height: 300, name: '', longEdge: false, smartCrop: false, cropRect: { x: 0, y: 0, width: .5, height: 1 } }, 400, 200), { width: 200, height: 200 });
+  assert.deepEqual(keptSize({ width: 0, height: 0, name: '', longEdge: false, smartCrop: false }, 400, 200), { width: 400, height: 200 });
 });

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
 import { api } from './api';
+import { keptSize } from './crop-geometry';
 import { Icon } from './icons';
 import { McpSettings } from './McpSettings';
 import type { AppEntry, AppState, ClopSettings, ImageOptions, ItemResult, PipelineChoice } from './types';
@@ -40,7 +41,7 @@ export function App() {
       if (event.key === 'Escape') { void api.window('hide'); return; }
       if (!item || item.status !== 'ready' || event.ctrlKey || event.metaKey || event.altKey) return;
       if (item.kind === 'image' && /^[1-9]$/.test(event.key)) { event.preventDefault(); void run(() => api.apply(item.id, { ...item.options, scale: Number(event.key) / 10, maxEdge: undefined })); }
-      else if (item.kind === 'image' && event.key === '-') { event.preventDefault(); void run(() => api.apply(item.id, { ...item.options, scale: Math.max(.1, Math.round((item.width / item.originalWidth - .1) * 10) / 10), maxEdge: undefined })); }
+      else if (item.kind === 'image' && event.key === '-') { event.preventDefault(); void run(() => api.apply(item.id, { ...item.options, scale: Math.max(.1, Math.round((item.width / keptSize(item.options.crop, item.originalWidth, item.originalHeight).width - .1) * 10) / 10), maxEdge: undefined })); }
       else if (event.key.toLowerCase() === 'c') void run(() => api.copy(item.id), 'Copied');
       else if (event.key.toLowerCase() === 'r') void run(() => api.restore(item.id));
     };
@@ -91,14 +92,14 @@ export function App() {
 function ResultCard({ item, native, run, onSelect }: { item: ItemResult; native: boolean; run: Run; onSelect: () => void }) {
   const [panel, setPanel] = useState<'scale' | 'compression' | 'dimensions' | 'menu' | 'pipelines' | null>(null);
   const [pipelines, setPipelines] = useState<PipelineChoice[]>();
-  const [scale, setScale] = useState(Math.round(item.width / item.originalWidth * 100));
+  const [scale, setScale] = useState(Math.round(item.width / keptSize(item.options.crop, item.originalWidth, item.originalHeight).width * 100));
   const [edge, setEdge] = useState(Math.max(item.width, item.height).toString());
   const [hovering, setHovering] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const ready = item.status === 'ready', busy = item.status === 'processing', image = item.kind === 'image';
   const saved = Math.min(99.9, Math.round((1 - item.outputBytes / item.originalBytes) * 1000) / 10);
-  const expanded = hovering && !collapsed;
-  useEffect(() => { setScale(Math.round(item.width / item.originalWidth * 100)); setEdge(Math.max(item.width, item.height).toString()); }, [item.width, item.height, item.originalWidth]);
+  const expanded = hovering && !collapsed, kept = keptSize(item.options.crop, item.originalWidth, item.originalHeight);
+  useEffect(() => { setScale(Math.round(item.width / keptSize(item.options.crop, item.originalWidth, item.originalHeight).width * 100)); setEdge(Math.max(item.width, item.height).toString()); }, [item.width, item.height, item.originalWidth, item.originalHeight, item.options.crop]);
   const apply = (options: Partial<ImageOptions>) => { setPanel(null); setCollapsed(true); void run(() => api.apply(item.id, { ...item.options, ...options })); };
   function commitScale(value = scale) { apply({ scale: value / 100, maxEdge: undefined }); }
   const restore = { name: 'Restore original', icon: 'restore', action: () => { setCollapsed(true); void run(() => api.restore(item.id)); } };
@@ -118,7 +119,7 @@ function ResultCard({ item, native, run, onSelect }: { item: ItemResult; native:
     </div>
     <div className="window-grip" title="Move result"/>
     <div className="card-corners"><button className="corner-button close" aria-label={`Dismiss ${NOUNS[item.kind]}`} title="Dismiss" disabled={busy} onClick={() => void run(() => api.dismiss(item.id))}><Icon name="close" size={10}/></button><button className="corner-button more" aria-label="More actions" title="More actions" disabled={busy} onClick={() => setPanel(panel === 'menu' ? null : 'menu')}>•••</button></div>
-    {panel === 'scale' ? <div className="card-panel scale-panel"><button className="panel-close" aria-label="Close downscale" onClick={() => setPanel(null)}><Icon name="close" size={10}/></button><strong>{scale}% · {Math.round(item.originalWidth * scale / 100)}×{Math.round(item.originalHeight * scale / 100)}</strong><input autoFocus type="range" aria-label="Downscale" min="10" max="100" step="5" value={scale} onChange={event => setScale(Number(event.target.value))} onPointerUp={event => commitScale(Number(event.currentTarget.value))} onKeyUp={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) commitScale(Number(event.currentTarget.value)); }}/><div className="scale-presets">{[100, 75, 50, 25, 10].map(value => <button key={value} disabled={busy} onClick={() => commitScale(value)}>{value}%</button>)}</div></div>
+    {panel === 'scale' ? <div className="card-panel scale-panel"><button className="panel-close" aria-label="Close downscale" onClick={() => setPanel(null)}><Icon name="close" size={10}/></button><strong>{scale}% · {Math.round(kept.width * scale / 100)}×{Math.round(kept.height * scale / 100)}</strong><input autoFocus type="range" aria-label="Downscale" min="10" max="100" step="5" value={scale} onChange={event => setScale(Number(event.target.value))} onPointerUp={event => commitScale(Number(event.currentTarget.value))} onKeyUp={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) commitScale(Number(event.currentTarget.value)); }}/><div className="scale-presets">{[100, 75, 50, 25, 10].map(value => <button key={value} disabled={busy} onClick={() => commitScale(value)}>{value}%</button>)}</div></div>
     : panel === 'compression' ? <div className="card-panel compression-panel"><strong>Compression</strong>{(['balanced', 'aggressive', 'lossless'] as const).map(mode => <button key={mode} className={mode === item.options.mode ? 'active' : ''} onClick={() => apply({ mode })}>{mode === 'balanced' ? 'Balanced' : mode === 'aggressive' ? 'Smaller' : 'Lossless'}</button>)}</div>
     : panel === 'dimensions' ? <form className="card-panel dimension-panel" onSubmit={event => { event.preventDefault(); apply({ maxEdge: Number(edge), scale: 1 }); }}><label htmlFor={`edge-${item.id}`}>Longest edge</label><div><input id={`edge-${item.id}`} autoFocus type="number" min="1" max="16000" value={edge} onChange={event => setEdge(event.target.value)}/><span>px</span><button type="submit" aria-label="Apply dimensions"><Icon name="check" size={14}/></button></div></form>
     : panel === 'menu' ? <div className="card-panel action-menu">{item.kind !== 'audio' && <button onClick={() => { setPanel(null); void run(() => api.openCrop(item.id)); }}>Crop and resize…</button>}<button onClick={() => { setPanel(null); void run(() => api.openCompare(item.id)); }}>Compare original</button>{image && <button onClick={() => setPanel('dimensions')}>Set dimensions…</button>}<button onClick={() => void run(() => api.save(item.id))}>Save as…</button>{native && <button onClick={() => void run(() => api.reveal(item.id))}>Show in Explorer</button>}{native && <button onClick={() => { setPipelines(undefined); setPanel('pipelines'); void run(async () => setPipelines(await api.pipelines(item.id))); }}>Run pipeline…</button>}</div>

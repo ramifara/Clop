@@ -1,4 +1,4 @@
-import { clampRect, extendToAspectRatio } from '../core/media/crop-size';
+import { clampRect, cropGeometry, extendToAspectRatio } from '../core/media/crop-size';
 import type { CropOrientation, CropRect, CropSize } from './types';
 
 // The crop window's selection model, ported from CropSelectionOverlay and CropView in CropWindow.swift.
@@ -110,3 +110,9 @@ export function extendedCanvas(source: Size, fractional: number, orientation: Cr
 export const fractionalAspect = (size: Size) => Math.min(size.width, size.height) / Math.max(size.width, size.height);
 /** The area the size presets sort by (`CropSize.area`), an auto side counting as the other. */
 export const area = (size: CropSize) => (size.width || size.height) * (size.height || size.width);
+
+/** What a result's downscale and longest edge apply to: the original's size, or the area its crop keeps of it. */
+export function keptSize(crop: CropSize | undefined, width: number, height: number): Size {
+  if (!crop) return { width, height };
+  try { const kept = cropGeometry(crop, width, height); return { width: kept.width, height: kept.height }; } catch { return { width, height }; }
+}
