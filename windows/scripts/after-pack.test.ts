@@ -4,7 +4,7 @@ import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { hasLongPathAware, inspectManifest, isLongPathAware, setLongPathAware, withLongPathAware } from '../scripts/after-pack.mjs';
+import { hasLongPathAware, inspectManifest, isLongPathAware, setLongPathAware, withLongPathAware } from './after-pack.mjs';
 
 const WS2 = 'xmlns:ws2="http://schemas.microsoft.com/SMI/2016/WindowsSettings"';
 const SETTING = `<ws2:longPathAware ${WS2}>true</ws2:longPathAware>`;

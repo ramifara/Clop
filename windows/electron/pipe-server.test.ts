@@ -139,6 +139,12 @@ test('a held pipe that does not answer is a busy app: the CLI reads settings her
   await assert.rejects(readFile(path.join(dir, 'settings.json')), { code: 'ENOENT' }, 'nothing was written behind the app');
   assert.equal(await cli('settings', 'get', 'pdfDPI', '--json'), 0, err.join(''));
   assert.equal(JSON.parse(out.join('')).settings[0].value, '0');
+  // --review needs the app's batch window, and says so when the app is only busy rather than not running.
+  await graphic(40, 40).png().toFile(path.join(dir, 'a.png'));
+  err.length = 0;
+  assert.equal(await cli('optimise', '--review', 'a.png'), 1);
+  assert.match(err.join(''), /Clop is running but did not answer, so --review could not open the batch window/);
+  assert.doesNotMatch(err.join(''), /needs Clop running/);
 });
 
 test('a CLI with no app published runs headless', async t => {

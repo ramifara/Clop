@@ -7,8 +7,8 @@ import type { ToolName } from './tools';
 
 /** The length from which a path gets the prefix: a folder name cannot exceed 248 characters, so a longer path may be one. */
 export const LONG_PATH = 248;
-const VERBATIM = /^\\\\[?.]\\/;
-const UNC = /^\\\\[^\\/]+[\\/]+[^\\/]+/;
+const VERBATIM = /^[\\/]{2}[?.][\\/]/;
+const UNC = /^[\\/]{2}[^\\/]+[\\/]+[^\\/]+/;
 const DRIVE = /^[A-Za-z]:[\\/]/;
 
 /**
@@ -39,8 +39,9 @@ export function extendedArgument(arg: string, platform: NodeJS.Platform = proces
 
 /**
  * ExifTool's Windows build is a Perl program that reaches long paths through its own layer, and nothing shows that layer takes the
- * prefix, so its arguments stay as they are. Every other bundled tool opens files with the C runtime or the wide-character API,
- * which take it.
+ * prefix, so its arguments stay as they are. ffmpeg, ffprobe and Ghostscript, the tools that get a user's full path, open files
+ * through the wide-character API, which takes it. The other tools open files through the ANSI code page and only ever get bare
+ * names in a short scratch folder (see `tool` in media/image.ts), so for them the prefix changes nothing.
  */
 const OWN_LONG_PATHS: readonly string[] = ['exiftool'] satisfies ToolName[];
 /** The arguments of a bundled tool with long paths made openable. */

@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { graphic } from './media/image.fixtures';
@@ -8,6 +8,8 @@ import { optimiseImage } from './media/image';
 import { optimiseVideo } from './media/video';
 import { probe } from './media/detect';
 import { clip } from './media/video.fixtures';
+import { optimisePDF } from './media/pdf';
+import { photoPDF } from './media/pdf.fixtures';
 import { needTools } from './testing';
 import { extendedArgument, extendedPath, LONG_PATH, plainPath, toolArguments } from './longpath';
 
@@ -20,6 +22,8 @@ test('a drive path over the limit gets the extended prefix, a UNC path its UNC f
   assert.equal(extendedPath(unc, 'win32'), `\\\\?\\UNC\\${unc.slice(2)}`);
   assert.equal(extendedPath(`\\\\?\\${drive}`, 'win32'), `\\\\?\\${drive}`, 'a prefixed path is left alone');
   assert.equal(extendedPath(`\\\\.\\${drive}`, 'win32'), `\\\\.\\${drive}`);
+  assert.equal(extendedPath(unc.replaceAll('\\', '/'), 'win32'), `\\\\?\\UNC\\${unc.slice(2)}`, 'a UNC path with forward slashes');
+  assert.equal(extendedPath(`//?/${drive}`, 'win32'), `//?/${drive}`);
 });
 test('slashes, dots and repeated separators are resolved, since the prefix switches Windows\' own clean-up off', () => {
   const messy = drive.replace(/\\/g, '/').replace('/Pictures', '/Pictures/./extra/../') + '';
@@ -69,7 +73,7 @@ async function longFolder(t: TestContext) {
 
 // Windows is where this matters (the limit is Windows'); elsewhere it shows that nothing about a long path changes.
 test('tools and sharp open files under paths over 260 characters', async t => {
-  if (!needTools(t, 'ffmpeg', 'ffprobe', 'pngquant')) return;
+  if (!needTools(t, 'ffmpeg', 'ffprobe', 'pngquant', 'jpegoptim', 'gs')) return;
   const { short, folder } = await longFolder(t);
   const video = path.join(folder, 'screen.mp4'), picture = path.join(folder, 'shot.png');
   assert.ok(video.length > 260);
@@ -82,5 +86,9 @@ test('tools and sharp open files under paths over 260 characters', async t => {
   const out = path.join(short, 'out');
   const optimised = await optimiseVideo(video, out, { compression: { tier: 'smaller', factor: 50 }, allowLarger: true });
   assert.ok((await stat(optimised.path)).size > 0);
+  // Ghostscript is the other tool that gets the user's full path (`-sOutputFile=` stays in the scratch folder, the input does not).
+  const pdf = path.join(folder, 'scan.pdf');
+  await writeFile(pdf, await photoPDF({ pages: 1, dpi: 200 }));
+  assert.ok((await optimisePDF(pdf, out, { aggressive: true, allowLarger: true })).bytes > 0);
   assert.equal((await optimiseImage(picture, out, { compression: { tier: 'custom', factor: 50 } })).format, 'png');
 });

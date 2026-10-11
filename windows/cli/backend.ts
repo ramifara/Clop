@@ -19,6 +19,8 @@ import { Workdir } from '../core/workdir';
 export interface Backend {
   /** True when the running app does the work. */
   readonly app: boolean;
+  /** The app is running but did not answer, so this process does the work: anything that needs the app's windows cannot be done. */
+  readonly appBusy?: boolean;
   optimise(request: OptimisationRequest, onMessage: (message: ServerMessage) => void): Promise<void>;
   /** Hands a request to the running app without waiting for it (`--async`). */
   queue(request: OptimisationRequest): Promise<void>;
@@ -81,7 +83,7 @@ class HeadlessBackend implements Backend {
   private service?: Promise<ClopService>;
   private store?: Promise<SettingsStore>;
   /** `appBusy`: the app is running but did not answer, so a settings change written here would be lost to its next save. */
-  constructor(private readonly options: BackendOptions, private readonly appBusy = false) {}
+  constructor(private readonly options: BackendOptions, readonly appBusy = false) {}
 
   private loadStore() {
     const { userData, home } = this.options;

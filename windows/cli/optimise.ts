@@ -148,6 +148,7 @@ export async function sendRequest(ctx: Context, urls: string[], opts: SendOption
   const backend = await ctx.backend();
   // `--review` only opens the batch window; nothing runs until the user presses Optimise there, so the command does not wait.
   if (request.prepareInBatch) {
+    if (backend.appBusy) { ctx.io.err('Clop is running but did not answer, so --review could not open the batch window. Try again in a moment.\n'); return 1; }
     const errors = new Set<string>();
     await backend.optimise(request, message => { if (message.kind === 'error') errors.add(message.error.error); });
     if (errors.size) { ctx.io.err(`${[...errors].join('\n')}\n`); return 1; }

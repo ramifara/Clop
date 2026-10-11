@@ -203,7 +203,7 @@ function syncFloating() {
   const area = floatingArea();
   const items = visible();
   // Room for the tiles stays once they were shown, until the drag ends: a tile under the pointer must not lose its window when Ctrl is let go.
-  const tiles = targetShown() && (presetsLatched || presetsRevealed()) ? gridHeight(cellCount(presets())) + 8 : 0;
+  const tiles = target && (presetsLatched || presetsRevealed()) ? gridHeight(cellCount(presets())) + 8 : 0;
   const extra = extraHeight({ tiles, notice: !!notice, welcome: !settings.finishedOnboarding });
   cardFit = cardsThatFit(area.height, target, 170, 60 + extra);
   const compact = compactMode.update(items.map(item => ({ id: item.id, running: item.status === 'processing' })));
@@ -1211,7 +1211,8 @@ else {
       bridge.on('drag-modifiers', event => {
         if (!dragging) return;
         altHeld = event.alt === true;
-        presetReveal.update({ ctrl: event.ctrl === true, alt: event.alt === true }, settings.onlyShowPresetZonesOnControlTapped); presetsLatched ||= presetsRevealed(); syncFloating(); broadcast();
+        // With `onlyShowDropZoneOnOption` Alt shows the drop target, so only Ctrl reveals the tiles.
+        presetReveal.update({ ctrl: event.ctrl === true, alt: event.alt === true && !settings.onlyShowDropZoneOnOption }, settings.onlyShowPresetZonesOnControlTapped); presetsLatched ||= presetsRevealed(); syncFloating(); broadcast();
       });
       // The tiles stay for the moment a drop on one needs to land.
       bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; altHeld = false; dragFiles = []; presetReveal.reset(); presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
