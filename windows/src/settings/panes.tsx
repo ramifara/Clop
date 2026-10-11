@@ -42,7 +42,7 @@ export function Automation({ kind, source }: { kind?: MediaName; source?: 'clipb
   const sourceName = (key: string) => key === 'clipboard' ? 'Clipboard' : key === 'dropZone' ? 'Drop zone' : key;
   return <div className="list">
     {groups.length ? <ul className="automation">{groups.map(group => <li key={`${group.type}:${group.source}`}>
-      <span className="source" title={group.source}>{kind ? sourceName(group.source) : `${KIND_TITLES[group.type]}${source ? '' : ` · ${sourceName(group.source)}`}`}</span>
+      <span className="s-source" title={group.source}>{kind ? sourceName(group.source) : `${KIND_TITLES[group.type]}${source ? '' : ` · ${sourceName(group.source)}`}`}</span>
       <span className="steps">{group.names.join(' → ')}</span>
     </li>)}</ul> : <small>{source ? 'Nothing runs automatically.' : 'No pipelines are attached to the clipboard or to a watched folder.'}</small>}
     <EditButton label="Edit in the pipeline editor"/>

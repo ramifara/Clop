@@ -92,7 +92,7 @@
 .settings-window .pipelines header{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px}
 .settings-window .pipelines li .name{font-weight:500;white-space:nowrap}
 .settings-window .pipelines li code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:10px}
-.settings-window .automation .source{font-weight:500;min-width:90px}
+.settings-window .automation .s-source{font-weight:500;min-width:90px}
 .settings-window .automation .steps{color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis}
 .settings-window .s-zones{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))!important}
 .settings-window .s-zones li{display:grid;gap:2px}
