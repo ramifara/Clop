@@ -1,4 +1,5 @@
-import { crc32, deflateRawSync } from 'node:zlib';
+import { crc32, deflateRaw } from 'node:zlib';
+import { promisify } from 'node:util';
 import { mkdir, open, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -17,6 +18,7 @@ export function redact(value: unknown): unknown {
 }
 
 export interface ZipEntry { name: string; data: Buffer }
+const deflate = promisify(deflateRaw);
 
 const LOCAL = 0x04034b50, CENTRAL = 0x02014b50, END = 0x06054b50;
 /** DOS time and date of `date`, as zip stores them (two-second resolution, years from 1980). */
@@ -24,13 +26,13 @@ function dosTime(date: Date) {
   return { time: (date.getHours() << 11) | (date.getMinutes() << 5) | (date.getSeconds() >> 1), date: ((Math.max(date.getFullYear(), 1980) - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate() };
 }
 
-/** A zip archive of `entries`, deflated, with UTF-8 names. Small and complete enough for a few log files: no zip64, no encryption. */
-export function zip(entries: readonly ZipEntry[], modified = new Date()): Buffer {
+/** A zip archive of `entries`, deflated off the main thread (a dump holds megabytes of logs), with UTF-8 names. Small and complete enough for a few log files: no zip64, no encryption. */
+export async function zip(entries: readonly ZipEntry[], modified = new Date()): Promise<Buffer> {
   const { time, date } = dosTime(modified), locals: Buffer[] = [], centrals: Buffer[] = [];
   let offset = 0;
   if (entries.length > 0xfffe) throw new Error('Too many files for a zip.');
   for (const entry of entries) {
-    const name = Buffer.from(entry.name.replaceAll('\\', '/'), 'utf8'), packed = deflateRawSync(entry.data), crc = crc32(entry.data);
+    const name = Buffer.from(entry.name.replaceAll('\\', '/'), 'utf8'), packed = await deflate(entry.data), crc = crc32(entry.data);
     if (name.length > 0xffff || entry.data.length > 0x7fffffff) throw new Error(`${entry.name} is too large for a zip.`);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(LOCAL, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x0800, 6); local.writeUInt16LE(8, 8); local.writeUInt16LE(time, 10); local.writeUInt16LE(date, 12);
@@ -93,7 +95,7 @@ export async function writeDump(dir: string, input: DumpInput, now = new Date())
   await mkdir(dir, { recursive: true });
   const file = path.join(dir, dumpName(now)), partial = `${file}.partial`;
   try {
-    await writeFile(partial, zip(await dumpEntries(input), now));
+    await writeFile(partial, await zip(await dumpEntries(input), now));
     await rename(partial, file);
   } catch (error) { await rm(partial, { force: true }); throw error; }
   const old = (await readdir(dir)).filter(name => /^clop-debug-dump-.*\.zip$/.test(name)).sort().reverse().slice(KEEP);

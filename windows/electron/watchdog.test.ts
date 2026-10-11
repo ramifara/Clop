@@ -53,3 +53,12 @@ test('a late timer tick means the main process was blocked; short delays, the fi
   assert.deepEqual(dog.sample(12_100), [], 'logged moments ago');
   assert.deepEqual(kinds(dog.sample(17_000)), ['log'], 'a later stall logs again');
 });
+
+test('waking from sleep is not a blocked main process', () => {
+  const dog = new Watchdog({ intervalMs: 500, lagMs: 2000 });
+  dog.sample(0);
+  dog.resume();
+  assert.deepEqual(dog.sample(8 * 3600 * 1000), [], 'the first tick after waking only restarts the clock');
+  assert.deepEqual(dog.sample(8 * 3600 * 1000 + 500), []);
+  assert.deepEqual(kinds(dog.sample(8 * 3600 * 1000 + 5500)), ['log'], 'a real stall after waking is still seen');
+});

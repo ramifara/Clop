@@ -50,6 +50,9 @@ export class Watchdog {
   /** The window `id` was reloaded or closed; its hang is over. */
   closed(id: string) { this.hung.delete(id); this.waited.delete(id); }
 
+  /** The PC woke from sleep: the next tick is late for that reason, not because the process was blocked. */
+  resume() { this.lastSample = undefined; }
+
   /** Called every `intervalMs` by a timer in the main process: a call that arrives much later than that means the process was blocked. */
   sample(at: number): WatchdogAction[] {
     const previous = this.lastSample;

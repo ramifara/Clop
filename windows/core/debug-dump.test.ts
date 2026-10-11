@@ -38,9 +38,9 @@ test('secrets are blanked by key name at any depth, and nothing else changes', (
   assert.deepEqual(redact(defaultSettings()), JSON.parse(JSON.stringify(defaultSettings())));
 });
 
-test('the zip reads back with every entry intact, names in UTF-8 and empty files allowed', () => {
+test('the zip reads back with every entry intact, names in UTF-8 and empty files allowed', async () => {
   const entries: ZipEntry[] = [{ name: 'a.txt', data: Buffer.from('hello hello hello hello') }, { name: 'logs/ü ñ.log', data: Buffer.from('päivää') }, { name: 'empty.txt', data: Buffer.alloc(0) }, { name: 'big.bin', data: Buffer.alloc(300_000, 7) }];
-  const files = unzip(zip(entries, new Date(2026, 9, 11, 12, 30, 40)));
+  const files = unzip(await zip(entries, new Date(2026, 9, 11, 12, 30, 40)));
   assert.deepEqual([...files.keys()], ['a.txt', 'logs/ü ñ.log', 'empty.txt', 'big.bin']);
   for (const entry of entries) assert.ok(files.get(entry.name)!.equals(entry.data), entry.name);
 });
@@ -48,7 +48,7 @@ test('the zip reads back with every entry intact, names in UTF-8 and empty files
 test('an independent unzip tool accepts the archive', async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-zip-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  await writeFile(path.join(dir, 'dump.zip'), zip([{ name: 'app-info.txt', data: Buffer.from('x'.repeat(5000)) }, { name: 'logs/clop.log', data: Buffer.from('line\n'.repeat(1000)) }]));
+  await writeFile(path.join(dir, 'dump.zip'), await zip([{ name: 'app-info.txt', data: Buffer.from('x'.repeat(5000)) }, { name: 'logs/clop.log', data: Buffer.from('line\n'.repeat(1000)) }]));
   const output: string[] = [];
   const module = await SevenZip({ print: line => output.push(line), printErr: line => output.push(line) });
   module.FS.mkdir('/work');

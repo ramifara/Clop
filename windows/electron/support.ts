@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, powerMonitor, shell } from 'electron';
 import os from 'node:os';
 import path from 'node:path';
 import { appInfo, binariesReport, writeDump } from '../core/debug-dump';
@@ -25,9 +25,16 @@ export function setupUpdates(host: UpdatesHost) {
     env: () => ({ packaged: app.isPackaged, platform: process.platform, enabled: host.settings().checkForUpdates, beta: host.settings().betaUpdates }),
     load: loadAutoUpdater, version: app.getVersion(), log: text => console.warn(text),
   });
-  let offered: string | undefined;
-  async function offer(version: string) {
+  let offered: string | undefined, open: { version: string; done: Promise<void> } | undefined;
+  /** The offer dialog for `version`. A second ask for the same version while it is open (the daily check and a button) shares it. */
+  function offer(version: string) {
+    if (open?.version === version) return open.done;
     offered = version;
+    const done = showOffer(version).finally(() => { if (open?.done === done) open = undefined; });
+    open = { version, done };
+    return done;
+  }
+  async function showOffer(version: string) {
     const detail = `You have version ${app.getVersion()}.`;
     if (host.portable) {
       const { response } = await dialog.showMessageBox({ type: 'info', buttons: ['Open the releases page', 'Later'], defaultId: 0, cancelId: 1, title: 'Clop', message: `Clop ${version} is available`, detail: `${detail}\n\nThe portable app cannot update itself. Download the new portable build from the releases page. Builds are not code-signed yet, so Windows SmartScreen may warn about the download: choose More info, then Run anyway.` });
@@ -90,6 +97,8 @@ export function setupWatchdog() {
       offers.set(id, abort);
       dialog.showMessageBox({ type: 'warning', buttons: ['Reload window', 'Keep waiting'], defaultId: 0, cancelId: 1, title: 'Clop', message: 'A Clop window is not responding', detail: 'Reload it to get going again. Other windows are not affected.', signal: abort.signal })
         .then(({ response }) => {
+          // A withdrawn offer (the window recovered or closed) answers like "Keep waiting", but nobody chose it.
+          if (abort.signal.aborted) return;
           if (response === 0 && !window.isDestroyed()) { dog.closed(id); window.webContents.forcefullyCrashRenderer(); window.webContents.reload(); } else dog.declined(id, Date.now());
         }, () => {}).finally(() => { if (offers.get(id) === abort) offers.delete(id); });
     }
@@ -101,5 +110,7 @@ export function setupWatchdog() {
     window.on('closed', () => { offers.get(id)?.abort(); dog.closed(id); });
     window.webContents.on('render-process-gone', (_e, details) => console.warn(`The ${label()} window's renderer stopped: ${details.reason} (exit code ${details.exitCode}).`));
   });
+  // A sleeping PC stops the timer, which is not a blocked app.
+  powerMonitor.on('resume', () => dog.resume());
   setInterval(() => act(undefined, dog.sample(Date.now())), 500).unref();
 }
