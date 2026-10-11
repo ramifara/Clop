@@ -177,6 +177,19 @@ test('a key listed twice where Clop writes makes the file unusable', async t => 
     ['cursor', '{ "mcpServers": { "clop": { "command": "old" }, "clop": { "command": "older" } } }\n'],
     ['zed', '{ "context_servers": {}, // first\n  "context_servers": { "clop": { "command": "old" } } }\n'],
   ];
+  const layoutCases: [string, string][] = [
+    ['goose', 'extensions:\n  developer:\n    enabled: true\nextensions:\n  clop:\n    cmd: old\n'],
+    ['goose', 'extensions:\n  clop:\n    cmd: old\n  clop:\n    cmd: older\n'],
+  ];
+  for (const [id, content] of layoutCases) {
+    const file = configOf(p.client(id)).path;
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, content);
+    await assert.rejects(installClient(p.client(id), SERVER, { backups: p.backups }), /layout that can't be edited safely/, content);
+    await assert.rejects(removeClient(p.client(id), { backups: p.backups }), /layout that can't be edited safely/, content);
+    assert.equal(await readFile(file, 'utf8'), content);
+    assert.notEqual(await configState(p.client(id)), 'installed', content);
+  }
   for (const [id, content] of cases) {
     const file = configOf(p.client(id)).path;
     await mkdir(path.dirname(file), { recursive: true });
