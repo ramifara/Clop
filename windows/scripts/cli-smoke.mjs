@@ -43,6 +43,16 @@ try {
   assert.ok((await stat(queued)).size < queuedSize, 'the detached CLI finished the file after clop.exe exited');
   console.log('clop.exe --async finished in the background with the app closed');
 
+  // Explorer's right-click verb (spec step 39): `--hidden` drops the console window, and the file comes after `--` even when its name looks like an option.
+  const verbFile = path.join(files, '--aggressive verb.png'), template = await image('verb-template.png');
+  await writeFile(verbFile, await readFile(template));
+  const verbSize = (await stat(verbFile)).size;
+  await run(['--hidden', 'optimise', '--gui', '--async', '--', verbFile]);
+  const verbDeadline = Date.now() + 60_000;
+  while ((await stat(verbFile)).size === verbSize && Date.now() < verbDeadline) await pause(500);
+  assert.ok((await stat(verbFile)).size < verbSize, 'the Explorer verb optimised a file named like an option');
+  console.log('clop.exe --hidden handled an Explorer verb');
+
   // The app publishes its pipe in this profile; the debug log records the request it served.
   await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ persistDebugLogs: true }));
   app = spawn(path.join(unpacked, 'Clop for Windows.exe'), [`--user-data-dir=${profile}`], { stdio: 'ignore' });

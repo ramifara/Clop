@@ -42,6 +42,7 @@ static class ClopStub {
 
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
   static extern bool CreateProcess(string application, StringBuilder commandLine, IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint flags, IntPtr environment, string directory, ref STARTUPINFO startup, out PROCESS_INFORMATION info);
+  [DllImport("kernel32.dll")] static extern bool FreeConsole();
   [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int which);
   [DllImport("kernel32.dll")] static extern int GetFileType(IntPtr handle);
   [DllImport("kernel32.dll")] static extern bool GetConsoleMode(IntPtr handle, out uint mode);
@@ -60,6 +61,10 @@ static class ClopStub {
   static readonly ConsoleCtrlHandler OnCtrl = HandleCtrl;
 
   static int Main(string[] args) {
+    // Explorer's right-click verbs and Send To start this program with `--hidden`: it lets go of the console window Windows gave it
+    // (only when not redirected), so the verb shows no window. The flag is not passed on.
+    bool hidden = args.Length > 0 && args[0] == "--hidden";
+    if (hidden) { string[] rest = new string[args.Length - 1]; Array.Copy(args, 1, rest, 0, rest.Length); args = rest; }
     bool portable;
     string dir = InstallDir(out portable);
     if (dir == null) {
@@ -78,6 +83,7 @@ static class ClopStub {
     IntPtr input = GetStdHandle(STD_INPUT_HANDLE), output = GetStdHandle(STD_OUTPUT_HANDLE), error = GetStdHandle(STD_ERROR_HANDLE);
     bool redirected = !IsConsole(input) || !IsConsole(output) || !IsConsole(error);
     if (redirected) { startup.dwFlags = STARTF_USESTDHANDLES; startup.hStdInput = input; startup.hStdOutput = output; startup.hStdError = error; }
+    else if (hidden) FreeConsole();
 
     PROCESS_INFORMATION info;
     if (!CreateProcess(exe, commandLine, IntPtr.Zero, IntPtr.Zero, redirected, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT, IntPtr.Zero, null, ref startup, out info)) {
