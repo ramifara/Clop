@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { NSIS_PATHS, RUN_PIPELINE_FLAG, appliesTo, nsisInstall, nsisUninstall, regAdd, regDelete, regExe, regQuery, verbPlan } from './shell-verbs';
+import { NSIS_PATHS, RUN_PIPELINE_FLAG, appliesTo, nsisInstall, nsisUninstall, regAdd, regDelete, regExe, regQuery, runPipelineFiles, verbPlan } from './shell-verbs';
 
 const paths = { clop: 'C:\\Users\\Ann Lee\\AppData\\Local\\Clop for Windows\\cli\\clop.exe', app: 'C:\\Program Files\\Clop for Windows\\Clop for Windows.exe' };
 const plan = verbPlan(paths);
@@ -65,4 +65,16 @@ test('the installer script writes and removes exactly what the plan says', () =>
   // Updates run the old uninstaller first and then the new installer, so only a real uninstall removes the verbs.
   assert.match(script, /\$\{ifNot\} \$\{isUpdated\}[^]*clopVerbsRemove/);
   assert.match(script, /!macro customInstall[^]*clopVerbsAdd/);
+});
+
+test('a launch with --run-pipeline names the full paths after --, and anything else is not that verb', () => {
+  const app = 'C:\\Apps\\Clop for Windows.exe';
+  assert.deepEqual(runPipelineFiles([app, '--run-pipeline', '--', 'C:\\Pictures\\a b.png']), ['C:\\Pictures\\a b.png']);
+  assert.deepEqual(runPipelineFiles([app, '--run-pipeline', '--', 'C:\\a.png', 'C:\\a.png', 'D:\\b.mp4']), ['C:\\a.png', 'D:\\b.mp4']);
+  // Without --, nothing after the flag is a file: a name like an option stays inert.
+  assert.deepEqual(runPipelineFiles([app, '--run-pipeline', 'C:\\a.png']), []);
+  assert.deepEqual(runPipelineFiles([app, '--run-pipeline', '--', 'relative.png', '--aggressive', '\\\\server\\share\\c.png']), ['\\\\server\\share\\c.png']);
+  assert.equal(runPipelineFiles([app, 'C:\\a.png']), undefined);
+  assert.equal(runPipelineFiles([app, '--', '--run-pipeline']), undefined, 'a file named like the flag is a file');
+  assert.equal(runPipelineFiles([app, '--', 'C:\\a.png', '--run-pipeline']), undefined);
 });

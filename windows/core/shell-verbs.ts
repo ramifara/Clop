@@ -33,6 +33,18 @@ const VERBS: Verb[] = [
   // The app asks which pipeline, so this one starts (or reaches) the app. Every launch of a multi-file selection reaches the one instance.
   { id: 'RunPipeline', label: 'Run pipeline...', types: extensions(IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS, PDF), command: ({ app }) => `"${app}" ${RUN_PIPELINE_FLAG} -- "%1"` },
 ];
+/**
+ * The files an app launch with `--run-pipeline` names: the paths after `--`, all of them (Explorer starts one launch per selected file),
+ * or undefined when the launch is not that verb. Only full paths count, so a stray word is never taken for a file.
+ */
+export function runPipelineFiles(argv: readonly string[]): string[] | undefined {
+  // Only an argument before the first `--` is an option; after it, a file named like the flag is just a file.
+  const dashes = argv.indexOf('--'), options = dashes < 0 ? argv : argv.slice(0, dashes);
+  if (!options.includes(RUN_PIPELINE_FLAG)) return undefined;
+  const files = dashes < 0 ? [] : argv.slice(dashes + 1).filter(file => path.win32.isAbsolute(file) || path.posix.isAbsolute(file));
+  return [...new Set(files)];
+}
+
 /** The Explorer filter for the verb: only the file types Clop handles show it. */
 export const appliesTo = (types: readonly string[]) => types.map(type => `System.FileExtension:=".${type}"`).join(' OR ');
 
