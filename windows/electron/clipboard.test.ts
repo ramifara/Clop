@@ -219,3 +219,17 @@ test('the app that copied is reported with a change, and an ignored app\'s copie
   const aumid = 'Microsoft.ScreenSketch_8wekyb3d8bbwe!App';
   assert.deepEqual(await clipboardIntake(undefined, false, memory(), copied([aumid.toLowerCase()], { owner: 'C:\\Program Files\\WindowsApps\\ScreenSketch.exe', aumid })), { type: 'none' });
 });
+test('a copy an ignored app made does not count as handled: the same content copied again once the app is no longer ignored is optimised', async () => {
+  const owner = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(8)]);
+  const mem = memory();
+  const copy = (sequence: number, ignored: string[]) => clipboardIntake(change(sequence, { bitmap: true, text: false, owner }), false, mem, sources({ snapshots: [change(sequence, { bitmap: true, text: false, owner })], image: png, settings: { ...settings, clipboardIgnoredAppBundleIds: ignored } }).value);
+  assert.deepEqual(await copy(1, ['powershell.exe']), { type: 'none' });
+  assert.equal(mem.fingerprint, '');
+  assert.equal((await copy(2, [])).type, 'image');
+  // Once optimised, a repeat of the same content is still a duplicate.
+  assert.deepEqual(await copy(3, []), { type: 'none' });
+  // Text between the copies lets the same image be optimised again.
+  await clipboardIntake(change(4), false, mem, sources({ snapshots: [change(4)], settings }).value);
+  assert.equal((await copy(5, [])).type, 'image');
+});

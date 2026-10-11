@@ -11,6 +11,7 @@ import { SettingsStore } from '../core/settings/store';
 import { Workdir } from '../core/workdir';
 import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
+import { ignoredApp } from './apps';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
 import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, type ClipboardMemory } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
@@ -441,7 +442,8 @@ else {
       bridge.on('clipboard', event => {
         if (!settings.enableClipboardOptimiser || paused()) return;
         const change = clipboardChange(event);
-        if (change) pickup.change(change); else inform('The Windows helper sent an unreadable clipboard change.');
+        // A copy by an ignored app is left alone, so it neither waits in the pickup nor counts towards an editing session.
+        if (change) { if (ignoredApp(change, settings.clipboardIgnoredAppBundleIds)) pickup.cancel(); else pickup.change(change); } else inform('The Windows helper sent an unreadable clipboard change.');
       });
       bridge.on('foreground', event => pickup.focus(Number(event.process)));
       bridge.on('drag-start', () => { if (settings.enableDragAndDrop) { dragging = true; dropActive = true; floating.setIgnoreMouseEvents(false); syncFloating(); broadcast(); } });

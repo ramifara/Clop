@@ -147,10 +147,14 @@ try {
   await sharp(sourceFile).resize(1200, 800).png().toFile(ignoredImage);
   const copyImage = () => execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', '$ErrorActionPreference = "Stop"; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $image = New-Object System.Drawing.Bitmap($env:CLOP_SMOKE_IMAGE); try { [System.Windows.Forms.Clipboard]::SetImage($image) } finally { $image.Dispose() }'], { env: { ...process.env, CLOP_SMOKE_IMAGE: ignoredImage } });
   const known = new Set(finalState.items.map(item => item.id)), fresh = async () => (await main.evaluate('window.clop.state()')).items.find(item => !known.has(item.id) && item.source === 'clipboard');
+  // Copying text first ends the clipboard pickup's editing session with the earlier image, which would otherwise hold back every further image copied from the app in front until the user leaves it.
+  const copyText = () => execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::SetText("Clop ignored apps smoke")']);
   await main.evaluate('window.clop.settings({ clipboardIgnoredAppBundleIds: ["powershell.exe"] })');
+  copyText(); await pause(1000);
   copyImage(); await pause(3000);
   assert.equal(await fresh(), undefined, 'An image copied by an ignored app must not be optimised');
   await main.evaluate('window.clop.settings({ clipboardIgnoredAppBundleIds: [] })');
+  copyText(); await pause(1000);
   copyImage();
   await until(fresh, 'The same copy was not optimised once its app was no longer ignored');
   // Videos, PDFs and audio copied as files, as Explorer copies them (a file list and nothing else), each get a card once
