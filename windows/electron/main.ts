@@ -208,8 +208,16 @@ async function openView(view: 'crop' | 'compare', id: unknown) {
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.on('page-title-updated', event => event.preventDefault());
   window.once('ready-to-show', () => window.show());
-  window.on('closed', () => { if (views.get(key) === window) views.delete(key); });
-  await load(window, { [view]: id });
+  window.on('closed', () => { if (views.get(key) === window) views.delete(key); syncNative(); });
+  syncNative();
+  try { await load(window, { [view]: id }); }
+  catch (error) {
+    // A window that never loaded would stay blank and be brought forward again by the next open.
+    if (views.get(key) === window) views.delete(key);
+    if (!window.isDestroyed()) window.destroy();
+    syncNative();
+    throw error;
+  }
 }
 async function createWindows() {
   const windowPreferences = webPreferences();
@@ -552,9 +560,11 @@ async function updateSettings(value: unknown) {
   if (bridgeReady) await bridge.request(nativeSettings());
   updateTray(); broadcast();
 }
+/** Presses inside Clop's own windows, the crop and compare windows too, never start a drag. */
 function nativeSettings() {
-  return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating].map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
+  return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating, ...views.values()].filter(window => !window.isDestroyed()).map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
 }
+function syncNative() { if (bridgeReady) bridge.request(nativeSettings()).catch(error => inform(message(error))); }
 /** Card actions put a clipboard result back on the clipboard, and others with `autoCopyToClipboard`. */
 function copiesBack(id: string) { const { result } = engine.get(id); return result.status === 'ready' && (result.source === 'clipboard' || (settings.autoCopyToClipboard && result.source !== 'folder')); }
 function trusted(sender: Electron.WebContents) { return [main, floating, ...views.values()].some(window => window && !window.isDestroyed() && window.webContents === sender); }
