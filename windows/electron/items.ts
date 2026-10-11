@@ -310,7 +310,8 @@ export class ItemEngine extends EventEmitter {
     const r = e.result;
     signal.throwIfAborted();
     // Pipelines that replaced optimisation work on the user's file where it is, with no placement to undo them: its original is in the backups.
-    if (fresh && outcome.anyRan && outcome.started && !within(e.directory, outcome.started)) e.changedOutside ??= outcome.started;
+    // So do pipelines that ran after an optimisation that left the file as it was: nothing was backed up for them either.
+    if ((fresh || r.unchanged) && outcome.anyRan && outcome.started && !within(e.directory, outcome.started)) e.changedOutside ??= outcome.started;
     const info = outcome.anyRan ? await stat(outcome.file).catch(() => undefined) : undefined;
     if (info?.isFile()) {
       const kind = await detectKind(outcome.file, { signal }).catch(() => undefined) ?? r.kind;

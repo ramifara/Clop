@@ -256,6 +256,18 @@ test('a result that a pipeline deleted is not marked ready', async t => {
   assert.match(engine.get(id).result.error ?? '', /deleted/);
   assert.throws(() => engine.output(id), /Wait for this result/);
 });
+test('a pipeline that changes a file the optimiser left as it was cannot be restored over', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine, dir } = f, file = path.join(dir, 'watched.jpg');
+  // A small JPEG that jpegoptim cannot shrink comes back unchanged.
+  await writeFile(file, await sharp({ create: { width: 16, height: 16, channels: 3, background: '#a06040' } }).jpeg({ quality: 50, mozjpeg: true }).toBuffer());
+  let unchanged: boolean | undefined;
+  const automation = { skipOptimisation: false, fallback: false, run: async () => { unchanged = engine.list()[0].unchanged; return { file, started: file, anyRan: true, warnings: [] }; } };
+  const id = await engine.importPath(file, 'folder', balanced, undefined, { automation });
+  assert.equal(unchanged, true);
+  assert.equal(engine.get(id).result.status, 'ready');
+  await assert.rejects(engine.restore(id), /A pipeline changed watched\.jpg/);
+});
 test('names an imported file as asked and reports files it cannot read', async t => {
   const f = await fixture(t); if (!f) return;
   const { engine, dir } = f;
