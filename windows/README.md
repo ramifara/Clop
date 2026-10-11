@@ -219,7 +219,7 @@ Dropping a folder, or more files than `batchModeFileCountThreshold` (30 by defau
 
 Parameter cards follow `BatchPrepView.swift` and start from the current settings:
 
-- Images: compression (with a Lossless toggle, a Windows-only tier that changes no pixels; see [Images](#images)), convert to JPEG, PNG, WebP or JPEG XL, downscale, maximum long edge, crop, adaptive PNG/JPEG and keep-if-larger for conversions.
+- Images: compression (with a Lossless toggle, a Windows-only tier that changes no pixels; see [Image and clipboard details](#image-and-clipboard-details)), convert to JPEG, PNG, WebP or JPEG XL, downscale, maximum long edge, crop, adaptive PNG/JPEG and keep-if-larger for conversions.
 - Video: compression, convert to MP4, HEVC, AV1 or WebM, downscale, maximum long edge, crop, encoder (adaptive, faster, smaller file, visually lossless), frame rate cap, remove audio and keep-if-larger.
 - PDF: resolution (adaptive, 300 to 48 DPI, or one stop below each file's own) and an aspect-ratio crop of every page.
 - Audio: compression, format (AAC, MP3, Opus, WAV, FLAC), bitrate, loudness target, cover art and its size, converting lossless inputs, and keep-if-larger.
