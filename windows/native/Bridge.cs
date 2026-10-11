@@ -156,10 +156,11 @@ namespace ClopWindows {
             // for the pickup's editing sessions; `bitmap` is image data alone.
             var paths = FileList();
             bool bitmap = HasBitmap(contents);
-            bool image = bitmap || paths.Exists(file => Extensions.Contains(Path.GetExtension(file)));
+            string data = ImageDataKind(contents);
+            bool image = bitmap || data != null || paths.Exists(file => Extensions.Contains(Path.GetExtension(file)));
             bool text = contents != null && contents.GetDataPresent(DataFormats.UnicodeText);
             string owner, aumid; ClipboardSource(out owner, out aumid);
-            Emit(new { type = "clipboard", sequence = next, paths = paths.ToArray(), image, bitmap, text, process = ForegroundProcess, app = ForegroundApp, owner, aumid });
+            Emit(new { type = "clipboard", sequence = next, paths = paths.ToArray(), image, bitmap, data, text, process = ForegroundProcess, app = ForegroundApp, owner, aumid });
           } catch { /* A different app may temporarily hold the clipboard. Retry on its next change. */ }
         }
         DetectImageDrag();
@@ -273,6 +274,29 @@ namespace ClopWindows {
     static bool HasBitmap(IDataObject contents) {
       return contents != null && (contents.GetDataPresent(DataFormats.Bitmap) || contents.GetDataPresent(DataFormats.Dib) || contents.GetDataPresent("PNG") || contents.GetDataPresent("image/png"));
     }
+    // HEIC, HEIF and AVIF image data by file extension, under the names apps register: Windows has no standard clipboard format for them.
+    static readonly string[][] ImageData = { new[] { "heic", "image/heic", "HEIC" }, new[] { "heif", "image/heif", "HEIF" }, new[] { "avif", "image/avif", "AVIF" } };
+    const int MaxImageData = 64 * 1024 * 1024;
+    static string ImageDataKind(IDataObject contents) {
+      if (contents == null) return null;
+      foreach (var row in ImageData) for (int i = 1; i < row.Length; i++) if (contents.GetDataPresent(row[i], false)) return row[0];
+      return null;
+    }
+    static byte[] ReadImageData(IDataObject contents, string ext) {
+      if (contents == null) return null;
+      foreach (var row in ImageData) {
+        if (row[0] != ext) continue;
+        for (int i = 1; i < row.Length; i++) {
+          if (!contents.GetDataPresent(row[i], false)) continue;
+          object data = contents.GetData(row[i], false);
+          var bytes = data as byte[];
+          var stream = data as Stream;
+          if (bytes == null && stream != null && (!stream.CanSeek || stream.Length <= MaxImageData)) using (var copy = new MemoryStream()) { stream.CopyTo(copy); bytes = copy.ToArray(); }
+          if (bytes != null && bytes.Length > 0 && bytes.Length <= MaxImageData) return bytes;
+        }
+      }
+      return null;
+    }
     // Password managers and other apps mark content that clipboard monitors must leave alone.
     static bool Excluded(IDataObject contents) {
       return contents != null && (contents.GetDataPresent("ExcludeClipboardContentFromMonitorProcessing") || contents.GetDataPresent("Clipboard Viewer Ignore"));
@@ -299,7 +323,14 @@ namespace ClopWindows {
           bool owned = contents != null && Convert.ToString(contents.GetData("ClopWindows.Owner")) == ClipboardOwner;
           bool text = contents != null && contents.GetDataPresent(DataFormats.UnicodeText);
           string owner, aumid; ClipboardSource(out owner, out aumid);
-          Emit(new { type = "reply", id, ok = true, sequence = GetClipboardSequenceNumber(), paths = FileList().ToArray(), bitmap = HasBitmap(contents), text, owned, transient = Excluded(contents), owner, aumid }); return;
+          Emit(new { type = "reply", id, ok = true, sequence = GetClipboardSequenceNumber(), paths = FileList().ToArray(), bitmap = HasBitmap(contents), data = ImageDataKind(contents), text, owned, transient = Excluded(contents), owner, aumid }); return;
+        }
+        if (type == "image-data") {
+          string ext = Convert.ToString(command["ext"]);
+          byte[] bytes = ReadImageData(Clipboard.GetDataObject(), ext);
+          if (bytes == null) throw new InvalidOperationException("The clipboard holds no " + ext + " data.");
+          // Written by hand: JavaScriptSerializer refuses more than 2 MB of text.
+          Console.WriteLine("{\"type\":\"reply\",\"id\":" + Json.Serialize(id) + ",\"ok\":true,\"bytes\":\"" + Convert.ToBase64String(bytes) + "\"}"); Console.Out.Flush(); return;
         }
         if (type == "apps") {
           // Walking processes and the Start Menu takes a while. This thread pumps the mouse hook, which Windows drops when it

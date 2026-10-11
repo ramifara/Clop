@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { defaultSettings } from '../core/settings/schema';
-import { ClipboardIntake, importClipboardList, replacedClipboardImages, serial, clipboardChange, clipboardFiles, clipboardIntake, copiesFiles, copyReply, pausedForPoll, splitClipboardList, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources } from './clipboard';
+import { ClipboardIntake, importClipboardList, replacedClipboardImages, serial, clipboardChange, clipboardFiles, clipboardIntake, copiesFiles, copyReply, pausedForPoll, splitClipboardList, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources, imageDataReply } from './clipboard';
 
 // The macOS defaults; Windows differs only in optimiseImagePathClipboard, checked below.
 const settings = { ...defaultSettings(), optimiseImagePathClipboard: false };
@@ -73,13 +73,14 @@ test('replies from the Windows helper are checked before use', () => {
 });
 
 /** Clipboard sources that record every file-system look-up. */
-function sources(state: { snapshots?: (ClipboardSnapshot | undefined)[]; text?: string; image?: Buffer; files?: string[]; settings?: typeof settings }) {
+function sources(state: { snapshots?: (ClipboardSnapshot | undefined)[]; text?: string; image?: Buffer; data?: Buffer; files?: string[]; settings?: typeof settings }) {
   const looked: string[] = [], calls = { text: 0 };
   const snapshots = state.snapshots ?? [];
   const value: IntakeSources = {
     settings: state.settings ?? settings, owns: file => file.startsWith('/work/') || file.startsWith('C:\\work\\'), platform: 'win32',
     read: async () => snapshots.length > 1 ? snapshots.shift() : snapshots[0],
     image: async () => state.image ?? Buffer.alloc(0),
+    imageData: async () => { if (!state.data) throw new Error('none'); return state.data; },
     text: async () => { calls.text++; return state.text ?? ''; },
     isFile: async file => { looked.push(file); return (state.files ?? []).includes(file); },
     fingerprint: async files => { looked.push(...files); return files.join('|'); },
@@ -282,4 +283,32 @@ test('a poll lets the next change go by when the pause is armed, and a poll that
   assert.equal(pausedForPoll({ type: 'image' }, consume), true);
   assert.equal(armed, false);
   assert.equal(pausedForPoll({ type: 'files' }, consume), false, 'it lets one change go by');
+});
+
+test('optimiseTIFF off leaves copied TIFF files alone, automatically; a manual optimisation still takes them', () => {
+  const off = { ...all, optimiseTIFF: false, imageFormatsToSkip: [] as string[] };
+  assert.deepEqual(pick(['/a/scan.tif', '/a/scan.TIFF', '/a/photo.png'], { settings: off }).files, ['/a/photo.png']);
+  assert.deepEqual(pick(['/a/scan.tif', '/a/photo.png'], { settings: { ...off, optimiseTIFF: true } }).files, ['/a/scan.tif', '/a/photo.png']);
+  assert.deepEqual(pick(['/a/scan.tif'], { settings: off, manual: true }).files, ['/a/scan.tif']);
+  assert.equal(takesFile('image', 'C:\\a\\scan.tiff', off), false);
+});
+
+test('HEIC and AVIF clipboard data is read as the original only with optimiseHEICAVIFClipboard', async () => {
+  const heic = Buffer.from('ftypheic-original'), png = Buffer.from('89504e470d0a1a0a', 'hex');
+  const on = { ...settings, optimiseHEICAVIFClipboard: true }, snapshot = change(1, { bitmap: true, text: false, data: 'heic' });
+  assert.deepEqual(await clipboardIntake(undefined, false, memory(), sources({ snapshots: [snapshot], image: png, data: heic, settings: on }).value), { type: 'image', bytes: heic, ext: 'heic', sequence: 1 });
+  assert.deepEqual(await clipboardIntake(undefined, false, memory(), sources({ snapshots: [snapshot], image: png, data: heic }).value), { type: 'image', bytes: png, ext: 'png', sequence: 1 }, 'off by default: the bitmap');
+  // HEIC data alone, without a bitmap, is image data too.
+  assert.equal((await clipboardIntake(undefined, false, memory(), sources({ snapshots: [change(1, { text: false, data: 'avif' })], data: heic, settings: on }).value) as { ext: string }).ext, 'avif');
+  // Unreadable original data falls back to the bitmap, and the skip list sees the real extension.
+  assert.deepEqual(await clipboardIntake(undefined, false, memory(), sources({ snapshots: [snapshot], image: png, settings: on }).value), { type: 'image', bytes: png, ext: 'png', sequence: 1 });
+  assert.deepEqual(await clipboardIntake(undefined, false, memory(), sources({ snapshots: [snapshot], image: png, data: heic, settings: { ...on, imageFormatsToSkip: ['heic'] } }).value), { type: 'none' });
+});
+
+test('the helper\'s data names and image bytes are checked', () => {
+  assert.equal(clipboardChange({ type: 'reply', sequence: 3, paths: [], data: 'avif' })?.data, 'avif');
+  assert.equal(clipboardChange({ type: 'reply', sequence: 3, paths: [], data: null })?.data, undefined);
+  assert.equal(clipboardChange({ type: 'reply', sequence: 3, paths: [], data: 'tiff' }), undefined);
+  assert.deepEqual(imageDataReply({ ok: true, bytes: Buffer.from('abc').toString('base64') }), Buffer.from('abc'));
+  for (const bad of [null, {}, { bytes: 5 }, { bytes: 'A'.repeat(90 * 1024 * 1024) }]) assert.throws(() => imageDataReply(bad), /unreadable/);
 });

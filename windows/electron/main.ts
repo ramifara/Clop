@@ -15,7 +15,7 @@ import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ignoredApp, withIgnored } from './apps';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
-import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, copiesFiles, DEFAULT_NAME_TEMPLATE, pausedForPoll, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp } from './clipboard';
+import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, copiesFiles, DEFAULT_NAME_TEMPLATE, pausedForPoll, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp, imageDataReply } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
 import { enabledKey, localFile } from './watch-rules';
@@ -568,7 +568,7 @@ function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive 
   if (!manual && (!settings.enableClipboardOptimiser || paused())) return Promise.resolve();
   return intake.submit(async () => {
     const plan = await clipboardIntake(change, manual, memory, {
-      settings, owns: file => workdir.owns(file), image: readClipboardImage, text: () => clipboard.readText(), isFile, fingerprint: filesFingerprint, hash: fingerprint,
+      settings, owns: file => workdir.owns(file), image: readClipboardImage, imageData: async ext => imageDataReply(await bridge.request({ type: 'image-data', ext })), text: () => clipboard.readText(), isFile, fingerprint: filesFingerprint, hash: fingerprint,
       read: async () => {
         if (!bridgeReady) return;
         const snapshot = clipboardChange(await bridge.request({ type: 'read' }));

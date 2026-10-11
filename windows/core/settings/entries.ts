@@ -77,8 +77,8 @@ const rows: Row[] = [
 
   // clipboard › Clipboard
   { id: 'clipboard.clipboard.enableClipboardOptimiser', keys: ['enableClipboardOptimiser'], title: 'Enable clipboard optimiser', subtitle: 'Watch for copied data and optimise it automatically', keywords: ['clipboard', 'copy', 'paste', 'watch', 'automatic'], tab: 'clipboard', section: 'Clipboard' },
-  { id: 'clipboard.clipboard.optimiseTIFF', keys: ['optimiseTIFF'], title: 'TIFF data', subtitle: 'Usually from graphical design apps, sometimes better left alone', keywords: [], tab: 'clipboard', section: 'Clipboard', ui: { pending: 'the clipboard watcher does not read it' } },
-  { id: 'clipboard.clipboard.optimiseHEICAVIFClipboard', keys: ['optimiseHEICAVIFClipboard'], title: 'HEIC and AVIF data', subtitle: '', keywords: ['heic', 'heif', 'avif', 'iphone', 'photos', 'hdr', 'copied photo'], tab: 'clipboard', section: 'Clipboard', ui: { pending: 'the clipboard watcher does not read it' } },
+  { id: 'clipboard.clipboard.optimiseTIFF', keys: ['optimiseTIFF'], title: 'TIFF data', subtitle: 'Usually from graphical design apps, sometimes better left alone', keywords: [], tab: 'clipboard', section: 'Clipboard' },
+  { id: 'clipboard.clipboard.optimiseHEICAVIFClipboard', keys: ['optimiseHEICAVIFClipboard'], title: 'HEIC and AVIF data', subtitle: '', keywords: ['heic', 'heif', 'avif', 'iphone', 'photos', 'hdr', 'copied photo'], tab: 'clipboard', section: 'Clipboard' },
   { id: 'clipboard.clipboard.optimiseImagePathClipboard', keys: ['optimiseImagePathClipboard'], title: 'Image files', subtitle: 'Copying images in File Explorer puts file paths on the clipboard instead of image data', keywords: [], tab: 'clipboard', section: 'Clipboard' },
   { id: 'clipboard.clipboard.optimiseVideoClipboard', keys: ['optimiseVideoClipboard'], title: 'Video files', subtitle: 'Optimise copied video file paths', keywords: [], tab: 'clipboard', section: 'Clipboard' },
   { id: 'clipboard.clipboard.optimiseAudioClipboard', keys: ['optimiseAudioClipboard'], title: 'Audio files', subtitle: 'Optimise copied audio file paths', keywords: [], tab: 'clipboard', section: 'Clipboard' },

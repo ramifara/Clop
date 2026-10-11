@@ -127,9 +127,7 @@ const PENDING_KEYS = [
   'audioFormat',
   'autoHideClipboardResultAfter', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter',
   'defaultLinkExpiration', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnUpload',
-  'enableFloatingResults', 'followCursorScreen', 'onlyShowDropZoneOnOption', 'optimiseHEICAVIFClipboard',
-  'optimiseTIFF',
-];
+  'enableFloatingResults', 'followCursorScreen', 'onlyShowDropZoneOnOption', ];
 
 test('the rows that do nothing yet are exactly the pinned list, each with a reason', () => {
   const pending = SETTING_ENTRIES.filter(entry => entry.ui?.pending);
