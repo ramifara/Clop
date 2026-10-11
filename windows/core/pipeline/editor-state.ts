@@ -87,12 +87,17 @@ export function revisionOf(entry: unknown): string {
 /**
  * The key of each entry of a stored list, which commands name entries by: a readable entry's id; an unreadable entry's own id
  * when it has a short one, else a hash of what it holds. Never a position, which shifts whenever anything before it changes.
- * An id or content that repeats gets a key of its own, so every key is unique.
+ * An id or content that repeats gets a key of its own (a repeated readable id gets `~2`, `~3`…), so every key is unique.
  */
 export function entryKeys(entries: readonly Stored<{ id: string }>[]): string[] {
   const used = new Set<string>();
   return entries.map(entry => {
-    if (isReadable(entry)) return entry.id;
+    if (isReadable(entry)) {
+      let key = entry.id;
+      for (let n = 2; used.has(key); n++) key = `${entry.id}~${n}`;
+      used.add(key);
+      return key;
+    }
     const id = storedId(entry), hash = revisionOf(entry);
     let key = id !== undefined && id.length <= 64 ? `unreadable:id:${id}` : `unreadable:raw:${hash}`;
     if (used.has(key)) key = `unreadable:raw:${hash}`;
@@ -112,17 +117,17 @@ export function textOf(pipeline: Pipeline): { text: string; exact: boolean } {
   return { text: exact ? formatSteps(pipeline.steps) : '', exact };
 }
 
-export function pipelineView(pipeline: Pipeline): PipelineView {
+export function pipelineView(pipeline: Pipeline, key = pipeline.id): PipelineView {
   const { text, exact } = textOf(pipeline);
   return {
-    readable: true, key: pipeline.id, revision: revisionOf(pipeline), name: pipeline.name ?? '', builtin: isBuiltin(pipeline), fileType: pipeline.fileType, icon: pipeline.icon, details: pipeline.details,
+    readable: true, key, revision: revisionOf(pipeline), name: pipeline.name ?? '', builtin: isBuiltin(pipeline), fileType: pipeline.fileType, icon: pipeline.icon, details: pipeline.details,
     skipOptimisation: pipeline.skipOptimisation, hideResult: pipeline.hideResult, text, json: stepsToJsonc(pipeline.steps), exact,
     problems: pipelineProblems(pipeline).map(problem => `Step ${problem.step + 1}: ${problem.message}`),
   };
 }
 const libraryView = (saved: readonly Stored<Pipeline>[]): LibraryEntry[] => {
   const keys = entryKeys(saved);
-  return saved.map((entry, index) => isReadable(entry) ? pipelineView(entry)
+  return saved.map((entry, index) => isReadable(entry) ? pipelineView(entry, keys[index])
     : { readable: false, key: keys[index], revision: revisionOf(entry), id: storedId(entry), reason: entry.reason, raw: prettyRaw(entry.raw) });
 };
 
@@ -146,7 +151,7 @@ function attachmentsView(settings: EditorSettings, context: EditorContext): Reco
         source, label, configured, entries: (found?.entries ?? []).map((entry, index): AttachedView => {
           if (!isReadable(entry)) return { key: keys[index], revision: revisionOf(entry), readable: false, name: 'Unreadable pipeline', text: entry.reason };
           const target = entry.libraryID === undefined ? entry : saved.find(candidate => candidate.id === entry.libraryID);
-          return { key: entry.id, revision: revisionOf(entry), readable: true, libraryID: entry.libraryID, name: target?.name ?? (entry.libraryID ? 'Deleted pipeline' : 'Pipeline'), text: target ? textOf(target).text : '', ...(target ? {} : { missing: true }) };
+          return { key: keys[index], revision: revisionOf(entry), readable: true, libraryID: entry.libraryID, name: target?.name ?? (entry.libraryID ? 'Deleted pipeline' : 'Pipeline'), text: target ? textOf(target).text : '', ...(target ? {} : { missing: true }) };
         }),
       };
     };
@@ -163,7 +168,7 @@ function zoneViews(settings: EditorSettings): ZoneView[] {
     if (zone instanceof Unreadable) return { readable: false, key: keys[index], revision: revisionOf(zone), name: 'Unreadable preset zone', icon: '', pipelineName: '', text: '', reason: zone.reason };
     const target = resolveRunnable(zone.pipeline, saved);
     return {
-      readable: true, key: zone.id, revision: revisionOf(zone), name: zone.name, icon: zone.icon, type: zone.type, libraryID: zone.pipeline.libraryID,
+      readable: true, key: keys[index], revision: revisionOf(zone), name: zone.name, icon: zone.icon, type: zone.type, libraryID: zone.pipeline.libraryID,
       pipelineName: target ? target.name ?? 'Custom pipeline' : 'Deleted pipeline', text: target ? textOf(target).text : '', ...(target ? {} : { missing: true }),
     };
   });
