@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, errorText } from './api';
-import type { CompareSide, CompareSources } from './types';
+import type { CompareSide, CompareSources, ItemResult } from './types';
 import './views.css';
 
 type Mode = 'split' | 'sideBySide';
@@ -10,6 +10,8 @@ const humanSize = (value: number) => value >= 1_000_000 ? `${(value / 1_000_000)
 const clock = (seconds: number) => { const s = Math.max(0, Math.floor(seconds)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const dimensions = (side: CompareSide) => side.width && side.height ? `${side.width}×${side.height}` : '';
 const clamp = (value: number) => Math.min(Math.max(value, 0), 1);
+/** What decides whether the result the window shows is still the item's current one. */
+const outputKey = (item: ItemResult) => JSON.stringify([item.format, item.outputBytes, item.width, item.height, item.pages, item.restored, item.options]);
 
 /**
  * The compare window (CompareView.swift): the original and the current result side by side or split by a draggable divider, with
@@ -20,6 +22,7 @@ export function CompareWindow({ id }: { id: string }) {
   const [sources, setSources] = useState<CompareSources>();
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
+  const [reloads, setReloads] = useState(0);
   const [mode, setMode] = useState<Mode>(() => localStorage.getItem(MODE_KEY) === 'sideBySide' ? 'sideBySide' : 'split');
   const [fill, setFill] = useState(true);
   const [playing, setPlaying] = useState(true);
@@ -33,7 +36,14 @@ export function CompareWindow({ id }: { id: string }) {
     let current = true;
     api.compareSources(id, { page }).then(next => { if (current) { setSources(next); setError(''); } }, error => { if (current) setError(errorText(error)); });
     return () => { current = false; };
-  }, [id, page]);
+  }, [id, page, reloads]);
+  // The result changes under an open window (a downscale, a restore, a crop): show the new one.
+  const shown = useRef<string>(undefined);
+  useEffect(() => { shown.current = sources && outputKey(sources.item); }, [sources]);
+  useEffect(() => api.subscribe(state => {
+    const item = state.items.find(candidate => candidate.id === id);
+    if (item?.status === 'ready' && shown.current !== undefined && outputKey(item) !== shown.current) { shown.current = outputKey(item); setReloads(count => count + 1); }
+  }), [id]);
   useEffect(() => { localStorage.setItem(MODE_KEY, mode); activePane.current = undefined; }, [mode]);
   useEffect(() => { for (const video of videos.current.values()) void (playing ? video.play().catch(() => {}) : video.pause()); }, [playing, sources, mode]);
   // The result follows the original's time, so both show the same moment.

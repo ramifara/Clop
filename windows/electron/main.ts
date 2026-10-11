@@ -86,7 +86,11 @@ const currentSequence = async () => bridgeReady ? sequenceReply(await bridge.req
 const isReady = (id: string) => { try { return engine.get(id).result.status === 'ready'; } catch { return false; } };
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 const state = (): AppState => ({ items: engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id)), settings, native: true, platform: process.platform, dropActive, notice });
-function broadcast() { for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state()); }
+function broadcast() {
+  for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
+  // The crop and compare windows follow their result even after its card hid, so they get every result.
+  if (views.size) { const all = { ...state(), items: engine.list() }; for (const window of views.values()) if (!window.isDestroyed()) window.webContents.send('clop:state', all); }
+}
 function inform(text: string) { notice = text; syncFloating(); broadcast(); }
 function positionFloating() {
   const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
