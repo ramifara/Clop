@@ -242,3 +242,14 @@ test('the entries of a copied list Clop leaves alone, and files past the limit, 
   const split = splitClipboardList(many, ['C:\\a\\notes.txt']);
   assert.deepEqual([split.take.length, split.rest.length, split.rest[0], split.rest.at(-1)], [20, 11, 'C:\\a\\20.png', 'C:\\a\\notes.txt']);
 });
+
+test('on Windows nothing is read while the helper is down, since a private copy could not be told apart', async () => {
+  const s = sources({ snapshots: [undefined], text: 'C:\\a\\clip.mp4', image: Buffer.from('png'), files: ['C:\\a\\clip.mp4'], settings: all });
+  assert.deepEqual(await clipboardIntake(undefined, false, memory(), s.value), { type: 'none' });
+  assert.match(((await clipboardIntake(undefined, true, memory(), s.value)) as { notice: string }).notice, /helper/);
+  assert.deepEqual([s.calls.text, s.looked], [0, []]);
+  // Elsewhere there is no helper to ask, and the clipboard is read as before.
+  const other = sources({ snapshots: [undefined], text: '/a/clip.mp4', files: ['/a/clip.mp4'], settings: all });
+  other.value.platform = 'linux';
+  assert.equal((await clipboardIntake(undefined, false, memory(), other.value)).type, 'files');
+});

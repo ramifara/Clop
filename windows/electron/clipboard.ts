@@ -187,6 +187,8 @@ export async function clipboardIntake(change: ClipboardSnapshot | undefined, man
   let snapshot = change;
   if (!snapshot) {
     snapshot = await sources.read();
+    // Without the helper there is no way to tell whether the app marked the content private, so on Windows nothing is read.
+    if (!snapshot && (sources.platform ?? process.platform) === 'win32') return manual ? { type: 'none', notice: 'The Windows helper is not running, so Clop cannot tell whether this copy is private. Try again once it is back.' } : none;
     // Content its app marked private, as password managers do, is never read, even on request.
     if (snapshot?.transient) return manual ? { type: 'none', notice: 'The app that copied this marked it private, so Clop leaves it alone.' } : none;
     if (!manual && snapshot?.owned) return none;
