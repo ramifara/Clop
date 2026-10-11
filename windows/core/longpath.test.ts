@@ -91,4 +91,10 @@ test('tools and sharp open files under paths over 260 characters', async t => {
   await writeFile(pdf, await photoPDF({ pages: 1, dpi: 200 }));
   assert.ok((await optimisePDF(pdf, out, { aggressive: true, allowLarger: true })).bytes > 0);
   assert.equal((await optimiseImage(picture, out, { compression: { tier: 'custom', factor: 50 } })).format, 'png');
+  // A still image's watermark is opened by libvips from the user's path too.
+  const mark = path.join(folder, 'logo.png');
+  await graphic(40, 30, { alpha: true }).png().toFile(path.join(short, 'logo.png'));
+  await copyFile(path.join(short, 'logo.png'), mark);
+  assert.ok(mark.length > 260);
+  assert.equal((await optimiseImage(picture, out, { compression: { tier: 'custom', factor: 50 }, watermark: { file: mark }, name: 'marked' })).format, 'png');
 });
