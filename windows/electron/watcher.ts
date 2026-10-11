@@ -75,8 +75,10 @@ export class FolderWatcher {
   private running = new Set<string>();
   /** Files saved again while their optimisation ran: looked at once more when it ends, unless its result is the file. */
   private queued = new Set<string>();
-  /** Files that changed before the helper was ready, by id. */
-  private deferred = new Map<string, string>();
+  /** Files that changed before the helper was ready, by id, with when they did. */
+  private deferred = new Map<string, { file: string; at: number }>();
+  /** Held files being replayed at their original gaps. */
+  private replays = new Set<NodeJS.Timeout>();
   private toldStopped = false;
   /** Files waiting for their writes to finish: when they were first reported, and whether they have new content. */
   private settling = new Map<string, { timer?: NodeJS.Timeout; content: boolean; at: number }>();
@@ -202,13 +204,23 @@ export class FolderWatcher {
     for (const { timer } of this.settling.values()) clearTimeout(timer);
     for (const { timer } of this.recent.values()) clearTimeout(timer);
     this.settling.clear(); this.recent.clear(); this.cancelled.clear(); this.queued.clear(); this.deferred.clear(); clearTimeout(this.held); clearTimeout(this.cleaner);
+    for (const timer of this.replays) clearTimeout(timer);
+    this.replays.clear();
   }
 
-  /** The helper is ready: looks at the files that changed while it started. */
+  /**
+   * The helper is ready, or has stopped: looks at the files that changed while it started. They come back in the order and with
+   * the gaps they arrived with, so files saved seconds apart do not count as one burst.
+   */
   resume() {
-    const files = [...this.deferred.values()];
+    const files = [...this.deferred.values()].sort((a, b) => a.at - b.at);
     this.deferred.clear(); this.toldStopped = false;
-    for (const file of files) this.event(file).catch(() => {});
+    for (const { file, at } of files) {
+      if (at === files[0].at) { this.event(file).catch(() => {}); continue; }
+      const timer = setTimeout(() => { this.replays.delete(timer); this.event(file).catch(() => {}); }, at - files[0].at);
+      timer.unref();
+      this.replays.add(timer);
+    }
   }
 
   /** Stops watching for good. */
@@ -228,7 +240,7 @@ export class FolderWatcher {
     if (!w.enabled || s.pauseAutomaticOptimisations || this.protectedFiles.has(id)) return;
     if (this.running.has(id)) { this.queued.add(id); return; }
     const helper = this.host.helper?.() ?? 'ready';
-    if (helper === 'starting') { if (this.deferred.size < MAX_DEFERRED) this.deferred.set(id, file); return; }
+    if (helper === 'starting') { if (this.deferred.size < MAX_DEFERRED || this.deferred.has(id)) this.deferred.set(id, { file, at: this.deferred.get(id)?.at ?? Date.now() }); return; }
     if (helper === 'stopped') {
       if (!this.toldStopped) { this.toldStopped = true; this.host.notice('The Windows helper is not running, so Clop cannot tell cloud-only files from local ones and leaves new files in watched folders alone. Restart Clop to have watched folders optimise new files again.'); }
       return;

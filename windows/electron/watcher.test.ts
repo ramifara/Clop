@@ -348,3 +348,14 @@ test('a late file that is not ignored still lets the burst\'s files go once the 
   await until(() => state.handled.length === before + 1, 'a file of the burst was still left alone after the burst ended');
   assert.equal(state.handled.at(-1)![0], 'a.png');
 });
+
+test('files that changed seconds apart while the helper started do not count as one burst', async t => {
+  let helper: 'ready' | 'starting' | 'stopped' = 'starting';
+  const { dir, state, watcher, names } = await setup(t, { maxImageFileCount: 1 }, { helper: () => helper });
+  await watcher.update();
+  await image(path.join(dir, 'first.png')); await pause(700); await image(path.join(dir, 'second.png'));
+  await pause(200);
+  helper = 'ready'; watcher.resume();
+  await until(() => state.handled.length === 2, 'the held files were counted as one burst');
+  assert.deepEqual([names(), state.notices, state.cancelled], [['first.png', 'second.png'], [], []]);
+});
