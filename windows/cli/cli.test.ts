@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -225,6 +225,24 @@ test('an agent is refused before any path it names is looked up', async t => {
     assert.match(c.err(), /not accepting changes from agents/, argv.join(' '));
     assert.doesNotMatch(c.err(), /does not exist/, argv.join(' '));
   }
+});
+
+test('an agent may not name a network share or a device path, as a file, an output, a template or the working folder, even with the switch on', async t => {
+  const c = await cli(t, false, { CLOP_ORIGIN: 'mcp' });
+  await mkdir(c.userData, { recursive: true });
+  await writeFile(path.join(c.userData, 'settings.json'), JSON.stringify({ mcpEnabled: true }));
+  await graphic(40, 30).png().toFile(c.file('a.png'));
+  for (const argv of [['optimise', '\\\\server\\share\\a.png'], ['optimise', 'a.png', '-o', '//server/share/a.png'], ['strip-exif', '\\\\?\\UNC\\server\\share\\a.jpg'],
+    ['convert', '-f', 'webp', 'a.png', '-o', '\\\\server\\share\\%f'], ['crop-pdf', '--paper-size', 'A4', 'a.pdf', '-o', '\\\\.\\C:\\out'],
+    ['pipeline', 'run', 'optimise()', 'a.png', '--specific-folder-template', '\\\\server\\share\\%f'], ['optimise', 'file://server/share/a.png']]) {
+    assert.equal(await c.clop(...argv), 64, argv.join(' '));
+    assert.match(c.err(), /is on a network share or a device\. Agents may only use files and folders on this PC's own drives/, argv.join(' '));
+  }
+  // A person keeps the paths that worked before: the same output is not refused for being a share.
+  const person = await cli(t);
+  await graphic(40, 30).png().toFile(person.file('a.png'));
+  await person.clop('optimise', 'a.png', '-o', '//server/share/a.png', '-n');
+  assert.doesNotMatch(person.err(), /network share or a device/);
 });
 
 test('mcp status and logs persist read and write the switches', async t => {

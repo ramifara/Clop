@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { ElicitResultSchema, ErrorCode, McpError, type ElicitRequestFormParams } from '@modelcontextprotocol/sdk/types.js';
 import { samePath } from '../core/fileops';
+import { agentPathRefusal } from '../core/local-path';
 import { VIDEO_EXTENSIONS } from '../core/media/detect';
 import { resolveHome } from '../core/template';
 import { backendOptions, type BackendOptions } from './backend';
@@ -179,11 +180,16 @@ export const command = (words: string[], options: string[] = [], positionals: st
 const flag = (a: Args, key: string, name: string) => a[key] === true ? [name] : [];
 const isURL = (item: string) => /^(https?|file):\/\//i.test(item);
 
-/** The files a tool works on: `~` expanded, otherwise as the agent wrote them, since results are keyed by the input. */
+/**
+ * The files a tool works on: `~` expanded, otherwise as the agent wrote them, since results are keyed by the input. One on a
+ * network share or a device is refused here, before anything looks it up.
+ */
 export function paths(a: Args, call: Call, key = 'paths'): string[] {
   const raw = Array.isArray(a[key]) ? a[key] as unknown[] : a[key] === undefined ? [] : [a[key]];
   const list = raw.map(argument).filter(item => item.trim()).map(item => isURL(item) ? item : resolveHome(item, call.options.home));
   if (!list.length) throw new ClopMCPError('no files given: pass one or more paths, folders or URLs');
+  const remote = agentPathRefusal(list, call.options.cwd ?? process.cwd());
+  if (remote) throw new ClopMCPError(remote);
   return list;
 }
 

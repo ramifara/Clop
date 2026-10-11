@@ -127,16 +127,30 @@ test('questions: no tool that takes files looks one up before the gate has answe
   const f = await folder(t);
   const seen: string[] = [];
   const { call } = await connect(t, f, { extra: { lookedUp: file => { seen.push(file); } } });
-  const files = ['\\\\server\\share\\a.mp4'];
+  const files = [f.file('a.mp4')];
   for (const [tool, args] of [['clop_optimise', { paths: files }], ['clop_pipeline_run', { pipeline: 'optimise()', paths: files }], ['clop_pipeline_run', { pipeline: 'changeSpeed(factor: 2)', paths: files }]] as const) {
     const refused = await call(tool, args);
     assert.match(refused.text, /^Clop is not accepting changes from agents/, tool);
   }
-  assert.deepEqual(seen, [], 'a network path would have been contacted');
+  assert.deepEqual(seen, [], 'nothing was looked up');
   // The same call is looked at once the switch is on.
   await f.settle({ mcpEnabled: true });
   await call('clop_pipeline_run', { pipeline: 'optimise()', paths: files });
   assert.ok(seen.length > 0);
+});
+
+test('network shares and device paths an agent names are refused before anything looks them up, even with the switch on', { timeout: TIMEOUT }, async t => {
+  const f = await folder(t, { mcpEnabled: true });
+  const seen: string[] = [];
+  const { call } = await connect(t, f, { extra: { lookedUp: file => { seen.push(file); } } });
+  for (const file of ['\\\\server\\share\\a.mp4', '//server/share/a.mp4', '\\\\?\\UNC\\server\\share\\a.mp4', '\\\\.\\C:\\a.mp4', 'file://server/share/a.mp4']) {
+    for (const [tool, args] of [['clop_optimise', { paths: [file] }], ['clop_pipeline_run', { pipeline: 'changeSpeed(factor: 2)', paths: [file] }], ['clop_strip_exif', { paths: [file] }]] as const) {
+      const refused = await call(tool, args);
+      assert.equal(refused.error, true, `${tool} ${file}`);
+      assert.match(refused.text, /is on a network share or a device\. Agents may only use files and folders on this PC's own drives/, `${tool} ${file}`);
+    }
+  }
+  assert.deepEqual(seen, [], 'a network path would have been contacted');
 });
 
 test('only the commands that write settings take turns: a slow pipeline run does not hold up a settings read', async () => {

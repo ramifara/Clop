@@ -72,7 +72,7 @@ The extension of the conversion format is automatically added.`, 'o'),
     if (!/^\d+$/.test(quality) || Number(quality) > 100) throw new ValidationError(`The value '${quality}' is invalid for '-q <quality>'`);
     const given = (list(v, 'files') ?? []).map(file => localPath(file, ctx.cwd, ctx.home));
     if (!given.length) throw new ValidationError('At least one image must be specified');
-    await gate(ctx);
+    await gate(ctx, undefined, [...list(v, 'files') ?? [], str(v, 'output')]);
     const files: string[] = [];
     for (const file of given) if ((await stat(file).catch(() => undefined))?.isFile()) files.push(file);
     const output = normalizeOutput(str(v, 'output'), ctx.cwd, ctx.home)?.replaceAll('%q', quality);
@@ -130,7 +130,7 @@ const stripExif: ClopCommand = {
   async run(v, ctx) {
     const given = (list(v, 'files') ?? []).map(file => localPath(file, ctx.cwd, ctx.home));
     if (!given.length) throw new ValidationError('At least one file or folder must be specified');
-    await gate(ctx);
+    await gate(ctx, undefined, list(v, 'files'));
     const first = await stat(given[0]).catch(() => undefined);
     const files = first?.isDirectory() ? await folderFiles(given[0], on(v, 'recursive'), chosenTypes(list(v, 'types'), list(v, 'excludeTypes'))) : given;
     const results = await Promise.all(files.map(file => strip(ctx, file)));
@@ -161,8 +161,8 @@ export const PAPER_SIZES_TEXT = `Paper sizes, grouped by aspect ratio.\nSizes in
 const fractional = (size: { width: number; height: number }) => { const ratio = size.width / size.height; return ratio > 1 ? 1 / ratio : ratio; };
 
 /** The PDFs a `crop-pdf`/`uncrop-pdf` call names: the PDFs in a folder given first, else the files as given. */
-async function pdfs(ctx: Context, items: string[], recursive: boolean) {
-  await gate(ctx);
+async function pdfs(ctx: Context, items: string[], recursive: boolean, output: string | undefined) {
+  await gate(ctx, undefined, [...items, output]);
   const given = items.map(item => localPath(item, ctx.cwd, ctx.home));
   if (!given.length) throw new ValidationError('At least one PDF file or folder must be specified');
   return (await stat(given[0]).catch(() => undefined))?.isDirectory() ? folderFiles(given[0], recursive, ['pdf']) : given;
@@ -233,7 +233,7 @@ const cropPdf: ClopCommand = {
     if (!size) throw new ValidationError('Invalid aspect ratio, at least one of --for-device, --paper-size or --aspect-ratio must be specified');
     const ratio = fractional(size);
     if (!(ratio > 0)) throw new ValidationError('Invalid aspect ratio, must be greater than 0');
-    const output = str(v, 'output'), files = await pdfs(ctx, list(v, 'pdfs') ?? [], on(v, 'recursive'));
+    const output = str(v, 'output'), files = await pdfs(ctx, list(v, 'pdfs') ?? [], on(v, 'recursive'), output);
     await checkOutput(output, files.length, ctx);
     const fit = { aspectRatio: ratio, alwaysPortrait: layout === 'portrait', alwaysLandscape: layout === 'landscape' };
     let edited = 0;
@@ -261,7 +261,7 @@ const uncropPdf: ClopCommand = {
   ],
   arguments: [{ name: 'pdfs', help: 'PDFs to uncrop (can be a file, folder, or list of files)', variadic: true }],
   async run(v, ctx) {
-    const output = str(v, 'output'), files = await pdfs(ctx, list(v, 'pdfs') ?? [], on(v, 'recursive'));
+    const output = str(v, 'output'), files = await pdfs(ctx, list(v, 'pdfs') ?? [], on(v, 'recursive'), output);
     await checkOutput(output, files.length, ctx);
     let edited = 0;
     await withCounter(ctx, async counter => {

@@ -178,7 +178,7 @@ async function sendOptimisation(ctx: Context, v: Values, urls: string[], extra: 
 }
 
 const items = async (ctx: Context, v: Values, types: readonly string[], recursive = on(v, 'recursive'), skipErrors = on(v, 'skipErrors')) => {
-  await gate(ctx);
+  await gate(ctx, undefined, [...list(v, 'items') ?? [], ...['output', 'sameFolderTemplate', 'specificFolderTemplate'].map(name => str(v, name))]);
   return validateItems(list(v, 'items') ?? [], { recursive, skipErrors, types, cwd: ctx.cwd, home: ctx.home });
 };
 

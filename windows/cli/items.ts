@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pathKey } from '../core/fileops';
 import { fileURL } from '../core/ipc/protocol';
+import { agentPathRefusal } from '../core/local-path';
 import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } from '../core/media/detect';
 import { resolveHome } from '../core/template';
 import { ValidationError } from './args';
@@ -13,10 +14,13 @@ import type { Context } from './context';
 
 /**
  * `refuseUnallowedMCPRequest`: an agent's request asks the gate; anyone else needs no permission. Asked before a path the agent
- * named is looked up, since looking up a network path sends the user's credentials to that server.
+ * named is looked up, since looking up a network path sends the user's credentials to that server. `paths` are the files,
+ * folders, outputs and templates the agent named: one on a network share or a device is refused before anything else.
  */
-export async function gate(ctx: Context, pipeline?: string) {
+export async function gate(ctx: Context, pipeline?: string, paths: readonly (string | undefined)[] = []) {
   if (ctx.origin !== 'mcp') return;
+  const remote = agentPathRefusal(paths.map(item => item === undefined ? undefined : resolveHome(item, ctx.home)), ctx.cwd);
+  if (remote) throw new ValidationError(remote);
   const response = await (await ctx.backend()).settings({ action: 'gate', origin: ctx.origin, pipeline });
   if (!response.ok) throw new ValidationError(response.error ?? 'Clop refused the request.');
 }
