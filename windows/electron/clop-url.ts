@@ -1,11 +1,8 @@
+import { SETTINGS_TABS, type SettingsTab } from '../core/settings/tabs';
 // `clop://` links (spec step 27), as Clop/SettingsURL.swift and MCPInstaller.handle read them:
 // `clop://settings/<tab>[/<row>]`, `clop://settings/<row>`, `?highlight=<row>`, and `clop://mcp/start|stop`.
 
-export const SETTINGS_TABS = {
-  general: 'General', clipboard: 'Clipboard', files: 'File handling', video: 'Video', audio: 'Audio', images: 'Images', pdf: 'PDF', dropzone: 'Drop Zone',
-  presetZones: 'Preset Zones', floating: 'Floating Results', keys: 'Keyboard Shortcuts', pipelines: 'Pipelines', automation: 'Automation', mcp: 'MCP', updates: 'Updates', about: 'About',
-} as const;
-export type SettingsTab = keyof typeof SETTINGS_TABS;
+export { SETTINGS_TABS, type SettingsTab };
 export type ClopURL = { kind: 'settings'; tab?: SettingsTab; row?: string } | { kind: 'mcp'; action: 'start' | 'stop' };
 
 const normalized = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
