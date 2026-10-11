@@ -62,8 +62,9 @@ export function resolveBitrate(format: AudioFormat, bitrate: number, inputBitrat
   const input = inputBitrate ?? defaultBitrate;
   if (!allowed.length) return input;
   const at = lastAtMost(allowed, input);
-  // An input under the lowest allowed bitrate is already below every step; the Swift fallback to the top step would raise it.
-  return allowed[Math.max(0, Math.max(0, at) + bitrate)];
+  // An input under the lowest allowed bitrate is already below every step: it is kept, where the Swift fallback to the top step would raise it.
+  if (at < 0) return input;
+  return allowed[Math.max(0, at + bitrate)];
 }
 
 /**
