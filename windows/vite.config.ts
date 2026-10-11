@@ -2,15 +2,20 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import sharp from 'sharp';
 import { ItemEngine, message } from './electron/items';
+import { MediaFiles } from './electron/media-files';
+import { cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './electron/crop';
+import { compareSources, parseCompareView } from './electron/compare';
 import { imageDefaults, rendererSettings } from './electron/settings';
 import { defaultSettings, parseSettings } from './core/settings/schema';
 import type { ImageOptions } from './src/types';
 
 function localImagePreview(): Plugin {
   let settings = defaultSettings();
-  const engine = new ItemEngine(path.resolve('.preview-data', `session-${Date.now()}`), () => settings);
+  const session = path.resolve('.preview-data', `session-${Date.now()}`);
+  const engine = new ItemEngine(session, () => settings), media = new MediaFiles([session], '/api/media/');
   return {
     name: 'clop-local-image-preview',
     transformIndexHtml(html, context) {
@@ -34,7 +39,16 @@ function localImagePreview(): Plugin {
           if (req.method === 'GET' && req.url.startsWith('/api/png/')) {
             res.setHeader('Content-Type', 'image/png'); res.end(await sharp(engine.output(req.url.split('/').pop()!)).png().toBuffer()); return;
           }
-          if (req.url !== '/api/state') {
+          if (req.method === 'GET' && req.url.startsWith('/api/media/')) {
+            const headers = new Headers(); if (req.headers.range) headers.set('range', req.headers.range);
+            const response = await media.handle(new Request(`http://preview${req.url}`, { headers }));
+            res.statusCode = response.status; response.headers.forEach((value, key) => res.setHeader(key, value));
+            if (response.body) Readable.fromWeb(response.body as import('node:stream/web').ReadableStream).pipe(res); else res.end();
+            return;
+          }
+          let reply: unknown;
+          if (req.url === '/api/crop-sizes') reply = settings.savedCropSizes;
+          else if (req.url !== '/api/state') {
             if (req.method !== 'POST' || !String(req.headers['content-type']).startsWith('application/json')) throw new Error('Send an image operation as JSON.');
             let size = 0; const chunks: Buffer[] = [];
             for await (const chunk of req) { size += chunk.length; if (size > 48 * 1024 * 1024) throw new Error('Use an image smaller than 32 MB in the browser preview.'); chunks.push(Buffer.from(chunk)); }
@@ -47,11 +61,15 @@ function localImagePreview(): Plugin {
               case '/api/restore': await engine.restore(body.id); break;
               case '/api/dismiss': await engine.dismiss(body.id); break;
               case '/api/settings': settings = parseSettings(rendererSettings(body), settings); break;
+              case '/api/crop-source': reply = await cropSource(engine.get(body.id), parseCropView(body.view), media); break;
+              case '/api/crop': await engine.crop(body.id, parseCropRequest(body.request, engine.get(body.id).result.kind)); break;
+              case '/api/save-crop-sizes': settings = parseSettings({ savedCropSizes: parseSavedCropSizes(body.sizes) }, settings); reply = settings.savedCropSizes; break;
+              case '/api/compare-sources': reply = await compareSources(engine.get(body.id), parseCompareView(body.view), media); break;
               default: throw new Error('Unknown image operation.');
             }
           }
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ items: engine.list(), settings, native: false, platform: 'preview' }));
+          res.end(JSON.stringify(reply ?? { items: engine.list(), settings, native: false, platform: 'preview' }));
         } catch (error) { res.statusCode = 400; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: message(error) })); }
       });
     },

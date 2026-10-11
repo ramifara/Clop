@@ -1,5 +1,7 @@
 import type { AppState, ClopApi } from './types';
-async function request(action: string, body?: unknown): Promise<AppState> {
+/** An error's message without Electron's IPC prefix. */
+export const errorText = (error: unknown) => error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': Error: /, '') : String(error);
+async function request<T = AppState>(action: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api/${action}`, body === undefined ? undefined : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || 'The image operation failed. Try again.');
@@ -49,7 +51,14 @@ const browser: ClopApi = {
   apps: async () => [],
   pipelines: async () => [],
   runPipeline: async () => { throw new Error('Pipelines run in the Clop app.'); },
-  window: async action => { if (action === 'float') window.open('/?floating=1', 'clop-floating', 'width=420,height=660'); },
   mcp: async () => ({ clients: [], missing: 'Installing the MCP server into agents works in the desktop app.' }),
+  window: async action => { if (action === 'float') window.open('/?floating=1', 'clop-floating', 'width=420,height=660'); else if (action === 'close' && window.opener) window.close(); },
+  openCrop: async id => { window.open(`/?crop=${encodeURIComponent(id)}`, `clop-crop-${id}`, 'width=1020,height=660'); },
+  openCompare: async id => { window.open(`/?compare=${encodeURIComponent(id)}`, `clop-compare-${id}`, 'width=1100,height=760'); },
+  cropSource: (id, view) => request('crop-source', { id, view }),
+  crop: async (id, request_) => { await request('crop', { id, request: request_ }); },
+  cropSizes: () => request('crop-sizes'),
+  saveCropSizes: sizes => request('save-crop-sizes', { sizes }),
+  compareSources: (id, view) => request('compare-sources', { id, view }),
 };
 export const api = window.clop ?? browser;
