@@ -123,10 +123,10 @@ async function runFile(run: RunState, script: string | undefined, code: string |
   const input = run.current, name = script ? path.basename(script) : 'inline code';
   if (script) {
     if (!await isFile(script)) throw new Error(`Script not found: ${script}`);
-    if (/\.(exe|com)$/i.test(script)) {
-      const watched = watchedFolderHolding(run, script);
-      if (watched) throw new Error(`${script} is inside the watched folder ${watched}. A program loads DLLs from its own folder, so a file arriving there could run inside it. Move the program out of the watched folder.`);
-    }
+    // Files arrive in a watched folder unmarked (synced, unzipped, copied from a share), so nothing there runs: a script could be replaced, and a program loads DLLs from its own folder.
+    const watched = watchedFolderHolding(run, script);
+    if (watched && /\.(exe|com)$/i.test(script)) throw new Error(`${script} is inside the watched folder ${watched}. A program loads DLLs from its own folder, so a file arriving there could run inside it. Move the program out of the watched folder.`);
+    if (watched) throw new Error(`${script} is inside the watched folder ${watched}. Files arrive there without Windows marking where they came from, so Clop does not run scripts from it. Move the script out of the watched folder.`);
     if (await markedAsDownloaded(script)) throw new Error(`${script} was downloaded from the internet. Check it, then unblock it in its Properties (or with Unblock-File) to run it.`);
   }
   const { command, args, verbatim } = script ? await scriptCommand(script, input) : await inlineCommand(code!, input);

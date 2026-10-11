@@ -91,6 +91,19 @@ test('a program inside a watched folder is refused', async t => {
   await assert.rejects(w.run([makeStep('runScript', { path: program })], input), /is inside the watched folder .*watched\. A program loads DLLs from its own folder/);
 });
 
+test('a script inside a watched folder is refused, whatever its kind', async t => {
+  const w = await pipelineWorkspace(t); if (!w) return;
+  const input = w.file('in.png'), dir = path.join(w.dir, 'watched');
+  await graphic(40, 30).png().toFile(input);
+  await mkdir(dir, { recursive: true });
+  w.settings.imageDirs = [dir];
+  for (const name of ['fix.ps1', 'fix.bat', 'fix.cmd', 'fix.sh']) {
+    const file = path.join(dir, name);
+    await writeFile(file, 'echo hi');
+    await assert.rejects(w.run([makeStep('runScript', { path: file })], input), /is inside the watched folder .*watched\. Files arrive there without Windows marking where they came from, so Clop does not run scripts from it/, name);
+  }
+});
+
 test('script paths must be absolute, and runShortcut only runs scripts from Clop\'s scripts folder', async t => {
   const w = await pipelineWorkspace(t); if (!w) return;
   const input = w.file('in.png'), scriptsDir = path.join(w.dir, 'scripts');
