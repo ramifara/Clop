@@ -72,23 +72,24 @@ test('a step with no exact text form is saved from the JSON view, without a text
 
 test('editing a library pipeline keeps its id and what macOS stored beyond what Windows knows; a built-in can be edited', () => {
   const start = fixture();
-  const builtin = named(start, 'to WebP'), { result, settings } = run(start, save({ id: builtin.id, name: 'to WebP', fileType: 'image', text: 'convert(to: webp, location: sameFolder)' }));
+  const builtin = named(start, 'to WebP'), { result, settings } = run(start, save({ id: builtin.id, base: rev(start, builtin.id), name: 'to WebP', fileType: 'image', text: 'convert(to: webp, location: sameFolder)' }));
   assert.equal(result.saved, 'builtin-image-webp');
   assert.equal(settings.savedPipelines.length, start.savedPipelines.length);
   assert.equal(named(settings, 'to WebP').rawText, 'convert(to: webp, location: sameFolder)', 'the text stays as the user wrote it');
   const newer = decodePipelines([{ id: 'MAC', name: 'From Mac', futureField: [1, 2], steps: [{ optimise: {} }] }]) as Pipeline[];
-  const kept = run(deepFreeze({ ...start, savedPipelines: [...start.savedPipelines, ...newer] }), save({ id: 'MAC', name: 'Renamed', fileType: undefined, text: 'optimise' }));
+  const withMac = deepFreeze({ ...start, savedPipelines: [...start.savedPipelines, ...newer] });
+  const kept = run(withMac, save({ id: 'MAC', base: rev(withMac, 'MAC'), name: 'Renamed', fileType: undefined, text: 'optimise' }));
   assert.equal((named(kept.settings, 'Renamed') as unknown as { futureField: number[] }).futureField.length, 2);
-  assert.match(run(start, save({ id: 'GONE' })).result.issues![0].message, /no longer in the library/);
+  assert.match(run(start, save({ id: 'GONE', base: 'x' })).result.issues![0].message, /no longer in the library/);
 });
 
 test('a pipeline cannot be limited to a file type while it is attached to another', () => {
   let { settings } = run(fixture(), save({ name: 'Any', fileType: undefined, text: 'optimise' }));
   const id = named(settings, 'Any').id;
   settings = run(settings, { type: 'attach', fileType: 'video', source: 'clipboard', pipelineId: id }).settings;
-  const refused = run(settings, save({ id, name: 'Any', fileType: 'image', text: 'optimise' }));
+  const refused = run(settings, save({ id, base: rev(settings, id), name: 'Any', fileType: 'image', text: 'optimise' }));
   assert.match(refused.result.issues![0].message, /attached to video clipboard/);
-  assert.equal(run(settings, save({ id, name: 'Any', fileType: 'video', text: 'optimise' })).result.issues, undefined);
+  assert.equal(run(settings, save({ id, base: rev(settings, id), name: 'Any', fileType: 'video', text: 'optimise' })).result.issues, undefined);
 });
 
 test('attaching puts a reference in the clipboard, drop zone or watched folder of that type and detaching takes it out', () => {
@@ -191,9 +192,9 @@ test('preset zones are added, edited, reordered and removed, running a library p
   assert.match(run(settings, zone({ fileType: 'video', pipelineId: small })).result.issues![0].message, /works on image files/);
   assert.match(run(settings, zone({ pipelineId: 'builtin-audio-to-mp3' })).result.issues![0].message, /works on audio files/);
   assert.match(run(settings, zone({})).result.issues![0].message, /Choose the pipeline/);
-  assert.match(run(settings, zone({ id: 'GONE', pipelineId: small })).result.issues![0].message, /no longer exists/);
+  assert.match(run(settings, zone({ id: 'GONE', base: 'x', pipelineId: small })).result.issues![0].message, /no longer exists/);
 
-  const renamed = run(settings, zone({ id: shrink.id, name: 'Squash', icon: 'bolt', fileType: 'image' }));
+  const renamed = run(settings, zone({ id: shrink.id, base: rev(settings, shrink.id), name: 'Squash', icon: 'bolt', fileType: 'image' }));
   const kept = renamed.settings.presetZones[0] as PresetZone;
   assert.deepEqual([kept.id, kept.name, kept.icon, kept.pipeline.id], [shrink.id, 'Squash', 'bolt', shrink.pipeline.id], 'the zone and its reference keep their ids when only the label changes');
 
@@ -274,4 +275,29 @@ test('attached and zone unreadable entries are keyed by identity too', () => {
   const zoneGone = run(start, { type: 'zone-delete', key: z1.key, base: z1.revision }).settings;
   assert.equal(zoneGone.presetZones.length, 1);
   assert.match(run(zoneGone, { type: 'zone-delete', key: z1.key, base: z1.revision }).result.issues![0].message, /no longer/);
+});
+
+test('a save of an existing pipeline or zone is refused when the entry changed since the window showed it, and a save without a base is malformed', () => {
+  let { settings } = run(fixture(), save());
+  const id = named(settings, 'Small PNGs').id, shown = rev(settings, id);
+  settings = run(settings, { type: 'zone-save', name: 'Shrink', icon: 'photo', fileType: 'image', pipelineId: id }).settings;
+  const zoneId = (settings.presetZones[0] as PresetZone).id, zoneShown = rev(settings, zoneId);
+  // Someone else (the CLI, MCP, another window) changes both after the window drew them.
+  const elsewhere = run(settings, save({ id, base: shown, name: 'Small PNGs (theirs)', text: 'optimise' })).settings;
+  const zoneElsewhere = run(elsewhere, { type: 'zone-save', id: zoneId, base: zoneShown, name: 'Theirs', icon: 'bolt', fileType: 'image' }).settings;
+  const stale = run(zoneElsewhere, save({ id, base: shown, name: 'Mine', text: 'downscale(factor: 0.2)' }));
+  assert.equal(stale.result.conflict, true);
+  assert.deepEqual(stale.result.patch, {}, 'nothing is written');
+  assert.match(stale.result.issues![0].message, /changed elsewhere/);
+  assert.equal(named(stale.settings, 'Small PNGs (theirs)').rawText, 'optimise');
+  const staleZone = run(zoneElsewhere, { type: 'zone-save', id: zoneId, base: zoneShown, name: 'Mine', icon: 'photo', fileType: 'image' });
+  assert.equal(staleZone.result.conflict, true);
+  assert.deepEqual(staleZone.result.patch, {});
+  // Overwriting is the window asking again with the revision it now shows.
+  const again = run(zoneElsewhere, save({ id, base: rev(zoneElsewhere, id), name: 'Mine', text: 'downscale(factor: 0.2)' }));
+  assert.equal(again.result.conflict, undefined);
+  assert.equal(named(again.settings, 'Mine').rawText, 'downscale(factor: 0.2)');
+  // A rename that lands on an equal entry is not a conflict: the revision is of the content.
+  assert.equal(run(settings, save({ id, base: shown, name: 'Small PNGs', text: 'downscale(factor: 0.5) -> optimise' })).result.conflict, undefined);
+  for (const bad of [save({ id }), { type: 'zone-save', id: zoneId, name: 'x', icon: 'photo' }]) assert.throws(() => applyCommand(settings, bad, windows), /invalid revision/);
 });

@@ -13,12 +13,12 @@ export const LIMITS = { library: 500, perSource: 20, zones: 40, text: 20_000, na
 const ICON = /^[\w.-]{1,64}$/;
 
 export type EditorCommand =
-  | { type: 'pipeline-save'; id?: string; name: string; fileType?: ClopFileType; icon?: string; details?: string; skipOptimisation: boolean; hideResult: boolean; view: 'text' | 'json'; text: string }
+  | { type: 'pipeline-save'; id?: string; base?: string; name: string; fileType?: ClopFileType; icon?: string; details?: string; skipOptimisation: boolean; hideResult: boolean; view: 'text' | 'json'; text: string }
   | { type: 'pipeline-fix'; key: string; base: string; json: string }
   | { type: 'pipeline-delete'; key: string; base: string }
   | { type: 'attach'; fileType: ClopFileType; source: string; pipelineId: string }
   | { type: 'detach'; fileType: ClopFileType; source: string; key: string; base: string }
-  | { type: 'zone-save'; id?: string; name: string; icon: string; fileType?: ClopFileType; pipelineId?: string }
+  | { type: 'zone-save'; id?: string; base?: string; name: string; icon: string; fileType?: ClopFileType; pipelineId?: string }
   | { type: 'zone-delete'; key: string; base: string }
   | { type: 'zone-move'; key: string; to: number };
 export interface CommandResult {
@@ -46,12 +46,18 @@ const idOf = (value: unknown, what = 'id') => text(value, what, LIMITS.id);
 const revision = (value: unknown) => idOf(value, 'revision');
 const icon = (value: unknown) => typeof value === 'string' && ICON.test(value) ? value : refuse('icon');
 
+/** A save of an existing entry (it has an id) names the revision it replaces; a new one has neither. */
+function withBase(c: Record<string, unknown>): { id?: string; base?: string } {
+  const id = optional(c.id, v => idOf(v));
+  return id === undefined ? { id } : { id, base: revision(c.base) };
+}
+
 /** The command as typed data, or an Error when anything is missing, the wrong type or too long. */
 export function parseCommand(value: unknown): EditorCommand {
   const c = record(value);
   switch (c.type) {
     case 'pipeline-save': return {
-      type: 'pipeline-save', id: optional(c.id, v => idOf(v)), name: text(c.name, 'name', LIMITS.name).trim(), fileType: optional(c.fileType, fileType), icon: optional(c.icon, icon),
+      type: 'pipeline-save', ...withBase(c), name: text(c.name, 'name', LIMITS.name).trim(), fileType: optional(c.fileType, fileType), icon: optional(c.icon, icon),
       details: optional(c.details, v => text(v, 'description', LIMITS.details, { empty: true }).trim() || undefined), skipOptimisation: flag(c.skipOptimisation, 'setting'), hideResult: flag(c.hideResult, 'setting'),
       view: c.view === 'text' || c.view === 'json' ? c.view : refuse('view'), text: text(c.text, 'pipeline text', LIMITS.text, { empty: true }),
     };
@@ -60,7 +66,7 @@ export function parseCommand(value: unknown): EditorCommand {
     case 'attach': return { type: 'attach', fileType: fileType(c.fileType), source: text(c.source, 'source', LIMITS.path), pipelineId: idOf(c.pipelineId) };
     case 'detach': return { type: 'detach', fileType: fileType(c.fileType), source: text(c.source, 'source', LIMITS.path), key: idOf(c.key, 'entry'), base: revision(c.base) };
     case 'zone-save': return {
-      type: 'zone-save', id: optional(c.id, v => idOf(v)), name: text(c.name, 'name', LIMITS.zoneName).trim(), icon: icon(c.icon), fileType: optional(c.fileType, fileType), pipelineId: optional(c.pipelineId, v => idOf(v)),
+      type: 'zone-save', ...withBase(c), name: text(c.name, 'name', LIMITS.zoneName).trim(), icon: icon(c.icon), fileType: optional(c.fileType, fileType), pipelineId: optional(c.pipelineId, v => idOf(v)),
     };
     case 'zone-delete': return { type: 'zone-delete', key: idOf(c.key, 'zone'), base: revision(c.base) };
     case 'zone-move': return { type: 'zone-move', key: idOf(c.key, 'zone'), to: Number.isInteger(c.to) && (c.to as number) >= 0 && (c.to as number) < LIMITS.zones ? c.to as number : refuse('position') };
@@ -72,7 +78,7 @@ const none = (issues: PipelineIssue[]): CommandResult => ({ patch: {}, issues })
 const problem = (message: string): CommandResult => none([{ message }]);
 const readable = (saved: readonly Stored<Pipeline>[]) => saved.filter(isReadable);
 const indexOfKey = (entries: readonly Stored<{ id: string }>[], key: string) => entryKeys(entries).indexOf(key);
-const CHANGED = 'It was changed elsewhere since this window showed it. Reload it, then try again.';
+const CHANGED = 'It was changed elsewhere since this window showed it.';
 const changed = (): CommandResult => ({ patch: {}, issues: [{ message: CHANGED }], conflict: true });
 /** The entry still holds what the window showed: same revision. */
 const unchanged = (entry: unknown, base: string) => revisionOf(entry) === base;
@@ -94,6 +100,7 @@ function saveAttachments(settings: EditorSettings, kind: ClopFileType, map: Reco
 function savePipeline(settings: EditorSettings, c: Extract<EditorCommand, { type: 'pipeline-save' }>, context: EditorContext): CommandResult {
   const index = c.id === undefined ? -1 : indexOfKey(settings.savedPipelines, c.id), existing = settings.savedPipelines[index];
   if (c.id !== undefined && (index < 0 || !isReadable(existing))) return problem('That pipeline is no longer in the library. Save it as a new pipeline.');
+  if (c.id !== undefined && !unchanged(existing, c.base!)) return changed();
   if (index < 0 && settings.savedPipelines.length >= LIMITS.library) return problem(`The library holds at most ${LIMITS.library} pipelines.`);
   const parsed = c.view === 'text' ? parsePipelineText(c.text, { fileType: c.fileType, home: context.home }) : parseJsoncSteps(c.text, { fileType: c.fileType });
   if (parsed.issues.length) return none(parsed.issues);
@@ -180,6 +187,7 @@ function detach(settings: EditorSettings, c: Extract<EditorCommand, { type: 'det
 function saveZone(settings: EditorSettings, c: Extract<EditorCommand, { type: 'zone-save' }>): CommandResult {
   const index = c.id === undefined ? -1 : indexOfKey(settings.presetZones, c.id), existing = settings.presetZones[index];
   if (c.id !== undefined && (index < 0 || !isReadable(existing))) return problem('That preset zone no longer exists.');
+  if (c.id !== undefined && !unchanged(existing, c.base!)) return changed();
   if (index < 0 && settings.presetZones.length >= LIMITS.zones) return problem(`There is room for ${LIMITS.zones} preset zones.`);
   const previous = existing && isReadable(existing) ? existing : undefined;
   let pipeline = previous?.pipeline;

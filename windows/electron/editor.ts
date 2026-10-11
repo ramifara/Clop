@@ -10,30 +10,34 @@ export interface EditorReply {
   state: EditorState;
   /** Problems with what the user wrote. Nothing was saved. */
   issues?: PipelineIssue[];
+  /** Nothing was saved because the entry changed elsewhere since the window showed it; `state` has the current one. */
+  conflict?: boolean;
   saved?: string;
   removed?: { attachments: number; zones: number };
 }
 export interface EditorHost {
+  /**
+   * Runs `change` on the settings as they are when its turn comes, after every other write, and saves the values it returns
+   * (`SettingsStore.update`). The command's read and write are one step, so another writer cannot slip in between.
+   */
+  update: <T>(change: (settings: ClopSettings) => { patch?: Partial<EditorSettings>; result: T }) => Promise<{ settings: ClopSettings; result: T }>;
   settings: () => ClopSettings;
-  /** Validates and saves a change to the settings. */
-  change: (patch: Partial<EditorSettings>) => Promise<unknown>;
   context: () => EditorContext;
 }
 
 export class EditorService {
-  private queue: Promise<unknown> = Promise.resolve();
   constructor(private readonly host: EditorHost) {}
 
   state(): EditorState { return editorState(this.host.settings(), this.host.context()); }
 
   /** Rejects with an Error for a malformed command or a failed save; a problem in what the user wrote is in the reply's `issues`. */
-  command(value: unknown): Promise<EditorReply> {
-    const job = this.queue.then(async (): Promise<EditorReply> => {
-      const { patch, issues, saved, removed } = applyCommand(this.host.settings(), value, this.host.context());
-      if (Object.keys(patch).length) await this.host.change(patch);
-      return { state: this.state(), ...(issues ? { issues } : {}), ...(saved ? { saved } : {}), ...(removed ? { removed } : {}) };
+  async command(value: unknown): Promise<EditorReply> {
+    const context = this.host.context();
+    const { settings, result } = await this.host.update(current => {
+      const done = applyCommand(current, value, context);
+      return { ...(Object.keys(done.patch).length ? { patch: done.patch } : {}), result: done };
     });
-    this.queue = job.catch(() => {});
-    return job;
+    const { issues, conflict, saved, removed } = result;
+    return { state: editorState(settings, context), ...(issues ? { issues } : {}), ...(conflict ? { conflict } : {}), ...(saved ? { saved } : {}), ...(removed ? { removed } : {}) };
   }
 }

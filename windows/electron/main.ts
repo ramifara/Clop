@@ -662,7 +662,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
   }
 });
 // The editor window may only ask for the pipeline editor's state and send its commands, which `EditorService` checks.
-const editor = new EditorService({ settings: () => store.get(), change: patch => store.set(patch), context: () => ({ home }) });
+const editor = new EditorService({ settings: () => store.get(), update: change => store.update(change), context: () => ({ home }) });
 ipcMain.handle('clop:editor', (event, action: string, command?: unknown) => {
   if (!editorWindow || editorWindow.isDestroyed() || event.sender !== editorWindow.webContents) throw new Error('Untrusted window.');
   if (action === 'state') return editor.state();
@@ -693,8 +693,7 @@ else {
     let settingsError: unknown;
     settings = await store.load().catch(error => { settingsError = error; return store.get(); });
     // The built-in pipelines join the library once per version. Not over a settings file that could not be read: saving would replace it.
-    const seeded = settingsError ? undefined : seedBuiltinPipelines(settings.savedPipelines, settings.builtinPipelinesSeededVersion);
-    if (seeded) settings = await store.set(seeded).catch(error => { settingsError = error; return settings; });
+    if (!settingsError) settings = await store.update(current => ({ patch: seedBuiltinPipelines(current.savedPipelines, current.builtinPipelinesSeededVersion), result: undefined })).then(reply => reply.settings, error => { settingsError = error; return settings; });
     mirrorConsoleToFile(path.join(userData, 'logs', 'clop.log'), () => settings.persistDebugLogs);
     mcp = mcpSettings({
       userData, home: app.getPath('home'), cliPath: mcpServerPath(), missing: mcpServerMissing(), version: app.getVersion(), appPath: process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath,

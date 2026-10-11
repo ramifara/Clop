@@ -19,7 +19,7 @@ export function Zones({ state, send }: { state: EditorState; send: Send }) {
   return <div className="zones">
     <p className="explain">Drag a file and hold <kbd>Ctrl</kbd> or <kbd>Alt</kbd>: tiles for these zones show next to the drop target. Drop the file on a tile to optimise it and run that tile's pipeline. Up to four tiles show, those for the dragged file type first.</p>
     <ul className="zone-list" aria-label="Preset zones">
-      {state.zones.map((zone, index) => <ZoneRow key={zone.key} zone={zone} index={index} count={state.zones.length} library={library} send={send}/>)}
+      {state.zones.map((zone, index) => <ZoneRow key={`${zone.key}:${zone.revision}`} zone={zone} index={index} count={state.zones.length} library={library} send={send}/>)}
       {!state.zones.length && <li className="empty">No preset zones yet.</li>}
     </ul>
     <form className="zone-add" onSubmit={event => { event.preventDefault(); void send({ type: 'zone-save', name: adding.name, icon: adding.icon, fileType: type, pipelineId }).then(reply => { if (reply && !reply.issues) setAdding({ ...adding, name: '' }); }); }}>
@@ -41,7 +41,7 @@ function ZoneRow({ zone, index, count, library, send }: { zone: ZoneView; index:
     <button type="button" className="danger" onClick={() => void send({ type: 'zone-delete', key: zone.key, base: zone.revision })}>Remove</button></li>;
   const save = (patch: { name?: string; icon?: string; fileType?: ClopFileType | null; pipelineId?: string }) => {
     const fileType = patch.fileType === undefined ? zone.type : patch.fileType ?? undefined;
-    void send({ type: 'zone-save', id: zone.key, name: patch.name ?? zone.name, icon: patch.icon ?? zone.icon, fileType, pipelineId: patch.pipelineId });
+    void send({ type: 'zone-save', id: zone.key, base: zone.revision, name: patch.name ?? zone.name, icon: patch.icon ?? zone.icon, fileType, pipelineId: patch.pipelineId });
   };
   const options = library.filter(entry => serves(entry, zone.type));
   return <li className={zone.missing ? 'zone bad' : 'zone'}>

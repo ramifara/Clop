@@ -10,14 +10,14 @@ import type { Send } from './types';
 export const TYPE_NAMES: Record<ClopFileType, string> = { image: 'Image', video: 'Video', pdf: 'PDF', audio: 'Audio' };
 const NEW = 'new';
 
-interface Draft { id?: string; name: string; fileType?: ClopFileType; icon: string; details: string; skipOptimisation: boolean; hideResult: boolean; view: 'text' | 'json'; text: string }
+interface Draft { id?: string; /** The revision of the stored entry this draft was made from. */ base?: string; name: string; fileType?: ClopFileType; icon: string; details: string; skipOptimisation: boolean; hideResult: boolean; view: 'text' | 'json'; text: string }
 /** The JSON being fixed for an unreadable entry: what it held and its revision when opened, and what the user has typed since. */
 interface FixDraft { key: string; raw: string; revision: string; json: string }
 const fixOf = (entry: UnreadableView): FixDraft => ({ key: entry.key, raw: entry.raw, revision: entry.revision, json: entry.raw });
 const blank = (): Draft => ({ name: '', icon: 'wand.and.sparkles', details: '', skipOptimisation: false, hideResult: false, view: 'text', text: '' });
 function draftOf(pipeline: PipelineView): Draft {
   const view = pipeline.exact ? 'text' : 'json';
-  return { id: pipeline.key, name: pipeline.name, fileType: pipeline.fileType, icon: pipeline.icon ?? 'wand.and.sparkles', details: pipeline.details ?? '', skipOptimisation: pipeline.skipOptimisation, hideResult: pipeline.hideResult, view, text: view === 'text' ? pipeline.text : pipeline.json };
+  return { id: pipeline.key, base: pipeline.revision, name: pipeline.name, fileType: pipeline.fileType, icon: pipeline.icon ?? 'wand.and.sparkles', details: pipeline.details ?? '', skipOptimisation: pipeline.skipOptimisation, hideResult: pipeline.hideResult, view, text: view === 'text' ? pipeline.text : pipeline.json };
 }
 /** What the parser says about the draft's text, as the problems to underline. */
 function problemsIn(draft: Draft): Problem[] {
@@ -59,12 +59,12 @@ export function Library({ state, send }: { state: EditorState; send: Send }) {
     else edit({ view, text: formatSteps(parsed.steps) });
   }
   async function save() {
-    const reply = await send({ type: 'pipeline-save', id: draft.id, name: draft.name, fileType: draft.fileType, icon: draft.icon, details: draft.details, skipOptimisation: draft.skipOptimisation, hideResult: draft.hideResult, view: draft.view, text: draft.text });
+    const reply = await send({ type: 'pipeline-save', id: draft.id, base: draft.base, name: draft.name, fileType: draft.fileType, icon: draft.icon, details: draft.details, skipOptimisation: draft.skipOptimisation, hideResult: draft.hideResult, view: draft.view, text: draft.text });
     if (!reply) return;
     if (reply.issues) { setServerProblems(reply.issues); return; }
     const next = reply.state.library.find(candidate => candidate.key === reply.saved);
     setSelected(reply.saved);
-    if (next?.readable) { const base = { ...draft, id: next.key }; setDraft(base); setSaved(JSON.stringify(base)); }
+    if (next?.readable) { const base = { ...draft, id: next.key, base: next.revision }; setDraft(base); setSaved(JSON.stringify(base)); }
     setNote('Saved.');
   }
   async function remove() {
@@ -75,9 +75,18 @@ export function Library({ state, send }: { state: EditorState; send: Send }) {
     const gone = reply.removed ? [reply.removed.attachments && `${reply.removed.attachments} attachment${reply.removed.attachments === 1 ? '' : 's'}`, reply.removed.zones && `${reply.removed.zones} preset zone${reply.removed.zones === 1 ? '' : 's'}`].filter(Boolean) : [];
     setNote(gone.length ? `Deleted, with ${gone.join(' and ')} that used it.` : 'Deleted.');
   }
-  const canSave = dirty && !!draft.name.trim() && !!draft.text.trim() && !problems.length;
+  // Another writer (the CLI, the MCP server, another window) can change or delete the open entry while it is being edited.
+  const stored = entry?.readable ? entry : undefined, mine = stored !== undefined && draft.id === stored.key;
+  const changedElsewhere = mine && draft.base !== stored.revision;
+  const gone = selected !== undefined && selected !== NEW && !entry;
+  useEffect(() => {
+    if (changedElsewhere && JSON.stringify(draft) === saved) { const base = draftOf(stored); setDraft(base); setSaved(JSON.stringify(base)); }
+    else if (gone && !dirty) { setSelected(undefined); setFix(undefined); setNote('That pipeline was changed or removed elsewhere.'); }
+  }, [changedElsewhere, gone, dirty, draft, saved, stored]);
+  const conflict = changedElsewhere && dirty;
+  const canSave = dirty && !conflict && !!draft.name.trim() && !!draft.text.trim() && !problems.length;
   const uses = selected ? usedBy(state, selected) : [];
-  const editing = selected === NEW || entry?.readable;
+  const editing = selected === NEW || entry?.readable || (gone && draft.id === selected);
 
   return <div className="library">
     <aside className="library-list">
@@ -96,6 +105,12 @@ export function Library({ state, send }: { state: EditorState; send: Send }) {
     <section className="library-pane">
       {!selected && <div className="placeholder"><h2>Pipelines</h2><p>A pipeline is a list of steps, such as <code>downscale(factor: 0.5) -&gt; convert(to: webp)</code>. Pick one to edit it, or press New. Attach pipelines to the clipboard, the drop zone or a watched folder in the Attached tab.</p></div>}
       {entry && !entry.readable && fix?.key === entry.key && <UnreadableEditor key={entry.key} entry={entry} fix={fix} setFix={setFix} send={send} onDone={() => { setFix(undefined); setSelected(undefined); }}/>}
+      {gone && <p className="conflict" role="alert">This pipeline was changed or removed elsewhere.{' '}
+        {draft.id === selected && <button type="button" onClick={() => { setSelected(NEW); setDraft({ ...draft, id: undefined, base: undefined }); setServerProblems([]); }}>Keep mine as a new pipeline</button>}
+        <button type="button" onClick={() => { setSelected(undefined); setDraft(blank()); setSaved(JSON.stringify(blank())); setFix(undefined); }}>Discard</button></p>}
+      {conflict && <p className="conflict" role="alert">This pipeline was changed elsewhere while you edited it.{' '}
+        <button type="button" onClick={() => { const base = draftOf(stored); setDraft(base); setSaved(JSON.stringify(base)); setServerProblems([]); setNote(''); }}>Load the current version</button>
+        <button type="button" onClick={() => { setDraft({ ...draft, base: stored.revision }); setServerProblems([]); }}>Overwrite with mine</button></p>}
       {editing && <>
         <header className="pane-head">
           <label className="icon-pick" title="Icon"><span className="glyph big" aria-hidden="true">{glyph(draft.icon)}</span>
@@ -120,7 +135,7 @@ export function Library({ state, send }: { state: EditorState; send: Send }) {
         <footer className="pane-foot">
           <button type="button" className="primary" disabled={!canSave} onClick={() => void save()}>Save</button>
           <button type="button" disabled={!dirty} onClick={() => { const base = entry?.readable ? draftOf(entry) : blank(); setDraft(base); setSaved(JSON.stringify(base)); setServerProblems([]); setNote(''); }}>Revert</button>
-          {draft.id && (confirming ? <span className="confirm">Delete {draft.name || 'this pipeline'}?{uses.length > 0 && ` It is used by ${uses.length} place${uses.length === 1 ? '' : 's'}, which stop using it.`} <button type="button" className="danger" onClick={() => void remove()}>Delete</button><button type="button" onClick={() => setConfirming(false)}>Keep</button></span>
+          {draft.id && !gone && (confirming ? <span className="confirm">Delete {draft.name || 'this pipeline'}?{uses.length > 0 && ` It is used by ${uses.length} place${uses.length === 1 ? '' : 's'}, which stop using it.`} <button type="button" className="danger" onClick={() => void remove()}>Delete</button><button type="button" onClick={() => setConfirming(false)}>Keep</button></span>
             : <button type="button" className="danger" onClick={() => setConfirming(true)}>Delete…</button>)}
           <span className="note" role="status">{note}</span>
         </footer>

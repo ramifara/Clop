@@ -16,7 +16,7 @@ async function setup(t: { after: (fn: () => Promise<void>) => void }, initial?: 
   const store = new SettingsStore(file, { home: dir, desktop: path.join(dir, 'Desktop'), userData: dir });
   await store.load();
   await store.set(seedBuiltinPipelines(store.get('savedPipelines'), 0));
-  const editor = new EditorService({ settings: () => store.get(), change: patch => store.set(patch), context: () => ({ home: dir }) });
+  const editor = new EditorService({ settings: () => store.get(), update: change => store.update(change), context: () => ({ home: dir }) });
   const onDisk = async () => JSON.parse(await readFile(file, 'utf8')) as Record<string, any>;
   return { dir, file, store, editor, onDisk };
 }
@@ -77,4 +77,29 @@ test('an entry Windows cannot read is written back exactly as it was', async t =
   const fixed = await editor.command({ type: 'pipeline-fix', key: 'unreadable:id:MACSTR', base: editor.state().library.find(entry => entry.key === 'unreadable:id:MACSTR')!.revision, json: JSON.stringify({ name: 'Fixed', steps: [{ optimise: {} }] }) });
   assert.equal(fixed.saved, 'MACSTR');
   assert.equal((await onDisk()).savedPipelines.some((entry: unknown) => entry instanceof Unreadable), false);
+});
+
+test('a command reads the settings in its turn: another writer saving meanwhile is not overwritten', async t => {
+  const { editor, store } = await setup(t);
+  const base = (await editor.command(draft({ name: 'Shared' }))).saved!;
+  const shown = editor.state().library.find(entry => entry.key === base)!.revision;
+  // The CLI adds an attachment and a second writer saves a different pipeline while the window's save waits its turn.
+  const [theirs, cli, mine] = await Promise.all([
+    store.update(current => ({ patch: { savedPipelines: [...current.savedPipelines, { ...current.savedPipelines.filter(isReadable)[0], id: 'THEIRS', name: 'Theirs' }] }, result: 0 })),
+    store.update(current => ({ patch: { pipelinesToRunOnImage: { clipboard: [...(current.pipelinesToRunOnImage.clipboard ?? [])] } }, result: 0 })),
+    editor.command({ type: 'attach', fileType: 'image', source: 'clipboard', pipelineId: base }),
+  ]);
+  assert.ok(theirs && cli && mine);
+  const names = store.get('savedPipelines').filter(isReadable).map(entry => entry.name);
+  assert.ok(names.includes('Theirs') && names.includes('Shared'), 'both writers kept');
+  assert.equal(store.get('pipelinesToRunOnImage').clipboard?.length, 1, 'the attachment is on top of what the other writer saved');
+  // A save based on what the window showed before another writer changed the entry is refused, and nothing is written.
+  await store.update(current => ({ patch: { savedPipelines: current.savedPipelines.map(entry => isReadable(entry) && entry.id === base ? { ...entry, details: 'edited elsewhere' } : entry) }, result: 0 }));
+  const refused = await editor.command({ ...draft({ name: 'Mine' }), id: base, base: shown });
+  assert.equal(refused.conflict, true);
+  assert.equal(refused.saved, undefined);
+  assert.equal(store.get('savedPipelines').filter(isReadable).find(entry => entry.id === base)?.name, 'Shared');
+  assert.equal(refused.state.library.find(entry => entry.key === base)?.readable && (refused.state.library.find(entry => entry.key === base) as { details?: string }).details, 'edited elsewhere', 'the reply carries the current state');
+  const retried = await editor.command({ ...draft({ name: 'Mine' }), id: base, base: refused.state.library.find(entry => entry.key === base)!.revision });
+  assert.equal(retried.saved, base);
 });

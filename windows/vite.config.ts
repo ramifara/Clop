@@ -22,7 +22,16 @@ function localImagePreview(): Plugin {
   settings = parseSettings(seedBuiltinPipelines(settings.savedPipelines, 0), settings);
   // CLOP_PREVIEW_DEMO=1 fills the editor with example attachments and preset zones, for screenshots.
   if (process.env.CLOP_PREVIEW_DEMO) settings = parseSettings(demoSettings(settings), settings);
-  const editor = new EditorService({ settings: () => settings, change: async patch => { settings = parseSettings(patch, settings); }, context: () => ({ home: os.homedir() }) });
+  // The preview keeps its settings in memory; updates still run one at a time, like the app's `SettingsStore.update`.
+  let turn: Promise<unknown> = Promise.resolve();
+  const editor = new EditorService({
+    settings: () => settings, context: () => ({ home: os.homedir() }),
+    update: change => {
+      const job = turn.then(() => { const { patch, result } = change(settings); if (patch !== undefined) settings = parseSettings(patch, settings); return { settings, result }; });
+      turn = job.catch(() => {});
+      return job;
+    },
+  });
   const session = path.resolve('.preview-data', `session-${Date.now()}`);
   const engine = new ItemEngine(session, () => settings), media = new MediaFiles([session], '/api/media/');
   return {
