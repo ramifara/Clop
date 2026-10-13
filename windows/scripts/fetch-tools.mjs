@@ -13,8 +13,9 @@ import { parseArgs } from 'node:util';
 import SevenZip from '7z-wasm';
 
 const root = path.resolve(import.meta.dirname, '..');
-// x64 is the only Windows set; ARM64 Windows runs it under emulation.
-const { values: options } = parseArgs({ options: { platform: { type: 'string', default: process.platform }, arch: { type: 'string', default: 'x64' } } });
+// Windows has an x64 and an ARM64 set. The ARM64 one holds native ARM64 builds where one exists and the x64 build, which Windows 11 on
+// ARM runs under emulation, where not. The default is the machine's own set, so CI on an ARM runner fetches the ARM64 one.
+const { values: options } = parseArgs({ options: { platform: { type: 'string', default: process.platform }, arch: { type: 'string', default: process.arch === 'arm64' ? 'arm64' : 'x64' } } });
 if (options.platform !== 'win32') {
   console.log(`Clop bundles tools only for Windows. On ${options.platform}, development uses ffmpeg, gs and the other tools from PATH. Pass --platform win32 to prepare the Windows set here.`);
   process.exit(0);
