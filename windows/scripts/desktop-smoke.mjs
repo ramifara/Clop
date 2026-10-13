@@ -1,10 +1,11 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, rm, stat } from 'node:fs/promises';
 import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
+import { PDFDocument } from '@cantoo/pdf-lib';
 import { WindowsBridge } from '../dist-electron/native-test.js';
 import { dragFixture } from './drag-fixture.mjs';
 // The inspection below opens files in the temporary profile. Release their Windows handles
@@ -15,13 +16,15 @@ sharp.cache(false);
 const profile = await mkdtemp(path.join(os.tmpdir(), 'clop-desktop-'));
 const executable = path.resolve('release/win-unpacked/Clop for Windows.exe');
 execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()']);
+// Software H.264, so the video size check does not depend on which hardware encoder the runner happens to have.
+await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ videoEncoder: 'libx264' }));
 const app = spawn(executable, ['--remote-debugging-port=9227', `--user-data-dir=${profile}`], { stdio: 'pipe' });
 let output = '';
 app.stdout.on('data', chunk => { output += chunk; }); app.stderr.on('data', chunk => { output += chunk; });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function until(task, description) {
+async function until(task, description, timeout = 30000) {
   let last;
-  const deadline = Date.now() + 30000;
+  const deadline = Date.now() + timeout;
   while (Date.now() < deadline) { try { const value = await task(); if (value) return value; } catch (error) { last = error; } await pause(250); }
   throw new Error(`${description}: ${last?.message ?? output.slice(-2000)}`);
 }
@@ -136,7 +139,34 @@ try {
   // The older result may have reached its normal ten-second dismissal by now.
   assert.equal(finalState.items.filter(item => item.id !== initialImage.id).length, 1, 'Pixel-only clipboard writes must produce exactly one new card');
   assert.equal(finalState.notice, undefined, 'Pixel-only clipboard processing must not show an error');
-  console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore and automatic drag target.');
+  // Videos, PDFs and audio copied as files, as Explorer copies them (a file list and nothing else), each get a card once
+  // their clipboard setting is on, and the clipboard then holds the optimised file under the same name.
+  await main.evaluate('window.clop.settings({ optimiseVideoClipboard: true, optimisePDFClipboard: true, optimiseAudioClipboard: true })');
+  const ffmpeg = path.resolve('release/win-unpacked/resources/bin/ffmpeg.exe');
+  const video = path.join(profile, 'clip-über.mp4'), song = path.join(profile, 'song.mp3'), scan = path.join(profile, 'scan.pdf');
+  // Near-lossless H.264 and 320 kbps MP3 leave the optimisers something to save.
+  execFileSync(ffmpeg, ['-y', '-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=2', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:d=2', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '8', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', video]);
+  execFileSync(ffmpeg, ['-y', '-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100:duration=3', '-f', 'lavfi', '-i', 'anoisesrc=duration=3:amplitude=0.05:sample_rate=44100:seed=1', '-filter_complex', '[0][1]amix=inputs=2,aformat=channel_layouts=stereo[a]', '-map', '[a]', '-c:a', 'libmp3lame', '-b:a', '320k', song]);
+  // Four pages showing one photo-like JPEG at 285 DPI, which Ghostscript downsamples.
+  const pixels = Buffer.alloc(1140 * 855 * 3);
+  for (let y = 0, i = 0; y < 855; y++) for (let x = 0; x < 1140; x++) { const grain = ((x * 7919 + y * 104729) % 23) - 11; pixels[i++] = 128 + 90 * Math.sin(x / 37 + y / 53) + grain; pixels[i++] = 128 + 80 * Math.sin(x / 23 - y / 41 + 1) + grain; pixels[i++] = 128 + 70 * Math.cos((x + y) / 61) + grain; }
+  const pdf = await PDFDocument.create(), photo = await pdf.embedJpg(await sharp(pixels, { raw: { width: 1140, height: 855, channels: 3 } }).jpeg({ quality: 95 }).toBuffer());
+  for (let page = 0; page < 4; page++) pdf.addPage([288, 216]).drawImage(photo, { x: 0, y: 0, width: 288, height: 216 });
+  await writeFile(scan, await pdf.save());
+  const copyFiles = files => execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', '$ErrorActionPreference = "Stop"; Add-Type -AssemblyName System.Windows.Forms; $list = New-Object System.Collections.Specialized.StringCollection; foreach ($file in $env:CLOP_SMOKE_FILES.Split([char]10)) { [void]$list.Add($file) }; [System.Windows.Forms.Clipboard]::SetFileDropList($list)'], { env: { ...process.env, CLOP_SMOKE_FILES: files.join('\n') } });
+  for (const [file, kind] of [[video, 'video'], [scan, 'pdf'], [song, 'audio']]) {
+    const before = new Set((await main.evaluate('window.clop.state()')).items.map(item => item.id));
+    copyFiles([file]);
+    const item = await until(async () => (await main.evaluate('window.clop.state()')).items.find(item => !before.has(item.id) && item.kind === kind && item.source === 'clipboard' && item.status !== 'processing'), `Copying a ${kind} file did not produce a result`, 120000);
+    console.log(`Clipboard ${kind}:`, JSON.stringify({ status: item.status, error: item.error, format: item.format, originalBytes: item.originalBytes, outputBytes: item.outputBytes, durationMs: item.durationMs, pages: item.pages }));
+    assert.equal(item.status, 'ready', item.error);
+    assert.ok(item.outputBytes < item.originalBytes, `The ${kind} should be smaller after optimising`);
+    await until(() => floating.evaluate(`[...document.querySelectorAll('.corner-card')].some(card => card.getAttribute('aria-label') === ${JSON.stringify(`Optimised ${path.basename(file)}`)})`), `The ${kind} card did not render`);
+    const rewritten = await until(async () => { const [result] = (await externalClipboard.request({ type: 'read' })).paths; return result && result !== file && path.basename(result) === path.basename(file) && result; }, `The clipboard was not rewritten with the optimised ${kind}`);
+    assert.equal((await stat(rewritten)).size, item.outputBytes, `The clipboard should hold the optimised ${kind}`);
+  }
+  assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'Copying video, PDF and audio files must not show an error');
+  console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, and copied video, PDF and audio files.');
 } finally {
   console.log('Stopping packaged app and native test helper.');
   try { if (main) await main.send('Runtime.evaluate', { expression: 'window.clop.window("quit")' }); } catch {}

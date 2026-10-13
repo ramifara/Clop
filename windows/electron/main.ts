@@ -3,34 +3,47 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ImageEngine, message } from './engine';
+import { ItemEngine, message } from './items';
 import { clipboardPNG } from '../core/media/image-codecs';
 import { imageDefaults, rendererSettings } from './settings';
 import { defaultSettings } from '../core/settings/schema';
 import { SettingsStore } from '../core/settings/store';
 import { Workdir } from '../core/workdir';
+import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
-import { ClipboardPickup } from './pickup';
-import type { AppState, ImageOptions, ImageResult } from '../src/types';
-/** Image files the engine accepts, by extension, from the command line. */
-const IMAGE_FILE = /\.(png|jpe?g|webp|gif|avif|tiff?|heic|heif|jxl|bmp|svg)$/i;
+import { ClipboardPickup, type ClipboardChange } from './pickup';
+import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, type ClipboardMemory } from './clipboard';
+import type { AppState, ImageOptions, ItemResult } from '../src/types';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-let main: BrowserWindow, floating: BrowserWindow, tray: Tray, engine: ImageEngine;
+let main: BrowserWindow, floating: BrowserWindow, tray: Tray, engine: ItemEngine;
 let settings = defaultSettings(), notice: string | undefined, quitting = false, bridgeReady = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let dropActive = false, dragging = false, importsRunning = 0, hovered = false;
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
-let clipboardBusy = false, lastFingerprint = '', lastOwnFingerprint = '', clipboardTimer: NodeJS.Timeout | undefined;
-let lastClipboardSequence: number | undefined;
-const pickup = new ClipboardPickup(change => { void optimiseClipboard(change.sequence, change.paths); });
-let pendingClipboard: { sequence?: number; paths: string[]; manual: boolean; aggressive: boolean } | undefined;
+let clipboardTimer: NodeJS.Timeout | undefined;
+const memory: ClipboardMemory = { fingerprint: '', own: '' };
+let nameCounter: Counter | undefined;
+/** Clipboard images take turns, each optimised and written back before the next one replaces its card. Images share one engine queue anyway. */
+const clipboardImageTurn = serial();
+const intake = new ClipboardIntake(error => inform(message(error)));
+const pickup = new ClipboardPickup(change => { void optimiseClipboard(change); });
 let clipboardWrites: Promise<void> = Promise.resolve();
 const bridge = new WindowsBridge();
 const devUrl = process.env.CLOP_DEV_URL;
 const fingerprint = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
-const defaults = (): ImageOptions => imageDefaults(settings);
+/** Files are recognised by path, size and modification time: hashing a large video's bytes on every copy would take too long. */
+const filesFingerprint = async (files: string[]) => fingerprint(Buffer.from(JSON.stringify(await Promise.all(files.map(async file => {
+  const info = await stat(file).catch(error => { throw (error as NodeJS.ErrnoException).code === 'ENOENT' ? new Error(`${path.basename(file)} no longer exists.`) : error; });
+  return [file, info.size, info.mtimeMs];
+})))));
+const defaults = (aggressive = false): ImageOptions => ({ ...imageDefaults(settings), ...(aggressive ? { mode: 'aggressive' } : {}) });
+const isFile = (file: string) => stat(file).then(info => info.isFile(), () => false);
+const currentSequence = async () => bridgeReady ? sequenceReply(await bridge.request({ type: 'sequence' })) : undefined;
+/** Whether a result is still in the shelf and finished; a card can be dismissed while its import runs. */
+const isReady = (id: string) => { try { return engine.get(id).result.status === 'ready'; } catch { return false; } };
+const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 const state = (): AppState => ({ items: engine.list().filter(item => !hidden.has(item.id)), settings, native: true, platform: process.platform, dropActive, notice });
 function broadcast() { for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state()); }
 function inform(text: string) { notice = text; syncFloating(); broadcast(); }
@@ -67,29 +80,36 @@ function scheduleHide(id: string) {
   };
   hideTimers.set(id, setTimeout(check, engine.get(id).result.source === 'clipboard' ? 10000 : 30000));
 }
+async function dismiss(id: string) {
+  const timer = hideTimers.get(id); if (timer) clearTimeout(timer);
+  hideTimers.delete(id); hidden.delete(id); await engine.dismiss(id);
+}
 async function makeRoom() {
   const oldest = engine.list().at(-1);
-  if (engine.list().length >= 40 && oldest) { const timer = hideTimers.get(oldest.id); if (timer) clearTimeout(timer); hideTimers.delete(oldest.id); hidden.delete(oldest.id); await engine.dismiss(oldest.id); }
+  if (engine.list().length >= 40 && oldest) await dismiss(oldest.id);
 }
-async function importUrl(value: unknown, aggressive = false) {
-  if (typeof value !== 'string' || value.length > 8192) throw new Error('Drop an HTTP or HTTPS image link.');
+/** Downloads and optimises a link. A copied link passes the clipboard sequence it was read at, so its result never overwrites a later copy. */
+async function importUrl(value: unknown, aggressive = false, source: ItemResult['source'] = 'drop', expectedSequence?: number) {
+  if (typeof value !== 'string' || value.length > 8192) throw new Error('Drop an HTTP or HTTPS link.');
   const url = new URL(value);
-  if (!['https:', 'http:'].includes(url.protocol)) throw new Error('Drop an HTTP or HTTPS image link.');
+  if (!['https:', 'http:'].includes(url.protocol)) throw new Error('Drop an HTTP or HTTPS link.');
   importsRunning++; dropActive = false;
   try {
-    const sequence = bridgeReady ? Number((await bridge.request({ type: 'sequence' })).sequence) : undefined;
+    const sequence = expectedSequence ?? await currentSequence();
     const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
-    if (!response.ok) throw new Error('Could not download this image. Copy the image instead.');
-    if (Number(response.headers.get('content-length')) > 128 * 1024 * 1024) throw new Error('Use an image smaller than 128 MB.');
+    if (!response.ok) throw new Error('Could not download this link. Copy the file instead.');
+    if (Number(response.headers.get('content-length')) > 128 * 1024 * 1024) throw new Error('Use a file smaller than 128 MB.');
     const chunks: Buffer[] = []; let length = 0;
-    if (!response.body) throw new Error('This link did not return an image.');
+    if (!response.body) throw new Error('This link returned nothing to optimise.');
     const reader = response.body.getReader();
     try {
-      while (true) { const chunk = await reader.read(); if (chunk.done) break; length += chunk.value.length; if (length > 128 * 1024 * 1024) throw new Error('Use an image smaller than 128 MB.'); chunks.push(Buffer.from(chunk.value)); }
+      while (true) { const chunk = await reader.read(); if (chunk.done) break; length += chunk.value.length; if (length > 128 * 1024 * 1024) throw new Error('Use a file smaller than 128 MB.'); chunks.push(Buffer.from(chunk.value)); }
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
     await makeRoom();
-    const id = await engine.importBuffer(Buffer.concat(chunks), path.basename(url.pathname) || 'Image.png', 'drop', { ...defaults(), ...(aggressive ? { mode: 'aggressive' } : {}) });
-    if (settings.autoCopyToClipboard && engine.get(id).result.status === 'ready') await copy(id, sequence);
+    let name = path.basename(url.pathname);
+    try { name = decodeURIComponent(name); } catch {}
+    const id = await engine.importBuffer(Buffer.concat(chunks), name || 'Download', source, defaults(aggressive));
+    if (isReady(id)) await (source === 'clipboard' ? copyClipboardResults([id], sequence) : settings.autoCopyToClipboard ? copy([id], sequence) : undefined);
   } finally { importsRunning--; syncFloating(); broadcast(); }
 }
 function configure(window: BrowserWindow) {
@@ -108,122 +128,148 @@ async function createWindows() {
   floating.setIgnoreMouseEvents(true, { forward: true });
   if (settings.keepDropZoneVisible) { syncFloating(); floating.setIgnoreMouseEvents(false); }
 }
-async function copy(id: string, expectedSequence?: number, files?: string[]) {
-  const file = engine.output(id);
-  const { directory, result: { format } } = engine.get(id);
+/**
+ * Puts results on the clipboard. One image goes on as image data, with its file unless `copyImageFilePath` is off. Other
+ * results, and several at once, go on as a file list, with the last image's data when all are images. `text` also puts
+ * the paths on as text, for results of a copied path.
+ */
+async function copy(ids: string[], expectedSequence?: number, { text = false } = {}) {
+  const files = ids.map(id => engine.output(id)), last = engine.get(ids[ids.length - 1]);
+  const images = ids.every(id => engine.get(id).result.kind === 'image');
+  const withFiles = !images || ids.length > 1 || settings.copyImageFilePath;
   if (process.platform === 'win32') {
-    // Image processing can finish before the previous Windows clipboard write has flushed.
-    // Snapshot its immutable output, then serialize encoding and native writes in action order.
+    // Processing can finish before the previous Windows clipboard write has flushed.
+    // Snapshot the immutable outputs, then serialize encoding and native writes in action order.
     const write = async () => {
       if (!bridgeReady) throw new Error('The Windows clipboard helper is unavailable. Save or drag the result instead.');
-      const png = path.join(directory, `clipboard-${randomUUID()}.png`);
+      const png = images ? path.join(last.directory, `clipboard-${randomUUID()}.png`) : undefined;
       try {
-        await clipboardPNG(file, png, { limitInputPixels: 60_000_000 });
-        const reply = await bridge.request({ type: 'copy', file, files, png, ...(expectedSequence === undefined ? {} : { expectedSequence }) });
-        if (!reply.skipped) { lastClipboardSequence = Number(reply.sequence); lastOwnFingerprint = fingerprint(await readFile(png)); }
-      } finally { await rm(png, { force: true }); }
+        if (png) await clipboardPNG(files[files.length - 1], png, { limitInputPixels: 60_000_000 });
+        const reply = copyReply(await bridge.request({ type: 'copy', ...(withFiles ? { files } : {}), ...(png ? { png } : {}), ...(text ? { text: files.join('\r\n') } : {}), ...(expectedSequence === undefined ? {} : { expectedSequence }) }));
+        if (!reply.skipped) { memory.sequence = reply.sequence; if (png) memory.own = fingerprint(await readFile(png)); }
+      } finally { if (png) await rm(png, { force: true }); }
     };
     const job = clipboardWrites.then(write, write);
     clipboardWrites = job.catch(() => {});
     await job;
   } else {
-    const image = nativeImage.createFromPath(file);
+    if (!images) throw new Error('Copying files needs the Windows clipboard helper. Save the result instead.');
+    const image = nativeImage.createFromPath(files[files.length - 1]);
     if (image.isEmpty()) throw new Error('This format cannot be copied as an image here. Save the result instead.');
     const png = image.toPNG();
     await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(png)], { type: 'image/png' }) })]);
     const items = await clipboard.read(), item = items.find(item => item.types.includes('image/png'));
-    lastOwnFingerprint = fingerprint(item ? Buffer.from(await (await item.getType('image/png')).arrayBuffer()) : png);
+    memory.own = fingerprint(item ? Buffer.from(await (await item.getType('image/png')).arrayBuffer()) : png);
   }
 }
-async function importPaths(files: string[], source: ImageResult['source'] = 'drop', expectedSequence?: number, aggressive = false) {
-  if (!Array.isArray(files) || files.length > 20 || files.some(p => typeof p !== 'string' || !path.isAbsolute(p))) throw new Error('Drop up to 20 local image files at a time.');
+/** Imports local files one by one, telling about each that fails. Returns the results that finished. */
+async function importPaths(files: unknown, source: ItemResult['source'], { aggressive = false, name }: { aggressive?: boolean; name?: (file: string) => Promise<string | undefined> } = {}) {
+  if (!Array.isArray(files) || files.length > 20 || files.some(p => typeof p !== 'string' || !path.isAbsolute(p))) throw new Error('Choose up to 20 local files at a time.');
   dropActive = false; importsRunning++; broadcast();
-  try {
-  if (expectedSequence === undefined && bridgeReady) expectedSequence = Number((await bridge.request({ type: 'sequence' })).sequence);
   const completed: string[] = [];
-  for (const file of files) {
-    try {
-      await makeRoom();
-      const id = await engine.importPath(file, source, { ...defaults(), ...(aggressive ? { mode: 'aggressive' } : {}) });
-      if (engine.get(id).result.status === 'ready') completed.push(id);
-    } catch (error) { inform(`${path.basename(file)}: ${message(error)}`); }
-  }
-  if (settings.autoCopyToClipboard && completed.length) await copy(completed[completed.length - 1], expectedSequence, completed.map(id => engine.output(id)));
-  } finally { importsRunning--; syncFloating(); broadcast(); }
-}
-async function optimiseClipboard(sequence?: number, paths: string[] = [], manual = false, aggressive = false) {
-  if (clipboardBusy) { pendingClipboard = { sequence, paths, manual, aggressive }; return; }
-  if (!manual && !settings.enableClipboardOptimiser) return;
-  clipboardBusy = true;
   try {
-    if (sequence === undefined && bridgeReady) {
-      const snapshot = await bridge.request({ type: 'read' });
-      if (!manual && snapshot.owned) return;
-      sequence = Number(snapshot.sequence); paths = snapshot.paths as string[];
+    for (const file of files as string[]) {
+      try {
+        await makeRoom();
+        const id = await engine.importPath(file, source, defaults(aggressive), await name?.(file));
+        if (isReady(id)) completed.push(id);
+      } catch (error) { inform(`${path.basename(file)}: ${message(error)}`); }
     }
-    if (!manual && sequence !== undefined && sequence === lastClipboardSequence) return;
-    if (sequence !== undefined) lastClipboardSequence = sequence;
-    if (!manual && paths.length && paths.every(file => workdir.owns(file))) return;
-    if (paths.length) {
-      if (!manual) {
-        const hashes: string[] = [];
-        for (const file of paths.slice(0, 20)) {
-          const info = await stat(file);
-          if (!info.isFile() || info.size > 128 * 1024 * 1024) throw new Error('Copy an image smaller than 128 MB.');
-          hashes.push(fingerprint(await readFile(file)));
-        }
-        const hash = hashes.length === 1 ? hashes[0] : fingerprint(Buffer.from(hashes.join('\n')));
-        if (hash === lastFingerprint || hash === lastOwnFingerprint) return;
-        lastFingerprint = hash;
-      }
-      await importPaths(paths, 'clipboard', sequence, aggressive); return;
-    }
-    // Prefer an encoded PNG clipboard payload, avoiding an unnecessary bitmap round trip.
-    let bytes = Buffer.alloc(0);
-    for (const item of await clipboard.read()) {
-      const type = item.types.find(type => type === 'image/png' || type === 'electron application/osclipboard;format="PNG"') ?? item.types.find(type => type.startsWith('image/'));
-      if (type) { const blob = await item.getType(type); if ('arrayBuffer' in blob) { bytes = Buffer.from(await blob.arrayBuffer()); break; } }
-    }
-    // Reading a delayed image format can change the sequence. Also, a new external copy may
-    // arrive while the async Electron read is pending. Re-read that snapshot before importing.
-    if (!manual && bridgeReady && sequence !== undefined) {
-      const snapshot = await bridge.request({ type: 'read' });
-      if (snapshot.owned) return;
-      if (Number(snapshot.sequence) !== sequence) {
-        pendingClipboard = { sequence: Number(snapshot.sequence), paths: snapshot.paths as string[], manual: false, aggressive };
-        return;
-      }
-    }
-    if (!bytes.length) {
-      if (!manual) { lastFingerprint = ''; lastOwnFingerprint = ''; }
-      if (manual) {
-        const text = (await clipboard.readText()).trim().replace(/^"|"$/g, '');
-        if (path.isAbsolute(text)) await importPaths([text], 'clipboard', sequence);
-        else inform('Copy an image or a local image file, then try again.');
-      }
-      return;
-    }
-    const hash = fingerprint(bytes);
-    if (!manual && (hash === lastFingerprint || hash === lastOwnFingerprint)) return;
-    lastFingerprint = hash;
+  } finally { importsRunning--; syncFloating(); broadcast(); }
+  return completed;
+}
+/** Dropped and opened files; their results go on the clipboard with `autoCopyToClipboard`. */
+async function importFiles(files: unknown, source: ItemResult['source'], aggressive = false) {
+  const sequence = await currentSequence();
+  const ids = await importPaths(files, source, { aggressive });
+  if (settings.autoCopyToClipboard && ids.length) await copy(ids, sequence);
+}
+/**
+ * The name for a clipboard image: `customNameTemplateForClipboardImages` (or the macOS default template) when
+ * `useCustomNameTemplateForClipboardImages` and `copyImageFilePath` are on, as ImagePipeline.swift names it. `%i` advances `lastAutoIncrementingNumber`.
+ */
+async function clipboardImageName(original: string) {
+  if (!settings.copyImageFilePath || !settings.useCustomNameTemplateForClipboardImages) return original;
+  // One counter for the session: clipboard imports run concurrently, and each must take the next number. It is read from
+  // `lastAutoIncrementingNumber` once; later edits to that setting while Clop runs are overwritten by the next name.
+  const counter = nameCounter ??= { value: settings.lastAutoIncrementingNumber }, before = counter.value;
+  const name = expandTemplate(settings.customNameTemplateForClipboardImages || DEFAULT_NAME_TEMPLATE, { counter }) + path.extname(original);
+  if (counter.value !== before) settings = await store.set({ lastAutoIncrementingNumber: counter.value });
+  return name;
+}
+/** Earlier clipboard images make way for a new one (see `replacedClipboardImages`). */
+async function prepareClipboardImages() {
+  for (const id of replacedClipboardImages(engine.list(), settings)) await dismiss(id);
+}
+/** Clipboard results always go back on the clipboard; consecutive clipboard images together with `copyConsecutiveClipboardImages`. */
+async function copyClipboardResults(ids: string[], sequence?: number, options?: { text?: boolean }) {
+  ids = ids.filter(isReady);
+  if (!ids.length) return;
+  const images = ids.every(id => engine.get(id).result.kind === 'image');
+  const accumulated = images && settings.appendClipboardResults && settings.copyConsecutiveClipboardImages
+    ? engine.list().filter(item => item.source === 'clipboard' && item.kind === 'image' && item.status === 'ready').map(item => item.id).reverse() : [];
+  await copy(accumulated.length > 1 ? accumulated : ids, sequence, options);
+}
+/** The steps of importing clipboard results (see `importClipboardList`), written back against the clipboard `sequence` they came from. */
+function clipboardSteps(sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }): ClipboardListSteps {
+  return {
+    turn: clipboardImageTurn, prepare: prepareClipboardImages, writeBack: ids => copyClipboardResults(ids, sequence, options),
+    load: list => importPaths(list, 'clipboard', { aggressive, name: async file => mediaKind(file) === 'image' ? clipboardImageName(path.basename(file)) : undefined }),
+  };
+}
+function importClipboardFiles(files: string[], sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }) {
+  return importClipboardList(files.slice(0, 20), clipboardSteps(sequence, aggressive, options));
+}
+function importClipboardImage(bytes: Buffer, name: string, sequence: number | undefined, aggressive: boolean) {
+  return importClipboardImages(clipboardSteps(sequence, aggressive), async () => {
     await makeRoom();
-    const id = await engine.importBuffer(bytes, `Clipboard-${new Date().toISOString().replace(/[:.]/g, '-')}.png`, 'clipboard', { ...defaults(), ...(aggressive ? { mode: 'aggressive' } : {}) });
-    if (settings.autoCopyToClipboard && engine.get(id).result.status === 'ready') await copy(id, sequence);
-  } catch (error) { inform(message(error)); }
-  finally {
-    clipboardBusy = false;
-    if (pendingClipboard) { const next = pendingClipboard; pendingClipboard = undefined; void optimiseClipboard(next.sequence, next.paths, next.manual, next.aggressive); }
+    const id = await engine.importBuffer(bytes, await clipboardImageName(name), 'clipboard', defaults(aggressive));
+    return isReady(id) ? [id] : [];
+  });
+}
+async function readClipboardImage() {
+  // Prefer an encoded PNG clipboard payload, avoiding an unnecessary bitmap round trip.
+  for (const item of await clipboard.read()) {
+    const type = item.types.find(type => type === 'image/png' || type === 'electron application/osclipboard;format="PNG"') ?? item.types.find(type => type.startsWith('image/'));
+    if (type) { const blob = await item.getType(type); if ('arrayBuffer' in blob) return Buffer.from(await blob.arrayBuffer()); }
   }
+  return Buffer.alloc(0);
+}
+/**
+ * Optimises what is on the clipboard (see `clipboardIntake`). Reads run one at a time; the import each starts runs on its
+ * own, so a long encode never holds up the next copy, and no copy or manual request is dropped.
+ */
+function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive = false): Promise<void> {
+  if (!manual && !settings.enableClipboardOptimiser) return Promise.resolve();
+  return intake.submit(async () => {
+    const plan = await clipboardIntake(change, manual, memory, {
+      settings, owns: file => workdir.owns(file), image: readClipboardImage, text: () => clipboard.readText(), isFile, fingerprint: filesFingerprint, hash: fingerprint,
+      read: async () => {
+        if (!bridgeReady) return;
+        const snapshot = clipboardChange(await bridge.request({ type: 'read' }));
+        if (!snapshot) throw new Error('The Windows helper sent an unreadable clipboard snapshot.');
+        return snapshot;
+      },
+    });
+    switch (plan.type) {
+      case 'retry': void optimiseClipboard(plan.change, false, aggressive); return;
+      case 'none': if (plan.notice) inform(plan.notice); return;
+      case 'files': return () => importClipboardFiles(plan.files, plan.sequence, aggressive, { text: plan.text });
+      case 'image': return () => importClipboardImage(plan.bytes, `Clipboard-${stamp()}.${plan.ext}`, plan.sequence, aggressive);
+      case 'url': return () => importUrl(plan.url, aggressive, 'clipboard', plan.sequence);
+    }
+  });
 }
 function startClipboardFallback() {
   if (clipboardTimer) return;
-  clipboardTimer = setInterval(() => { if (settings.enableClipboardOptimiser) void optimiseClipboard(); }, 900);
+  let polling = false;
+  clipboardTimer = setInterval(() => { if (settings.enableClipboardOptimiser && !polling) { polling = true; void optimiseClipboard().finally(() => { polling = false; }); } }, 900);
   clipboardTimer.unref();
 }
 function updateTray() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show latest results', click: showLatest },
-    { label: 'Optimise clipboard', accelerator: 'Control+Shift+C', click: () => { void optimiseClipboard(undefined, [], true); } },
+    { label: 'Optimise clipboard', accelerator: 'Control+Shift+C', click: () => { void optimiseClipboard(undefined, true); } },
     { type: 'separator' },
     { label: 'Watch clipboard', type: 'checkbox', checked: settings.enableClipboardOptimiser, click: item => toggleSetting({ enableClipboardOptimiser: item.checked }) },
     { label: 'Keep drop zone visible', type: 'checkbox', checked: settings.keepDropZoneVisible, click: item => toggleSetting({ keepDropZoneVisible: item.checked }) },
@@ -246,18 +292,20 @@ async function updateSettings(value: unknown) {
 function nativeSettings() {
   return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating].map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
 }
+/** Card actions put a clipboard result back on the clipboard, and others with `autoCopyToClipboard`. */
+function copiesBack(id: string) { const { result } = engine.get(id); return result.status === 'ready' && (result.source === 'clipboard' || settings.autoCopyToClipboard); }
 function trusted(sender: Electron.WebContents) { return [main, floating].some(window => window && !window.isDestroyed() && window.webContents === sender); }
 ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) => {
   if (!trusted(event.sender)) throw new Error('Untrusted window.');
   const id = args[0] as string;
   switch (action) {
     case 'state': return state();
-    case 'import': await importPaths(args[0] as string[], 'drop', undefined, args[1] === true); break;
+    case 'import': await importFiles(args[0], 'drop', args[1] === true); break;
     case 'import-url': await importUrl(args[0], args[1] === true); break;
-    case 'clipboard': await optimiseClipboard(undefined, [], true); break;
-    case 'apply': await engine.apply(id, args[1] as ImageOptions); if (settings.autoCopyToClipboard && engine.get(id).result.status === 'ready') await copy(id); break;
-    case 'restore': await engine.restore(id); if (settings.autoCopyToClipboard) await copy(id); break;
-    case 'copy': await copy(id); break;
+    case 'clipboard': await optimiseClipboard(undefined, true); break;
+    case 'apply': await engine.apply(id, args[1] as ImageOptions); if (copiesBack(id)) await copy([id]); break;
+    case 'restore': await engine.restore(id); if (copiesBack(id)) await copy([id]); break;
+    case 'copy': await copy([id]); break;
     case 'save': {
       const entry = engine.get(id), file = engine.output(id);
       const name = `${path.parse(entry.result.name).name}-clop.${entry.result.format === 'jpeg' ? 'jpg' : entry.result.format}`;
@@ -265,7 +313,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
       if (result.filePath && !result.canceled) await copyFile(file, result.filePath); break;
     }
     case 'reveal': shell.showItemInFolder(engine.output(id)); break;
-    case 'dismiss': { const timer = hideTimers.get(id); if (timer) clearTimeout(timer); hideTimers.delete(id); hidden.delete(id); await engine.dismiss(id); break; }
+    case 'dismiss': await dismiss(id); break;
     case 'settings': await updateSettings(rendererSettings(args[0])); break;
     case 'window':
       switch (args[0]) {
@@ -289,7 +337,7 @@ ipcMain.on('clop:drag', (event, id: string) => {
 });
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', (_event, argv) => { if (engine) showLatest(); const files = argv.filter(arg => IMAGE_FILE.test(arg) && path.isAbsolute(arg)); if (files.length) void importPaths(files, 'file'); });
+  app.on('second-instance', (_event, argv) => { if (engine) showLatest(); const files = argv.filter(arg => path.isAbsolute(arg) && mediaKind(arg)); if (files.length) void importFiles(files, 'file').catch(error => inform(message(error))); });
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
     const userData = app.getPath('userData');
@@ -307,7 +355,7 @@ else {
     const session = path.join(workdir.temp, `session-${Date.now()}`);
     workdir.protect(session);
     stopCleaner = workdir.startCleaner(() => store.get('workdirCleanupInterval'));
-    engine = new ImageEngine(session, () => settings);
+    engine = new ItemEngine(session, () => settings);
     engine.on('change', () => { syncFloating(); broadcast(); });
     engine.on('ready', (id: string) => { hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
     await createWindows();
@@ -316,13 +364,17 @@ else {
     const icon = nativeImage.createFromPath(path.join(here, 'icon.png'));
     tray = new Tray(icon); tray.setToolTip('Clop'); tray.on('double-click', showLatest); updateTray();
     for (const [key, callback] of [
-      ['Control+Shift+C', () => { void optimiseClipboard(undefined, [], true); }],
-      ['Control+Shift+A', () => { void optimiseClipboard(undefined, [], true, true); }],
+      ['Control+Shift+C', () => { void optimiseClipboard(undefined, true); }],
+      ['Control+Shift+A', () => { void optimiseClipboard(undefined, true, true); }],
       ['Control+Shift+Space', showLatest],
     ] as const) if (!globalShortcut.register(key, callback)) inform(`${key} is already in use. Use the tray menu or floating shelf instead.`);
     if (process.platform === 'win32') {
       bridge.on('ready', () => { bridgeReady = true; void bridge.request(nativeSettings()).then(() => { if (settings.enableClipboardOptimiser) void optimiseClipboard(); }).catch(error => inform(message(error))); });
-      bridge.on('clipboard', event => { if (settings.enableClipboardOptimiser) pickup.change(event); });
+      bridge.on('clipboard', event => {
+        if (!settings.enableClipboardOptimiser) return;
+        const change = clipboardChange(event);
+        if (change) pickup.change(change); else inform('The Windows helper sent an unreadable clipboard change.');
+      });
       bridge.on('foreground', event => pickup.focus(Number(event.process)));
       bridge.on('drag-start', () => { if (settings.enableDragAndDrop) { dragging = true; dropActive = true; floating.setIgnoreMouseEvents(false); syncFloating(); broadcast(); } });
       bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; syncFloating(); broadcast(); } }, 180); });
@@ -330,10 +382,10 @@ else {
       bridge.on('stopped', () => { bridgeReady = false; pickup.cancel(); startClipboardFallback(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));
     } else startClipboardFallback();
-    const files = process.argv.slice(1).filter(arg => IMAGE_FILE.test(arg) && path.isAbsolute(arg));
-    if (files.length) await importPaths(files, 'file');
+    const files = process.argv.slice(1).filter(arg => path.isAbsolute(arg) && mediaKind(arg));
+    if (files.length) await importFiles(files, 'file');
   }).catch(error => { dialog.showErrorBox('Clop could not start', message(error)); app.quit(); });
-  app.on('before-quit', () => { quitting = true; stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
+  app.on('before-quit', () => { quitting = true; engine?.abort(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });
   app.on('activate', () => { if (engine) showLatest(); });
 }

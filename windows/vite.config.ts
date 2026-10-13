@@ -3,14 +3,14 @@ import react from '@vitejs/plugin-react';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
-import { ImageEngine, message } from './electron/engine';
+import { ItemEngine, message } from './electron/items';
 import { imageDefaults, rendererSettings } from './electron/settings';
 import { defaultSettings, parseSettings } from './core/settings/schema';
 import type { ImageOptions } from './src/types';
 
 function localImagePreview(): Plugin {
   let settings = defaultSettings();
-  const engine = new ImageEngine(path.resolve('.preview-data', `session-${Date.now()}`), () => settings);
+  const engine = new ItemEngine(path.resolve('.preview-data', `session-${Date.now()}`), () => settings);
   return {
     name: 'clop-local-image-preview',
     transformIndexHtml(html, context) {
@@ -27,7 +27,7 @@ function localImagePreview(): Plugin {
           if (req.method === 'GET' && req.url.startsWith('/api/output/')) {
             const id = req.url.split('/').pop()!;
             const file = engine.output(id), result = engine.get(id).result;
-            res.setHeader('Content-Type', `image/${result.format}`);
+            res.setHeader('Content-Type', result.kind === 'image' ? `image/${result.format}` : 'application/octet-stream');
             res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(path.parse(result.name).name)}-clop.${result.format === 'jpeg' ? 'jpg' : result.format}"`);
             res.end(await readFile(file)); return;
           }
