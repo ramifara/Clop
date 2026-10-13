@@ -57,22 +57,29 @@ function get(url, signal, redirects = 5) {
   });
 }
 
-// Downloads url to file and checks its sha256; label names the package in messages.
+// MSYS2's main server turns CI runners away at times (HTTP 403), so its packages also come from official mirrors.
+// Every copy is checked against the same pinned sha256, so a mirror cannot change what is installed.
+const MSYS2 = 'https://repo.msys2.org/';
+const MSYS2_MIRRORS = ['https://mirrors.dotsrc.org/msys2/', 'https://mirror.selfnet.de/msys2/', 'https://ftp.acc.umu.se/mirror/msys2.org/'];
+const sourcesFor = url => url.startsWith(MSYS2) ? [url, ...MSYS2_MIRRORS.map(mirror => mirror + url.slice(MSYS2.length))] : [url];
+
+// Downloads url (or a mirror of it) to file and checks its sha256; label names the package in messages.
 async function download({ name: label, url, sha256 }, file) {
+  const sources = sourcesFor(url), attempts = Math.max(3, sources.length * 2);
   for (let attempt = 1; ; attempt++) {
-    const hash = createHash('sha256');
+    const from = sources[(attempt - 1) % sources.length], hash = createHash('sha256');
     try {
       const signal = AbortSignal.timeout(10 * 60_000);
-      await pipeline(await get(url, signal), new Transform({ transform(chunk, _, done) { hash.update(chunk); done(null, chunk); } }), createWriteStream(file), { signal });
+      await pipeline(await get(from, signal), new Transform({ transform(chunk, _, done) { hash.update(chunk); done(null, chunk); } }), createWriteStream(file), { signal });
     } catch (error) {
-      if (attempt === 3) throw new Error(`${label}: could not download ${url}: ${error.message}`);
-      console.warn(`${label}: download failed (${error.message}), retrying`);
-      await delay(2000 * attempt);
+      if (attempt === attempts) throw new Error(`${label}: could not download ${url} or its mirrors: ${error.message}`);
+      console.warn(`${label}: download from ${new URL(from).host} failed (${error.message}), retrying`);
+      await delay(2000 * Math.ceil(attempt / sources.length));
       continue;
     }
     // A complete download with the wrong hash will not change on retry.
     const actual = hash.digest('hex');
-    if (actual !== sha256) throw new Error(`${label}: sha256 of ${url} is ${actual}, expected ${sha256}.`);
+    if (actual !== sha256) throw new Error(`${label}: sha256 of ${from} is ${actual}, expected ${sha256}.`);
     return;
   }
 }
