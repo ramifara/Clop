@@ -15,6 +15,7 @@ if (process.platform === 'win32') {
   execFileSync(csc, ['/nologo', '/target:exe', '/optimize+', '/langversion:5', `/out:${path.resolve('dist-electron', 'clop.exe')}`, path.resolve('native', 'clop.cs')], { stdio: 'inherit' });
 }
 await build({ entryPoints: ['electron/preload.ts'], bundle: true, platform: 'node', format: 'cjs', target: 'node22', external: ['electron'], outfile: 'dist-electron/preload.cjs' });
+await build({ entryPoints: ['electron/preload-batch.ts'], bundle: true, platform: 'node', format: 'cjs', target: 'node22', external: ['electron'], outfile: 'dist-electron/preload-batch.cjs' });
 await mkdir('assets', { recursive: true });
 const png = await sharp('../Clop/Assets.xcassets/clop.imageset/clop_256.png').resize(256, 256).png().toBuffer();
 await writeFile('assets/icon.png', png);

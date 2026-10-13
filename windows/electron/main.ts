@@ -37,6 +37,7 @@ import { shellEffects } from '../core/shell-effects';
 import { MEDIA_SCHEME, MediaFiles } from './media-files';
 import { applyCrop, cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
 import { compareSources, parseCompareView } from './compare';
+import { setupBatch } from './batch-window';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // The crop and compare windows load the session's originals and results through this scheme, with byte ranges for video.
@@ -59,6 +60,7 @@ let marker: OptimisedMarker, folders: FolderResults, watchers: FolderWatcher[] =
 let home = '', sessionDir = '';
 /** Folders of the work directory's temp folder that hold pipeline results cards show; kept from the cleaner for the session. */
 const keptRoots = new Set<string>();
+let batch: ReturnType<typeof setupBatch> | undefined;
 /** Results from watched folders in `dirsHideFloatingResult`; they never show as floating results. */
 const quiet = new Set<string>();
 /** Results that hid or were dismissed, latest last, for "Bring back last result". */
@@ -562,7 +564,7 @@ async function updateSettings(value: unknown) {
 }
 /** Presses inside Clop's own windows, the crop and compare windows too, never start a drag. */
 function nativeSettings() {
-  return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating, ...views.values()].filter(window => !window.isDestroyed()).map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
+  return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating, ...views.values(), batch?.window()].filter((window): window is BrowserWindow => !!window && !window.isDestroyed()).map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
 }
 function syncNative() { if (bridgeReady) bridge.request(nativeSettings()).catch(error => inform(message(error))); }
 /** Card actions put a clipboard result back on the clipboard, and others with `autoCopyToClipboard`. */
@@ -573,7 +575,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
   const id = args[0] as string;
   switch (action) {
     case 'state': return state();
-    case 'import': await importFiles(args[0], 'drop', args[1] === true); break;
+    case 'import': if (!await batch?.host.drop(args[0], args[1] === true)) await importFiles(args[0], 'drop', args[1] === true); break;
     case 'import-url': await importUrl(args[0], args[1] === true); break;
     case 'clipboard': await optimiseClipboard(undefined, true); break;
     case 'apply': await engine.apply(id, args[1] as ImageOptions); if (copiesBack(id)) await copy([id]); break;
@@ -684,13 +686,18 @@ else {
       env: () => ({ settings, workdir, marker, home, counter: nameCounter ??= { value: settings.lastAutoIncrementingNumber } }),
       saved: value => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); },
     });
+    // A cloud-only OneDrive placeholder would download when read, so watched folders and batches leave it alone.
+    const isLocal = async (file: string) => !bridgeReady || !placeholderReply(await bridge.request({ type: 'attributes', paths: [file] }), 1)[0];
     watchers = (['image', 'video', 'pdf', 'audio'] as const).map(kind => new FolderWatcher(kind, {
       // The stream hint moves with a renamed file, which the cache keyed by path cannot follow; it counts while the size is unchanged.
       settings: () => settings, home, firstLaunch, owns: file => workdir.owns(file), isOptimised: async file => await marker.isOptimised(file) || await marker.hintMatches(file),
-      isLocal: async file => !bridgeReady || !placeholderReply(await bridge.request({ type: 'attributes', paths: [file] }), 1)[0],
+      isLocal,
       handle: (file, dir) => folders.optimise(file, kind, dir), cancel: files => folders.cancel(files), notice: inform,
       disable: () => toggleSetting({ [enabledKey(kind)]: false }),
     }));
+    const counter = () => nameCounter ??= { value: settings.lastAutoIncrementingNumber };
+    const saveCounter = (value: number) => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); };
+    batch = setupBatch({ here, devUrl, webPreferences, created: syncNative, quitting: () => quitting, settings: () => settings, owns: file => workdir.owns(file), isLocal, env: () => ({ settings: () => settings, workdir, marker, home, counter: counter(), saved: saveCounter }) });
     store.on('change', next => { settings = next; for (const watcher of watchers) void watcher.update(); });
     for (const watcher of watchers) void watcher.update();
     const icon = nativeImage.createFromPath(path.join(here, 'icon.png'));
@@ -729,7 +736,7 @@ else {
     const files = process.argv.slice(1).filter(arg => path.isAbsolute(arg) && mediaKind(arg));
     if (files.length) await importFiles(files, 'file');
   }).catch(error => { dialog.showErrorBox('Clop could not start', message(error)); app.quit(); });
-  app.on('before-quit', () => { quitting = true; withdrawPipe?.(); void pipe?.close(); engine?.abort(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
+  app.on('before-quit', () => { quitting = true; withdrawPipe?.(); void pipe?.close(); engine?.abort(); batch?.host.stop(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });
   app.on('activate', () => { if (engine) showLatest(); });
 }
