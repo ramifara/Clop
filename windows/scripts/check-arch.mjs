@@ -3,10 +3,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { unpackedDir } from './unpacked.mjs';
 
-// CI: every executable the packaged app ships for an architecture is built for it, except the bundled tools that have no ARM64 Windows
-// build. Those stay x64 and run under emulation on Windows 11 on ARM; they are listed here so a tool changing sides is noticed.
+// CI: every executable the packaged app ships for an architecture is built for it, except the bundled tools that stay x64 and run under
+// emulation on Windows 11 on ARM: those with no ARM64 Windows build (Ghostscript, gifsicle, gifski, ExifTool), ffmpeg and ffprobe (the only
+// ARM64 builds lack encoders the x64 one has, such as libvpx-vp9) and jpegoptim (the ARM64 build cannot open paths outside the ANSI code
+// page, which the x64 build's UTF-8 manifest allows). They are listed here so a tool changing sides is noticed.
 const MACHINES = new Map([[0x8664, 'x64'], [0xaa64, 'arm64'], [0x14c, 'x86']]);
-export const X64_ON_ARM64 = ['gswin64c.exe', 'gsdll64.dll', 'gifsicle.exe', 'gifski.exe', 'exiftool.exe', 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll'];
+export const X64_ON_ARM64 = [
+  'ffmpeg.exe', 'ffprobe.exe', 'avcodec-63.dll', 'avdevice-63.dll', 'avfilter-12.dll', 'avformat-63.dll', 'avutil-61.dll', 'swresample-7.dll', 'swscale-10.dll',
+  'jpegoptim.exe', 'gswin64c.exe', 'gsdll64.dll', 'gifsicle.exe', 'gifski.exe', 'exiftool.exe', 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll',
+];
 
 /** The CPU a PE file (exe or dll) is built for: 'x64', 'arm64', 'x86', or the raw machine value in hex. */
 export async function machineOf(file) {

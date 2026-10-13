@@ -36,22 +36,22 @@ test('machineOf reads the CPU of a PE file', async t => {
 
 test('an ARM64 app is native except for the tools that have no ARM64 build, and carries only the ARM64 sharp', async t => {
   const { dir } = await app(t, 'arm64', {
-    'Clop for Windows.exe': 'arm64', 'resources/bin/ffmpeg.exe': 'arm64', 'resources/bin/libheif.dll': 'arm64', 'resources/bin/gswin64c.exe': 'x64', 'resources/bin/vcruntime140.dll': 'x64',
+    'Clop for Windows.exe': 'arm64', 'resources/bin/heif-enc.exe': 'arm64', 'resources/bin/libheif.dll': 'arm64', 'resources/bin/ffmpeg.exe': 'x64', 'resources/bin/gswin64c.exe': 'x64', 'resources/bin/vcruntime140.dll': 'x64',
     'resources/app.asar.unpacked/node_modules/@img/sharp-win32-arm64/lib/sharp-win32-arm64-0.35.5.node': 'arm64', 'resources/app.asar.unpacked/node_modules/@img/sharp-win32-arm64/lib/libvips-42.dll': 'arm64',
   });
-  assert.deepEqual(await checkArch('arm64', dir), { problems: [], checked: 7 });
+  assert.deepEqual(await checkArch('arm64', dir), { problems: [], checked: 8 });
   assert.ok(X64_ON_ARM64.includes('gswin64c.exe'));
 });
 
 test('a native tool that is really x64, an x64 sharp in an ARM64 app and an emulated tool that became ARM64 are all reported', async t => {
   const { dir } = await app(t, 'arm64', {
-    'Clop for Windows.exe': 'arm64', 'resources/bin/ffmpeg.exe': 'x64', 'resources/bin/gifski.exe': 'arm64',
+    'Clop for Windows.exe': 'arm64', 'resources/bin/heif-dec.exe': 'x64', 'resources/bin/gifski.exe': 'arm64',
     'resources/app.asar.unpacked/node_modules/@img/sharp-win32-arm64/lib/sharp-win32-arm64-0.35.5.node': 'arm64', 'resources/app.asar.unpacked/node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64-0.35.5.node': 'x64',
   });
   const { problems } = await checkArch('arm64', dir);
   assert.deepEqual(problems.map(problem => problem.replaceAll('\\', '/')), [
-    'resources/bin/ffmpeg.exe is x64, expected arm64',
     'resources/bin/gifski.exe is arm64, expected x64',
+    'resources/bin/heif-dec.exe is x64, expected arm64',
     '@img holds sharp-win32-arm64, sharp-win32-x64, expected sharp-win32-arm64',
   ]);
 });
@@ -69,5 +69,5 @@ test('the files expected to be x64 in an ARM64 app are those of the packages in 
   const native = (url: string) => /winarm64|clang-aarch64/.test(url);
   const emulated = set.filter(pkg => !native(pkg.url)).flatMap(pkg => Object.values(pkg.files)).filter(file => /\.(exe|dll)$/i.test(file));
   assert.deepEqual(emulated.map(file => file.toLowerCase()).sort(), [...X64_ON_ARM64].sort());
-  assert.deepEqual(set.filter(pkg => !native(pkg.url)).map(pkg => pkg.name).sort(), ['exiftool', 'ghostscript', 'gifsicle', 'gifski', 'vc-runtime']);
+  assert.deepEqual(set.filter(pkg => !native(pkg.url)).map(pkg => pkg.name).sort(), ['exiftool', 'ffmpeg', 'ghostscript', 'gifsicle', 'gifski', 'jpegoptim', 'vc-runtime']);
 });

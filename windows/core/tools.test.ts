@@ -148,3 +148,17 @@ test('the Windows bundle carries licence texts for every package and notices wit
     }
   }
 });
+
+// Tools that open files through the ANSI code page cannot open a path with characters outside it. Clop runs them in a folder of its own on
+// bare names, but jpegoptim (--dest), libheif and libjxl still resolve the working folder, which can be non-ANSI, so each of their
+// builds must carry the manifest that makes Windows use UTF-8 as the process's ANSI code page.
+test('the Windows bundle’s jpegoptim, heif and jxl programs ask for a UTF-8 code page', async t => {
+  if (!existsSync(bundle)) {
+    if (process.env.CI) assert.fail('The tool bundle is missing. Run node scripts/fetch-tools.mjs.');
+    return t.skip('the tool bundle has not been fetched');
+  }
+  for (const name of ['jpegoptim', 'heif-dec', 'heif-enc', 'cjxl', 'djxl']) {
+    const text = (await readFile(path.join(bundle, `${name}.exe`))).toString('latin1');
+    assert.match(text, /<activeCodePage[^>]*>UTF-8<\/activeCodePage>/, `${name}.exe has no UTF-8 activeCodePage manifest`);
+  }
+});

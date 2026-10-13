@@ -39,9 +39,14 @@ Download `Clop-Windows-<version>-x64-Setup.exe` (installer) or `Clop-Windows-<ve
 
 Clop is built natively for ARM64 Windows as well as x64. The ARM64 build needs Windows 11, because it includes a few x64 tools that run under Windows' x64 emulation, which Windows 10 on ARM does not have. The x64 build also runs on Windows 11 on ARM, entirely under emulation, but is slower and gains nothing.
 
-Native ARM64: the Clop app itself (Electron), sharp (libvips) for decoding, scaling and converting, the Windows helper (compiled on the machine by its own PowerShell) and `clop.exe` (built for any CPU, so it runs as ARM64 there), ffmpeg and ffprobe (BtbN's ARM64 builds, the same release as the x64 ones), and, from MSYS2's CLANGARM64 packages at the same versions as the x64 set, `heif-dec`, `heif-enc` (HEIC), `pngquant`, `jpegoptim`, `cjxl` and `djxl` (JPEG XL).
+Native ARM64: the Clop app itself (Electron), sharp (libvips) for decoding, scaling and converting, the Windows helper (compiled on the machine by its own PowerShell) and `clop.exe` (built for any CPU, so it runs as ARM64 there), and, from MSYS2's CLANGARM64 packages at the same versions as the x64 set, `heif-dec`, `heif-enc` (HEIC), `pngquant` and `cjxl` and `djxl` (JPEG XL).
 
-Run under x64 emulation: Ghostscript (PDF), gifsicle and gifski (GIF), and ExifTool, because none of them publishes an ARM64 Windows build. They come with the x64 Visual C++ runtime beside them. Emulation is slower than native code, but the results are the same. When an ARM64 build of one appears, the tool moves to the native list in `scripts/tools.json` and `scripts/check-arch.mjs`, which CI uses to confirm which files are ARM64 and which are x64.
+Run under x64 emulation:
+- Ghostscript (PDF), gifsicle and gifski (GIF) and ExifTool, because none of them publishes an ARM64 Windows build.
+- ffmpeg and ffprobe, because the available ARM64 builds lack encoders Clop uses (BtbN's has no VP9, so no WebM output); the x64 build is the same one the x64 app ships. Video is the slowest thing under emulation.
+- jpegoptim, because the MSYS2 ARM64 build cannot open a path outside the ANSI code page (a folder such as `Zoë 写真`), while the x64 build declares a UTF-8 code page. CI checks that the jpegoptim, heif and jxl programs in the bundle all declare it.
+
+They come with the x64 Visual C++ runtime beside them. Emulation is slower than native code, but the results are the same. When a native build with the same encoders and UTF-8 path handling is available, the tool moves in `scripts/tools.json` and `scripts/check-arch.mjs`, which CI uses to confirm which files are ARM64 and which are x64.
 
 ## Image and clipboard details
 
