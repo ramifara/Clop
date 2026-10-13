@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readdir, writeFile, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readdir, realpath, writeFile, rm, stat } from 'node:fs/promises';
 import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import os from 'node:os';
@@ -7,7 +7,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { PDFDocument } from '@cantoo/pdf-lib';
 import { WindowsBridge } from '../dist-electron/native-test.js';
-import { dragFixture } from './drag-fixture.mjs';
+import { dragFixture, explorerFixture } from './drag-fixture.mjs';
 // The inspection below opens files in the temporary profile. Release their Windows handles
 // immediately so the final recursive cleanup can remove that profile after the app exits.
 sharp.cache(false);
@@ -255,7 +255,35 @@ try {
   for (const [file, before] of verbFiles) await until(async () => (await stat(file)).size < before, `The Explorer verb did not optimise ${path.basename(file)}`, 60000);
   assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'An Explorer verb must not show an error');
   console.log('Explorer verb launches reached the running app and optimised both files.');
-  console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, copied video, PDF and audio files, an ignored app, a video and an image optimised in place in a watched folder, and a clipboard pipeline converting to WebP.');
+  // A folder with two images, dragged from a real Explorer window onto the drop zone, opens the batch window with both files: the
+  // helper must offer a folder as a drag, the zone must take the drop, and the dropped folder must reach the batch.
+  const photos = path.join(profile, 'Two photos');
+  await mkdir(photos);
+  const folderFiles = ['first.png', 'second.png'].map(name => path.join(photos, name));
+  for (const file of folderFiles) await sharp({ create: { width: 640, height: 400, channels: 3, background: '#3a7bd5' } }).png({ compressionLevel: 0 }).toFile(file);
+  await fixture?.stop();
+  // No cards in the way, so the drop zone sits where it is measured. It is shown on purpose to measure it, then hidden: the drag has to bring it back.
+  for (const item of (await main.evaluate('window.clop.state()')).items) await main.evaluate(`window.clop.dismiss(${JSON.stringify(item.id)})`);
+  await main.evaluate('window.clop.settings({ keepDropZoneVisible: true })');
+  await until(() => floating.evaluate('Boolean(document.querySelector(".drop-target"))'), 'The drop zone did not show to be measured');
+  await pause(500);
+  const zone = await floating.evaluate('(() => { const rect = document.querySelector(".drop-target").getBoundingClientRect(); return { x: (screenX + rect.x + rect.width / 2) * devicePixelRatio, y: (screenY + rect.y + rect.height / 2) * devicePixelRatio }; })()');
+  await main.evaluate('window.clop.settings({ keepDropZoneVisible: false })');
+  await until(() => floating.evaluate('!document.querySelector(".drop-target")'), 'The drop zone did not hide again');
+  assert.equal((await main.evaluate('window.clop.state()')).settings.useBatchModeForFolders, true, 'Folders go to the batch window by default');
+  fixture = await explorerFixture(await realpath(photos));
+  const folderDrag = fixture.gesture('image', { pressDelay: 4000, hold: 2500, to: zone });
+  await until(() => floating.evaluate('Boolean(document.querySelector(".drop-target"))'), 'Dragging a folder from Explorer did not reveal the drop zone', 30000);
+  await folderDrag;
+  const batchWindow = await connect(await until(async () => (await pages()).find(page => page.type === 'page' && page.url.includes('batch=1')), 'Dropping a folder did not open the batch window', 30000));
+  try {
+    const prepared = await until(async () => { const state = await batchWindow.evaluate('window.clopBatch.state()'); return state.files.length === 2 && state; }, 'The batch window does not hold both images of the dropped folder', 30000, () => batchWindow.evaluate('window.clopBatch.state().then(state => JSON.stringify(state.files.map(file => file.path)))'));
+    assert.deepEqual(prepared.files.map(file => path.basename(file.path)).sort(), ['first.png', 'second.png']);
+    assert.equal((await main.evaluate('window.clop.state()')).items.length, 0, 'A dropped folder goes to the batch window, not to floating results');
+    await batchWindow.evaluate('window.clopBatch.clear()');
+  } finally { batchWindow.close(); }
+  console.log('A folder dragged from Explorer onto the drop zone opened the batch window with both of its images.');
+  console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, copied video, PDF and audio files, an ignored app, a video and an image optimised in place in a watched folder, a clipboard pipeline converting to WebP, and a folder dragged from Explorer into the batch window.');
 } finally {
   console.log('Stopping packaged app and native test helper.');
   try { if (main) await main.send('Runtime.evaluate', { expression: 'window.clop.window("quit")' }); } catch {}

@@ -8,6 +8,7 @@ import path from 'node:path';
 export async function dragFixture(image) {
   return sourceFixture('drag-source.ps1', image);
 }
+/** An Explorer window with `image` selected: a file, or a folder, which Explorer lists in its parent. */
 export async function explorerFixture(image) {
   return sourceFixture('explorer-source.ps1', image, true);
 }
@@ -27,9 +28,10 @@ async function sourceFixture(script, image, graceful = false) {
   let stopped = false;
   return {
     window: ready.window,
-    gesture(kind, { hold = 600, escape = false, pressDelay = 300, moveX = 90, moveY = 40 } = {}) {
+    gesture(kind, { hold = 600, escape = false, pressDelay = 300, moveX = 90, moveY = 40, to } = {}) {
       const point = ready[kind];
       const args = ['-NoProfile', '-File', path.resolve('scripts/drag-gesture.ps1'), '-Window', String(ready.window), '-Width', String(ready.width), '-Height', String(ready.height), '-X', String(point.x), '-Y', String(point.y), '-Hold', String(hold), '-PressDelay', String(pressDelay), '-MoveX', String(moveX), '-MoveY', String(moveY)];
+      if (to) args.push('-ToX', String(Math.round(to.x)), '-ToY', String(Math.round(to.y)));
       if (escape) args.push('-Escape');
       const process = spawn('powershell.exe', args, { stdio: 'pipe' });
       gestures.add(process);

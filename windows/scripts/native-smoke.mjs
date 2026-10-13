@@ -1,5 +1,5 @@
 import { WindowsBridge } from '../dist-electron/native-test.js';
-import { mkdtemp, rm, realpath } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, realpath } from 'node:fs/promises';
 import { once } from 'node:events';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
@@ -76,5 +76,13 @@ try {
     events.length = 0; await fixture.gesture(kind); await pause(250);
     assert.deepEqual(events, [], `Explorer ${kind} must not announce a drag, even with an image selected`);
   }
-  console.log('Windows native smoke passed: clipboard formats, sequence protection, the clipboard owner and the app list, real image/Explorer drags, release/Escape and suppression of text, unsupported images, empty space, window movement and resizing.');
+  // A folder is a drag candidate too (Clop optimises what is inside it); its name has a dot, which must not make it look like a file.
+  const folderPath = path.join(dir, 'Two photos.2024'); await mkdir(folderPath);
+  for (const name of ['one.png', 'two.png']) await sharp({ create: { width: 64, height: 32, channels: 4, background: '#7864bf80' } }).png().toFile(path.join(folderPath, name));
+  const folder = await realpath(folderPath);
+  await fixture.stop(); fixture = await explorerFixture(folder);
+  paths.length = 0; events.length = 0; await fixture.gesture('image', { pressDelay: 4000, hold: 2500 }); await pause(250);
+  assert.deepEqual(events, ['drag-start', 'drag-end'], 'A real Explorer folder drag must announce and finish');
+  assert.deepEqual(paths, [[folder]], 'Explorer must identify the dragged folder');
+  console.log('Windows native smoke passed: clipboard formats, sequence protection, the clipboard owner and the app list, real image/Explorer/folder drags, release/Escape and suppression of text, unsupported images, empty space, window movement and resizing.');
 } finally { await fixture?.stop(); bridge.stop(); await rm(dir, { recursive: true, force: true }); }
