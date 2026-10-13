@@ -307,7 +307,7 @@ test('a failed adaptive comparison is a warning, not a failure', { skip: process
   assert.match(output.warnings![0], /could not try PNG.*pngquant is broken/s);
 });
 
-test('the adaptive JPEG candidate of a PNG is written once by sharp, with jpegoptim left to source JPEGs', async t => {
+test('the adaptive JPEG candidate of a PNG is written once by sharp, with jpegoptim left to source JPEGs', { skip: process.platform === 'win32' && 'replaces jpegoptim with a shell script' }, async t => {
   const w = await workspace(t); if (!w) return;
   // No jpegoptim at all: the PNG's JPEG candidate must not need it, while a source JPEG still does.
   const tools = path.join(w.dir, 'tools');

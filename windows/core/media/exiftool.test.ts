@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import sharp from 'sharp';
 import { ToolError } from '../run';
@@ -73,7 +74,8 @@ test('a script that only waits for a command is not ended before the answer, and
   const file = path.join(dir, 'a.png');
   await sharp({ create: { width: 16, height: 4, channels: 3, background: '#000' } }).png().toFile(file);
   const script = path.join(dir, 'script.mts');
-  await writeFile(script, `import { closeExifTool, exiftool } from ${JSON.stringify(path.resolve('core/media/exiftool.ts'))};\nconst { stdout } = await exiftool(['-j', '-n', '-ImageWidth', ${JSON.stringify(file)}]);\nawait closeExifTool();\nconst again = await exiftool(['-j', '-n', '-ImageWidth', ${JSON.stringify(file)}]);\nconsole.log(JSON.parse(stdout.toString())[0].ImageWidth, JSON.parse(again.stdout.toString())[0].ImageWidth);\n`);
+  // Imported by URL: on Windows a bare drive path is not a module specifier.
+  await writeFile(script, `import { closeExifTool, exiftool } from ${JSON.stringify(pathToFileURL(path.resolve('core/media/exiftool.ts')).href)};\nconst { stdout } = await exiftool(['-j', '-n', '-ImageWidth', ${JSON.stringify(file)}]);\nawait closeExifTool();\nconst again = await exiftool(['-j', '-n', '-ImageWidth', ${JSON.stringify(file)}]);\nconsole.log(JSON.parse(stdout.toString())[0].ImageWidth, JSON.parse(again.stdout.toString())[0].ImageWidth);\n`);
   const tsx = path.resolve('node_modules', '.bin', process.platform === 'win32' ? 'tsx.cmd' : 'tsx');
   const { stdout } = await promisify(execFile)(tsx, [script], { timeout: 60_000, shell: process.platform === 'win32' });
   assert.equal(stdout.trim(), '16 16');
