@@ -3,12 +3,13 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { copyFile, mkdir, rename, writeFile, rm, stat, utimes } from 'node:fs/promises';
 import path from 'node:path';
-import type { ImageOptions, ItemResult } from '../src/types';
+import type { CropRequest, ImageOptions, ItemResult } from '../src/types';
 import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { optimiseImage } from '../core/media/image';
 import { probeImage } from '../core/media/image-codecs';
 import { optimiseVideo } from '../core/media/video';
-import { optimisePDF } from '../core/media/pdf';
+import { cropPDF, extendPDF, optimisePDF, uncropPDF } from '../core/media/pdf';
+import { cropGeometry } from '../core/media/crop-size';
 import { optimiseAudio } from '../core/media/audio';
 import { detectKind, probe, type AudioInfo, type VideoInfo } from '../core/media/detect';
 import type { MediaJobOptions, MediaKind, MediaOutput } from '../core/media/types';
@@ -64,6 +65,8 @@ interface Entry {
 }
 /** `placement` puts each result back where the file came from; `staged` hears the result's id as soon as it is in the shelf; `automation` runs attached pipelines. */
 export interface ImportExtra { placement?: ItemPlacement; staged?: (id: string) => void; automation?: ItemAutomation }
+/** A change to a result's current file, writing into `outputDir` under `name`. */
+type Edit = (input: string, outputDir: string, name: string, signal: AbortSignal) => Promise<MediaOutput>;
 /** Dismissed results kept for `bringBack`. */
 const REMOVED = 40;
 export type ItemSettings = Pick<ClopSettings, 'imageCompression' | 'stripMetadata' | 'preserveColorMetadata' | 'gifFrameDropBehaviour' | 'videoCompression' | 'videoEncoder' | 'capVideoFPS' | 'targetVideoFPS'
@@ -164,6 +167,25 @@ export class ItemEngine extends EventEmitter {
     };
     return { result, originalPath: staged, outputPath: staged, directory, inputFormat: format, revision: 0, cancel: new AbortController(), jobs: new Set() };
   }
+  /**
+   * Crops a result from the crop window. Images and videos are cut from their original to the crop size, which then stays with
+   * the result's other options; PDF page boxes change on the current result, so its optimisation is kept.
+   */
+  crop(id: string, request: CropRequest) {
+    const e = this.get(id), kind = e.result.kind;
+    if (kind === 'audio') throw new Error('Audio files have nothing to crop.');
+    const job = this.job(e);
+    if (request.type === 'size') {
+      if (kind === 'pdf') throw new Error('Choose a paper size, a device or an aspect ratio for the pages.');
+      const options = parseOptions({ ...e.result.options, crop: request.size, scale: 1, maxEdge: undefined });
+      return this.schedule(kind, () => this.process(id, options, job));
+    }
+    if (kind !== 'pdf') throw new Error('Choose a crop size for this file.');
+    const edit: Edit = (input, outputDir, name) => request.type === 'pdf-uncrop' ? uncropPDF(input, outputDir, { name })
+      : request.type === 'pdf-rect' ? cropPDF(input, outputDir, { name, rect: request.rect })
+      : (request.extend ? extendPDF : cropPDF)(input, outputDir, { name, aspectRatio: request.aspectRatio, alwaysPortrait: request.orientation === 'portrait', alwaysLandscape: request.orientation === 'landscape', ...(request.rect ? { rect: request.rect } : {}) });
+    return this.schedule('pdf', () => this.process(id, e.result.options, job, edit));
+  }
   apply(id: string, options: ImageOptions) {
     options = parseOptions(options);
     const e = this.get(id);
@@ -171,7 +193,8 @@ export class ItemEngine extends EventEmitter {
     const job = this.job(e);
     return this.schedule('image', () => this.process(id, options, job));
   }
-  private async process(id: string, options: ImageOptions, job: AbortController) {
+  /** `edit` replaces the optimisation with a change to the current result. */
+  private async process(id: string, options: ImageOptions, job: AbortController, edit?: Edit) {
     // An item dismissed while its job waited has nothing left to do.
     const e = this.entries.get(id);
     if (!e) return;
@@ -190,15 +213,21 @@ export class ItemEngine extends EventEmitter {
         r.notes = outcome.warnings.length ? outcome.warnings : undefined;
       }
       let output: MediaOutput, width = r.originalWidth, height = r.originalHeight;
-      if (r.kind === 'image') {
-        const factor = Math.min(options.scale, options.maxEdge ? options.maxEdge / Math.max(r.originalWidth, r.originalHeight) : 1);
-        width = Math.max(1, Math.round(r.originalWidth * factor)); height = Math.max(1, Math.round(r.originalHeight * factor));
+      if (edit) output = await edit(e.outputPath, outputDir, name, signal);
+      else if (r.kind === 'image') {
+        // A crop comes first, and the scale and longest edge then apply to what it keeps.
+        const geometry = options.crop && cropGeometry(options.crop, r.originalWidth, r.originalHeight);
+        const kept = geometry ?? { width: r.originalWidth, height: r.originalHeight };
+        const factor = Math.min(options.scale, options.maxEdge ? options.maxEdge / Math.max(kept.width, kept.height) : 1);
+        width = Math.max(1, Math.round(kept.width * factor)); height = Math.max(1, Math.round(kept.height * factor));
+        // A region is cut out and scaled to the size; any other crop size fills the size exactly.
+        const cropSize = options.crop && (geometry?.crop ? { ...options.crop, width, height } : { width, height, name: options.crop.name, longEdge: false, smartCrop: options.crop.smartCrop });
         const settings = this.settings();
         output = await optimiseImage(e.originalPath, outputDir, {
-          ...imageCompression(options.mode, settings.imageCompression), format: options.format === 'auto' ? undefined : options.format, width, height,
+          ...imageCompression(options.mode, settings.imageCompression), format: options.format === 'auto' ? undefined : options.format, ...(cropSize ? { cropSize } : { width, height }),
           stripMetadata: settings.stripMetadata, preserveColorMetadata: settings.preserveColorMetadata, gifFrameDropBehaviour: settings.gifFrameDropBehaviour, name, signal,
         });
-      } else output = await this.optimiseMedia(r.kind, e.originalPath, outputDir, { aggressive: options.mode === 'aggressive', name, signal, onProgress: this.progress(r) });
+      } else output = await this.optimiseMedia(r.kind, e.originalPath, outputDir, { aggressive: options.mode === 'aggressive', name, signal, onProgress: this.progress(r), crop: options.crop });
       signal.throwIfAborted();
       // PDF.swift gives an optimised PDF its source's dates; the audio optimiser does it itself, and macOS leaves video dates alone.
       // Before placing, so a placed copy keeps them too.
@@ -214,8 +243,9 @@ export class ItemEngine extends EventEmitter {
       // Keep earlier results until the session ends: other apps may still be pasting or dragging them.
       e.outputPath = output.path;
       for (const warning of output.warnings ?? []) console.warn(warning);
-      // Video, PDF and audio previews show the content, which optimising leaves as it was.
-      const preview = r.kind !== 'image' || output.unchanged ? r.originalPreview : await imageThumbnail(output.path, DECODED.has(output.format));
+      // Video, PDF and audio previews show the content, which optimising leaves as it was; cropping changes it.
+      const preview = output.unchanged ? r.originalPreview : r.kind === 'image' ? await imageThumbnail(output.path, DECODED.has(output.format))
+        : (r.kind === 'video' && options.crop) || (r.kind === 'pdf' && edit) ? await mediaThumbnail(r.kind, output.path, { durationMs: output.durationMs ?? r.durationMs, signal }) : r.originalPreview;
       // With pipelines still to run, the result is not ready yet: copying or dragging it now would hand out the file before them.
       const following = automation && !automation.skipOptimisation;
       Object.assign(r, { status: following ? 'processing' : 'ready', options, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes, preview,
@@ -316,9 +346,9 @@ export class ItemEngine extends EventEmitter {
       finally { e.running = false; e.jobs.delete(job); }
     });
   }
-  private optimiseMedia(kind: Exclude<MediaKind, 'image'>, file: string, outputDir: string, job: MediaJobOptions & { name: string }): Promise<MediaOutput> {
+  private optimiseMedia(kind: Exclude<MediaKind, 'image'>, file: string, outputDir: string, { crop, ...job }: MediaJobOptions & { name: string; crop?: ImageOptions['crop'] }): Promise<MediaOutput> {
     const s = this.settings();
-    if (kind === 'video') return optimiseVideo(file, outputDir, { ...job, compression: s.videoCompression, encoder: s.videoEncoder, capVideoFPS: s.capVideoFPS, targetVideoFPS: s.targetVideoFPS,
+    if (kind === 'video') return optimiseVideo(file, outputDir, { ...job, crop, compression: s.videoCompression, encoder: s.videoEncoder, capVideoFPS: s.capVideoFPS, targetVideoFPS: s.targetVideoFPS,
       minVideoFPS: s.minVideoFPS, removeAudio: s.removeAudioFromVideos, convertAudioToAAC: s.convertAudioToAAC, adaptiveVideoSize: s.adaptiveVideoSize, stripMetadata: s.stripMetadata });
     if (kind === 'pdf') return optimisePDF(file, outputDir, { ...job, dpiSetting: s.pdfDPI });
     return optimiseAudio(file, outputDir, { ...job, compression: s.audioCompression, formatsToConvertToAAC: s.formatsToConvertToAAC, formatsToConvertToMP3: s.formatsToConvertToMP3, coverArt: s.audioCoverArt, preserveDates: s.preserveDates });
@@ -334,7 +364,7 @@ export class ItemEngine extends EventEmitter {
     e.placedPath = e.placement ? await e.placement.restore() : undefined;
     e.outputPath = e.originalPath;
     Object.assign(e.result, { status: 'ready', width: e.result.originalWidth, height: e.result.originalHeight, outputBytes: e.result.originalBytes,
-      format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, maxEdge: undefined, format: 'auto' }, restored: true, unchanged: true, error: undefined, notes: undefined });
+      format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, maxEdge: undefined, format: 'auto', crop: undefined }, restored: true, unchanged: true, error: undefined, notes: undefined });
     e.shown = true; this.changed(); this.emit('ready', id);
   }); }
   /**

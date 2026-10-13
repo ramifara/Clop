@@ -82,3 +82,30 @@ export function cutPortrait(width: number, height: number, ratio: number) {
 export function cutLandscape(width: number, height: number, ratio: number) {
   return height / width > ratio ? { width, height: width * ratio } : { width: height / ratio, height };
 }
+
+/** A page box in PDF points, with the bottom-left origin PDF uses. */
+export interface PageBox { x: number; y: number; width: number; height: number }
+export interface PageFit {
+  /** Width over height, or short over long side with the page's own orientation (as `cropTo(aspectRatio:)` takes it). */
+  aspectRatio: number;
+  alwaysPortrait?: boolean; alwaysLandscape?: boolean;
+}
+
+const isPortrait = (width: number, height: number, { alwaysPortrait, alwaysLandscape }: PageFit) => !!alwaysPortrait || (!alwaysLandscape && !(width > height));
+
+/** The largest centred box of the aspect ratio inside `width` × `height` (NSSize.cropTo in Shared.swift). */
+export function cropToAspectRatio(width: number, height: number, fit: PageFit): PageBox {
+  const size = (isPortrait(width, height, fit) ? cutPortrait : cutLandscape)(width, height, fit.aspectRatio);
+  return { x: (width - size.width) / 2, y: (height - size.height) / 2, ...size };
+}
+
+/** The smallest centred box of the aspect ratio containing `width` × `height`; the origin can go negative (NSSize.extendTo). */
+export function extendToAspectRatio(width: number, height: number, fit: PageFit): PageBox {
+  const { aspectRatio } = fit, portrait = isPortrait(width, height, fit);
+  if (portrait ? width / height > aspectRatio : height / width <= aspectRatio) {
+    const h = portrait ? width / aspectRatio : width * aspectRatio;
+    return { x: 0, y: (height - h) / 2, width, height: h };
+  }
+  const w = portrait ? height * aspectRatio : height / aspectRatio;
+  return { x: (width - w) / 2, y: 0, width: w, height };
+}

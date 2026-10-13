@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ClipboardItem, dialog, globalShortcut, ipcMain, Menu, nativeImage, screen, shell, Tray } from 'electron';
+import { app, BrowserWindow, clipboard, ClipboardItem, dialog, globalShortcut, ipcMain, Menu, nativeImage, protocol, screen, shell, Tray } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -34,9 +34,16 @@ import { mirrorConsoleToFile } from './debug-log';
 import { newPipePath, type OptimisationRequest } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
 import { shellEffects } from '../core/shell-effects';
+import { MEDIA_SCHEME, MediaFiles } from './media-files';
+import { applyCrop, cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
+import { compareSources, parseCompareView } from './compare';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-let main: BrowserWindow, floating: BrowserWindow, tray: Tray, engine: ItemEngine;
+// The crop and compare windows load the session's originals and results through this scheme, with byte ranges for video.
+protocol.registerSchemesAsPrivileged([{ scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, stream: true } }]);
+let main: BrowserWindow, floating: BrowserWindow, tray: Tray, engine: ItemEngine, media: MediaFiles;
+/** Open crop and compare windows, by `crop:<id>` and `compare:<id>`. */
+const views = new Map<string, BrowserWindow>();
 let settings = defaultSettings(), notice: string | undefined, quitting = false, bridgeReady = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>;
@@ -79,7 +86,11 @@ const currentSequence = async () => bridgeReady ? sequenceReply(await bridge.req
 const isReady = (id: string) => { try { return engine.get(id).result.status === 'ready'; } catch { return false; } };
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 const state = (): AppState => ({ items: engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id)), settings, native: true, platform: process.platform, dropActive, notice });
-function broadcast() { for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state()); }
+function broadcast() {
+  for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
+  // The crop and compare windows follow their result even after its card hid, so they get every result.
+  if (views.size) { const all = { ...state(), items: engine.list() }; for (const window of views.values()) if (!window.isDestroyed()) window.webContents.send('clop:state', all); }
+}
 function inform(text: string) { notice = text; syncFloating(); broadcast(); }
 function positionFloating() {
   const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
@@ -116,6 +127,8 @@ function scheduleHide(id: string) {
 }
 async function dismiss(id: string) {
   const timer = hideTimers.get(id); if (timer) clearTimeout(timer);
+  for (const view of ['crop', 'compare']) views.get(`${view}:${id}`)?.close();
+  if (engine.has(id)) media?.revoke(engine.get(id).directory);
   hideTimers.delete(id); hidden.delete(id); await engine.dismiss(id);
   if (!quiet.delete(id)) removed(id);
 }
@@ -177,13 +190,41 @@ function configure(window: BrowserWindow) {
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.on('close', event => { if (!quitting) { event.preventDefault(); window.hide(); } });
 }
+const webPreferences = () => ({ preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true });
+async function load(window: BrowserWindow, query: Record<string, string>) {
+  if (devUrl) await window.loadURL(`${devUrl}/?${new URLSearchParams(query)}`); else await window.loadFile(path.join(here, '../dist/index.html'), { query });
+}
+/** Opens a result's crop or compare window, or brings the open one forward. Each closes for good, and with its result. */
+async function openView(view: 'crop' | 'compare', id: unknown) {
+  if (typeof id !== 'string' || !engine.has(id)) throw new Error('This result is no longer in the shelf.');
+  const { result } = engine.get(id), key = `${view}:${id}`, open = views.get(key);
+  if (result.status !== 'ready') throw new Error('Wait for this result to finish first.');
+  if (view === 'crop' && result.kind === 'audio') throw new Error('Audio files have nothing to crop.');
+  if (open && !open.isDestroyed()) { open.show(); open.focus(); return; }
+  const size = view === 'crop' ? { width: 1020, height: 660, minWidth: 780, minHeight: 520 } : { width: 1100, height: 760, minWidth: 600, minHeight: 460 };
+  const window = new BrowserWindow({ ...size, show: false, title: `${view === 'crop' ? 'Crop' : 'Compare'}: ${result.name}`, backgroundColor: '#211d23', autoHideMenuBar: true, webPreferences: webPreferences() });
+  views.set(key, window);
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-navigate', event => event.preventDefault());
+  window.on('page-title-updated', event => event.preventDefault());
+  window.once('ready-to-show', () => window.show());
+  window.on('closed', () => { if (views.get(key) === window) views.delete(key); syncNative(); });
+  syncNative();
+  try { await load(window, { [view]: id }); }
+  catch (error) {
+    // A window that never loaded would stay blank and be brought forward again by the next open.
+    if (views.get(key) === window) views.delete(key);
+    if (!window.isDestroyed()) window.destroy();
+    syncNative();
+    throw error;
+  }
+}
 async function createWindows() {
-  const webPreferences = { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true };
-  main = new BrowserWindow({ width: 390, height: 500, resizable: false, show: false, backgroundColor: '#f3f1ef', title: 'Clop settings', autoHideMenuBar: true, webPreferences });
-  floating = new BrowserWindow({ width: 236, height: 206, frame: false, resizable: false, transparent: true, show: false, skipTaskbar: true, alwaysOnTop: settings.floatingResultsAlwaysOnTop, backgroundColor: '#00000000', webPreferences });
+  const windowPreferences = webPreferences();
+  main = new BrowserWindow({ width: 390, height: 500, resizable: false, show: false, backgroundColor: '#f3f1ef', title: 'Clop settings', autoHideMenuBar: true, webPreferences: windowPreferences });
+  floating = new BrowserWindow({ width: 236, height: 206, frame: false, resizable: false, transparent: true, show: false, skipTaskbar: true, alwaysOnTop: settings.floatingResultsAlwaysOnTop, backgroundColor: '#00000000', webPreferences: windowPreferences });
   configure(main); configure(floating);
-  if (devUrl) { await main.loadURL(`${devUrl}/?preferences=1`); await floating.loadURL(`${devUrl}/?floating=1`); }
-  else { await main.loadFile(path.join(here, '../dist/index.html'), { query: { preferences: '1' } }); await floating.loadFile(path.join(here, '../dist/index.html'), { query: { floating: '1' } }); }
+  await load(main, { preferences: '1' }); await load(floating, { floating: '1' });
   positionFloating();
   floating.setIgnoreMouseEvents(true, { forward: true });
   if (settings.keepDropZoneVisible) { syncFloating(); floating.setIgnoreMouseEvents(false); }
@@ -519,12 +560,14 @@ async function updateSettings(value: unknown) {
   if (bridgeReady) await bridge.request(nativeSettings());
   updateTray(); broadcast();
 }
+/** Presses inside Clop's own windows, the crop and compare windows too, never start a drag. */
 function nativeSettings() {
-  return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating].map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
+  return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating, ...views.values()].filter(window => !window.isDestroyed()).map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
 }
+function syncNative() { if (bridgeReady) bridge.request(nativeSettings()).catch(error => inform(message(error))); }
 /** Card actions put a clipboard result back on the clipboard, and others with `autoCopyToClipboard`. */
 function copiesBack(id: string) { const { result } = engine.get(id); return result.status === 'ready' && (result.source === 'clipboard' || (settings.autoCopyToClipboard && result.source !== 'folder')); }
-function trusted(sender: Electron.WebContents) { return [main, floating].some(window => window && !window.isDestroyed() && window.webContents === sender); }
+function trusted(sender: Electron.WebContents) { return [main, floating, ...views.values()].some(window => window && !window.isDestroyed() && window.webContents === sender); }
 ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) => {
   if (!trusted(event.sender)) throw new Error('Untrusted window.');
   const id = args[0] as string;
@@ -561,9 +604,17 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
       break;
     }
     case 'mcp': return mcp.handle(args[0]);
+    case 'open-crop': await openView('crop', id); break;
+    case 'open-compare': await openView('compare', id); break;
+    case 'crop-source': return cropSource(engine.get(id), parseCropView(args[1]), media);
+    case 'crop': await applyCrop(engine, id, parseCropRequest(args[1], engine.get(id).result.kind)); if (copiesBack(id)) await copy([id]); break;
+    case 'crop-sizes': return settings.savedCropSizes;
+    case 'save-crop-sizes': settings = await store.set({ savedCropSizes: parseSavedCropSizes(args[0]) }); broadcast(); return settings.savedCropSizes;
+    case 'compare-sources': return compareSources(engine.get(id), parseCompareView(args[1]), media);
     case 'window':
       switch (args[0]) {
         case 'hide': BrowserWindow.fromWebContents(event.sender)?.hide(); break;
+        case 'close': BrowserWindow.fromWebContents(event.sender)?.close(); break;
         case 'minimize': BrowserWindow.fromWebContents(event.sender)?.minimize(); break;
         case 'main': main.show(); break;
         case 'float': showLatest(); break;
@@ -618,6 +669,8 @@ else {
     workdir.protect(session);
     stopCleaner = workdir.startCleaner(() => store.get('workdirCleanupInterval'));
     engine = new ItemEngine(session, () => settings);
+    media = new MediaFiles([session]);
+    protocol.handle(MEDIA_SCHEME, request => media.handle(request));
     engine.on('change', () => { syncFloating(); broadcast(); });
     engine.on('ready', (id: string) => { if (quiet.has(id)) return; hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
     engine.on('add', (id: string) => lastBatch.add(id));

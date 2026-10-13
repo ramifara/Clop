@@ -1,0 +1,101 @@
+.view-window{height:100%;background:#211d23;color:#ece6ee;font-size:12px;display:flex;user-select:none}
+.view-window button{-webkit-app-region:no-drag}
+.view-loading{flex:1;display:flex;align-items:center;justify-content:center;color:#c9bfcb;padding:30px;text-align:center}
+.view-error{margin:6px 0 0;color:#ff8da2;font-size:11px}
+.segmented{display:inline-flex;background:#ffffff14;border-radius:6px;padding:2px;gap:2px}
+.segmented button{border:0;background:transparent;color:#d9d0db;border-radius:4px;padding:3px 7px;display:flex;align-items:center}
+.segmented button.active{background:#f0e4cf;color:#3a3138}
+.link-button{border:0;background:none;color:#ffc46e;padding:2px 0;font-size:11px;text-align:left}
+.link-button:hover:not(:disabled){text-decoration:underline}
+
+.crop-window{flex-direction:row}
+.crop-main{flex:1;display:flex;flex-direction:column;min-width:0}
+.crop-preview{flex:1;margin:28px 16px 0;display:flex;align-items:center;justify-content:center;min-height:0;position:relative}
+.crop-canvas{position:relative;box-shadow:0 3px 12px #0008;flex-shrink:0}
+.crop-canvas>img{display:block;-webkit-user-drag:none}
+.crop-canvas.extended{background:#fff;border-radius:4px;display:flex;align-items:center;justify-content:center}
+.selection-layer{position:absolute;inset:0;cursor:crosshair;touch-action:none}
+.dimming{position:absolute;inset:0;overflow:visible}
+.selection-frame{position:absolute;border:1.5px solid #fff;box-shadow:0 0 2px #0009,inset 0 0 2px #0006;pointer-events:none}
+.selection-frame.paper{border-width:2.5px}.selection-frame.device{border-width:3px}
+.move-area{position:absolute;cursor:move}
+.handle{position:absolute;width:26px;height:26px;margin:-13px 0 0 -13px;display:flex;align-items:center;justify-content:center}
+.handle span{background:#fff;box-shadow:0 0 3px #000b;border-radius:3px}
+.handle.topLeft span,.handle.topRight span,.handle.bottomLeft span,.handle.bottomRight span{width:9px;height:9px;border-radius:1.5px}
+.handle.top span,.handle.bottom span{width:22px;height:5px}.handle.left span,.handle.right span{width:5px;height:22px}
+.handle.topLeft,.handle.bottomRight{cursor:nwse-resize}.handle.topRight,.handle.bottomLeft{cursor:nesw-resize}.handle.top,.handle.bottom{cursor:ns-resize}.handle.left,.handle.right{cursor:ew-resize}
+.badge{position:absolute;transform:translate(-50%,-50%);white-space:nowrap;pointer-events:none;color:#fff;background:#000000b3;font-size:10px;padding:2px 6px}
+.badge.size{font-family:'Consolas','Cascadia Code',monospace;border-radius:4px}.badge.label{border-radius:9px;font-weight:600}
+.result-size{position:absolute;overflow:hidden;border:1px solid #ffffffe6;border-radius:3px;box-shadow:0 2px 6px #0009;pointer-events:none}
+.result-size img{position:absolute;max-width:none}
+.preview-bar{height:36px;display:flex;align-items:center;justify-content:center;gap:10px;color:#c9bfcb}
+.preview-bar button{border:0;background:none;color:inherit;font-size:16px;padding:0 6px}
+.frame-slider{display:flex;align-items:center;gap:8px}.frame-slider input{width:300px;accent-color:#ffc46e}
+.crop-sidebar{width:280px;flex-shrink:0;background:#2b262d;border-left:1px solid #ffffff14;display:flex;flex-direction:column;padding:0 14px 14px}
+.sidebar-scroll{flex:1;overflow:auto;padding-top:28px;display:flex;flex-direction:column;gap:12px}
+.crop-sidebar section{display:flex;flex-direction:column;gap:7px}
+.crop-sidebar section+section{border-top:1px solid #ffffff14;padding-top:12px}
+.crop-sidebar h2{margin:4px 0 0;font-size:9.5px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:#a99eab}
+.section-head{display:flex;align-items:center;justify-content:space-between}
+.crop-sidebar select{width:100%;border:1px solid #ffffff22;background:#ffffff10;color:#ece6ee;border-radius:5px;padding:4px;font-size:11px}
+.crop-sidebar select option,.crop-sidebar select optgroup{background:#2b262d}
+.crop-sidebar .row{margin-top:4px}
+.check{display:flex;align-items:center;gap:6px;font-size:11px;margin-top:4px}
+.chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:4px}
+.chip{display:flex;align-items:center;gap:4px;border:1px solid #ffffff14;background:#ffffff0f;color:#ece6ee;border-radius:6px;padding:4px;font-size:10.5px;font-weight:500;white-space:nowrap;overflow:hidden}
+.chip.active,.preset.active>button:first-child{background:#ffc46e40;border-color:#ffc46ecc}
+.aspect-icon{width:16px;height:11px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.aspect-icon span{background:#ffc46e;opacity:.6;border-radius:2px}.chip.active .aspect-icon span,.preset.active .aspect-icon span{opacity:1}
+.free-icon{width:10px;height:10px;border:1px dashed currentColor;border-radius:2px;margin:0 3px;flex-shrink:0}
+.presets{display:flex;flex-direction:column;gap:3px}
+.preset{display:flex;position:relative}
+.preset>button:first-child{flex:1;display:flex;align-items:center;gap:6px;border:1px solid transparent;background:#ffffff0d;color:#ece6ee;border-radius:6px;padding:5px 8px;font-size:11px;font-weight:500;text-align:left}
+.preset>button:first-child:hover:not(:disabled){background:#ffffff1a}
+.preset .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.preset small{font-family:'Consolas','Cascadia Code',monospace;font-size:10px;color:#a99eab}
+.preset .delete{position:absolute;right:6px;top:50%;transform:translateY(-50%);border:0;border-radius:50%;width:18px;height:18px;padding:0;background:#e5484d;color:#fff;opacity:0}
+.preset:hover .delete,.preset .delete:focus-visible{opacity:1}
+.save-size{display:flex;gap:4px;margin-top:2px}
+.save-size input{flex:1;min-width:0;border:1px solid #ffffff22;background:#ffffff10;color:#ece6ee;border-radius:5px;padding:4px 6px;font-size:11px}
+.save-size button{border:1px solid #ffffff22;background:#ffffff14;color:#ffc46e;border-radius:5px;width:26px;font-weight:700}
+.dimensions{display:flex;align-items:center;gap:6px;border-top:1px solid #ffffff14;padding-top:12px;margin-top:8px}
+.dimensions input{width:64px;text-align:center;border:1px solid #ffffff22;background:#ffffff10;color:#ece6ee;border-radius:5px;padding:4px;font-size:12px}
+.dimensions small{color:#a99eab;font-size:10px}
+.dimensions .lock{margin-left:auto;border:0;background:none;color:#ffc46e;display:flex;padding:3px}
+.crop-actions{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:12px}
+.crop-actions button{border:1px solid #ffffff22;background:#ffffff14;color:#ece6ee;border-radius:6px;padding:6px 12px;font-size:12px}
+.crop-actions button.primary{background:#ffc46e;border-color:#ffc46e;color:#30262e;font-weight:600;font-variant-numeric:tabular-nums}
+
+.compare-window{flex-direction:column;padding:14px 18px 10px;align-items:stretch}
+.compare-window header{display:flex;flex-direction:column;align-items:center;gap:1px;margin-bottom:6px}
+.compare-window header strong{font-size:12px}.compare-window header small{font-size:9px;color:#a99eab;letter-spacing:.5px}
+.split-stack,.side-stack,.audio-stack{flex:1;min-height:0;display:flex;position:relative}
+.split-stack{flex-direction:column}
+.split-headers{display:flex;justify-content:space-between;padding:0 6px}
+.split-view{flex:1;min-height:0;position:relative;overflow:hidden;border-radius:16px;background:#ffffff0d;cursor:ew-resize;touch-action:none}
+.layer{position:absolute;inset:0}
+.layer img,.layer video{width:100%;height:100%;display:block;object-fit:contain;-webkit-user-drag:none;image-rendering:pixelated}
+.layer video{object-fit:contain}
+.divider{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:#ffffffe6;box-shadow:0 0 5px #0009;pointer-events:none}
+.divider span{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:26px;height:26px;border-radius:50%;background:#3a3440e6;display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 3px #0006}
+.split-footer{display:flex;justify-content:center;align-items:center;gap:6px;padding-top:6px;font-family:'Consolas','Cascadia Code',monospace;font-size:10.5px;color:#a99eab}
+.split-footer .smaller{color:#7cc4ff;font-weight:600}.split-footer .larger{color:#ff6b81;font-weight:600}.split-footer .dot{color:#ffffff40}
+.side-stack,.audio-stack{gap:16px}
+.side,.audio-side{flex:1;min-width:0;display:flex;flex-direction:column}
+.side-media{flex:1;min-height:0;position:relative;overflow:hidden;border-radius:16px;background:#ffffff0d}
+.side-labels{display:flex;flex-direction:column;gap:1px;padding-top:6px;font-family:'Consolas','Cascadia Code',monospace;font-size:10px;color:#a99eab}
+.side-badge{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none}
+.savings{font-family:'Consolas','Cascadia Code',monospace;font-size:12px;font-weight:700;padding:3px 8px;border-radius:999px;background:#2b262df2;box-shadow:0 1px 3px #0005}
+.savings.smaller{color:#7cc4ff}.savings.larger{color:#ff6b81}
+.split-footer .savings{font-size:10px;padding:1px 6px}
+.unplayable{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#c9bfcb;padding:20px;text-align:center}
+.compare-controls{display:flex;justify-content:center;align-items:center;gap:12px;padding-top:10px}
+.flat{border:0;background:#ffffff14;color:#ece6ee;border-radius:6px;min-width:28px;height:24px;font-size:13px}
+.pdf-controls{display:flex;justify-content:center;align-items:center;gap:10px;padding-top:8px}
+.pdf-controls input{width:300px;accent-color:#ffc46e}
+.hint{margin:6px 0 0;text-align:center;font-size:10px;color:#857b88;line-height:1.5}
+.audio-art{flex:1;min-height:200px;border-radius:16px;background:#ffffff0d center/cover no-repeat;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+.audio-art:before{content:'';position:absolute;inset:0;background:#211d23a6}
+.audio-art button{position:relative;width:64px;height:64px;border-radius:50%;border:0;background:#f0e4cfe6;color:#30262e;font-size:20px;box-shadow:0 2px 8px #0008}
+.audio-side input[type=range]{width:100%;margin-top:10px;accent-color:#ffc46e}
+.times{display:flex;justify-content:space-between;font-family:'Consolas','Cascadia Code',monospace;font-size:9px;color:#a99eab}

@@ -15,7 +15,7 @@ The result uses the geometry and interaction model in the original `FloatingResu
 - An 18-pixel format bar beneath it, with the current format preselected. Click PNG, JPG, WebP, AVIF or GIF to convert in place.
 - Six small actions revealed on hover: downscale, restore, compression, aggressive optimisation, copy and save.
 - Downscaling opens a slider over the same thumbnail. Choose 100%, 75%, 50%, 25% or 10%, or use the slider. No separate editing window opens.
-- Dimensions, compare and Show in Explorer live in the corner menu. Drag the thumbnail to another app.
+- Dimensions, `Crop and resize…`, `Compare original` and Show in Explorer live in the corner menu. Drag the thumbnail to another app.
 
 While dragging, a transient 196 × 148 `Drop to optimise` target appears in the corner, matching `DropZone.swift`. Drop an image, video, PDF or audio file onto it to optimise. Releasing the drag elsewhere dismisses the target without changing the file. Dragged links from browsers can also be downloaded and optimised after an explicit drop.
 
@@ -56,6 +56,20 @@ Originals and results live in the working directory (see below) and are deleted 
 ## Videos, PDFs and audio in the app
 
 Dropped, opened and copied videos, PDFs and audio files go through the engines below with the current settings: `videoCompression`, `videoEncoder`, the frame rate cap, `removeAudioFromVideos`, `convertAudioToAAC` and `stripMetadata` for video; `pdfDPI` for PDFs; `audioCompression`, `formatsToConvertToAAC`, `formatsToConvertToMP3` and `audioCoverArt` for audio. Their cards show a preview (a frame one second in, the first page, or the cover art; audio without art gets a drawn note), the size reduction and the duration or page count, with a percentage while ffmpeg or Ghostscript works. A card copies, saves, reveals, drags, restores and dismisses its result; the type-specific actions from macOS are not in the card yet. A copy of the original stays in the working directory, so a dropped or copied source file is never written to and restoring gives back its exact bytes. With `preserveDates` (on), optimised PDFs and audio keep the source's dates, as on macOS, where videos also get new ones. Each type has its own queue, and the clipboard keeps being read while a result is processed, so a long video never holds up a copied screenshot. Quitting Clop stops every running job.
+
+## Crop and compare windows
+
+The corner menu's `Crop and resize…` (images, videos and PDFs, not audio) and `Compare original` (every type) each open a window of their own for that result, ported from `CropWindow.swift` and `CompareView.swift`. Each result has at most one of each, and opening it again brings it forward. Both close with their result, and `Escape` closes them.
+
+`Crop and resize…` shows the original (a video frame you choose with the slider, or a PDF page) with a selection you can draw, move and resize. Pick an aspect ratio, a saved size or a typed size, flip the orientation, and click `Crop to W×H` or press `Ctrl+Enter`. Images and videos are always cropped from the original, so cropping again, downscaling or converting keeps the crop and `Restore original` drops it; the card's downscale then applies to the area the crop kept. A PDF is cropped on its current result instead: the window offers paper sizes, device sizes and aspect ratios, which either crop each page by its own orientation or extend it with empty paper, and shows each page whole with its current crop box as the starting selection. If a crop fails the window stays open and shows the error.
+
+Saved crop sizes are the `savedCropSizes` setting in `settings.json`, the macOS defaults at first. The window can save the current size under a name (up to 200 are kept), delete a saved size or bring the defaults back. Sizes are whole pixels up to 16383, and a side of 0 means automatic.
+
+`Compare original` shows the item's retained original beside its current result, never the live file. `Split` drags a divider across both, `Side by side` shows them next to each other; holding `Ctrl` zooms both alike (`Alt` as well zooms further) and the cursor pans. Videos play together, muted and looping, with a shared pause (`Space`). A PDF compares one whole page at a time (the arrow keys or the slider change page). Audio files get a player each, with only one playing at a time and a shared start position that scrubbing sets. Images the window cannot show as they are (HEIC, JPEG XL, BMP, TIFF) are shown as PNG. An open window follows its result: a downscale, restore or new crop replaces what it shows.
+
+The windows are sandboxed and see only a narrow preload API. They never name a file: the main process hands out `clop-media://file/<token>` URLs, one opaque token per file, only for files of the session (the originals, results and previews Clop keeps in its working directory). The protocol is session-only, answers just `GET` and `HEAD` with byte ranges so videos can seek, does not follow a link out of the session, and forgets a result's files when it is dismissed.
+
+Known gaps against macOS: the compare window has no file-actions menu or path field, and the crop window neither remembers its size and position nor closes itself when its result starts processing again. The native window opening, the crop selection's pointer handling and DPI behaviour have been exercised only in a browser preview and unit tests, not yet on Windows hardware.
 
 ## Clipboard
 

@@ -16,5 +16,9 @@ const api: ClopApi = {
   drag: id => ipcRenderer.send('clop:drag', id), dismiss: id => invoke('dismiss', id),
   settings: settings => invoke('settings', settings), window: action => invoke('window', action), apps: () => invoke('apps'), mcp: request => invoke('mcp', request),
   pipelines: id => invoke('pipelines', id), runPipeline: (id, pipelineId) => invoke('run-pipeline', id, pipelineId),
+  openCrop: id => invoke('open-crop', id), openCompare: id => invoke('open-compare', id),
+  cropSource: (id, view) => invoke('crop-source', id, view), crop: (id, request) => invoke('crop', id, request),
+  cropSizes: () => invoke('crop-sizes'), saveCropSizes: sizes => invoke('save-crop-sizes', sizes),
+  compareSources: (id, view) => invoke('compare-sources', id, view),
 };
 contextBridge.exposeInMainWorld('clop', api);
