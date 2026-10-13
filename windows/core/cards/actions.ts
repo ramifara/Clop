@@ -13,7 +13,7 @@ export const UNAVAILABLE_BUTTONS: readonly string[] = ['addToShelf', 'sendSecure
 export const MAX_FLOATING_BUTTONS = 5, MAX_COMPACT_BUTTONS = 9;
 
 export const ACTIONS = [
-  'stop', 'dismiss', 'restore', 'reoptimise', 'preview', 'compare', 'saveAs', 'copy', 'reveal', 'openDefault', 'openWith', 'editWith', 'share', 'crop', 'pipeline',
+  'stop', 'dismiss', 'restore', 'reoptimise', 'preview', 'compare', 'saveAs', 'copy', 'reveal', 'openDefault', 'copyPath', 'openWith', 'editWith', 'share', 'crop', 'pipeline',
   'stripExif', 'fitUnder', 'downscale', 'resolution', 'aggressive', 'compression', 'convert', 'removeAudio', 'hdrToSdr', 'speed', 'toGif', 'encoder',
   'bitrate', 'normalise', 'coverArt', 'coverDownscale', 'pagesToImages', 'menu',
 ] as const;
@@ -71,7 +71,7 @@ export const CONVERSIONS: Record<Exclude<MediaKind, 'pdf'>, readonly { to: strin
 const ALL: readonly MediaKind[] = ['image', 'video', 'pdf', 'audio'];
 /** The kinds each action applies to. */
 export const ACTION_KINDS: Record<ActionId, readonly MediaKind[]> = {
-  stop: ALL, dismiss: ALL, restore: ALL, reoptimise: ALL, preview: ALL, compare: ALL, saveAs: ALL, copy: ALL, reveal: ALL, openDefault: ALL, openWith: ALL, editWith: ALL, share: ALL, pipeline: ALL, fitUnder: ALL, menu: ALL,
+  stop: ALL, dismiss: ALL, restore: ALL, reoptimise: ALL, preview: ALL, compare: ALL, saveAs: ALL, copy: ALL, reveal: ALL, openDefault: ALL, copyPath: ALL, openWith: ALL, editWith: ALL, share: ALL, pipeline: ALL, fitUnder: ALL, menu: ALL,
   crop: ['image', 'video', 'pdf'], stripExif: ['image', 'video'], downscale: ['image', 'video'], resolution: ['pdf'], aggressive: ['image', 'pdf', 'audio'], compression: ['image', 'video'], convert: ['image', 'video', 'audio'],
   removeAudio: ['video'], hdrToSdr: ['video'], speed: ['video', 'audio'], toGif: ['video'], encoder: ['video'], bitrate: ['audio'], normalise: ['audio'], coverArt: ['audio'], coverDownscale: ['audio'], pagesToImages: ['pdf'],
 };
@@ -95,6 +95,8 @@ function validArg(kind: MediaKind, action: ActionId, arg: unknown): boolean {
     case 'coverDownscale': return numberIn([1, ...DOWNSCALE_FACTORS], arg);
     case 'pagesToImages': return arg === 'jpeg' || arg === 'png';
     case 'menu': return typeof arg === 'string' && (MENUS as readonly string[]).includes(arg);
+    // The compare window's file actions (`fileActions` in CompareView.swift) work on either side: the result, or with `original` the original it is compared with.
+    case 'reveal': case 'openDefault': case 'copyPath': return arg === undefined || arg === 'original';
     default: return arg === undefined;
   }
 }
@@ -135,7 +137,7 @@ export type Plan =
   | { type: 'edit'; edit: 'hdrToSdr' | 'toGif' | 'coverArt' | 'coverDownscale'; arg?: string | number; label: string }
   | { type: 'ui'; ui: UiAction; arg?: string | number };
 /** The actions the app itself carries out: windows, dialogs, the clipboard, launching apps, saved pipelines, and a menu a button opens. */
-export type UiAction = 'stop' | 'dismiss' | 'restore' | 'preview' | 'compare' | 'saveAs' | 'copy' | 'reveal' | 'openDefault' | 'openWith' | 'editWith' | 'share' | 'crop' | 'pipeline' | 'pagesToImages' | 'menu';
+export type UiAction = 'stop' | 'dismiss' | 'restore' | 'preview' | 'compare' | 'saveAs' | 'copy' | 'reveal' | 'openDefault' | 'copyPath' | 'openWith' | 'editWith' | 'share' | 'crop' | 'pipeline' | 'pagesToImages' | 'menu';
 
 const step = makeStep;
 /** The change an invocation makes to a card, or the app-side action it names. */
@@ -173,6 +175,15 @@ export function planFor(item: Pick<CardItem, 'kind' | 'options'>, { action, arg 
 
 const label = (text: string, invoke?: Invocation, extra: Partial<Extract<MenuNode, { label: string }>> = {}): MenuNode => ({ label: text, ...(invoke ? { invoke } : {}), ...extra });
 const sep: MenuNode = { separator: true };
+
+/**
+ * The menu of one side's file in the compare window, behind its path field and its right-click (`fileActions` in CompareView.swift):
+ * open it, show it in Explorer, copy its path. `original` is the original the result is compared with, otherwise the result.
+ */
+export function fileActions(side: 'original' | 'result'): MenuNode[] {
+  const arg = side === 'original' ? { arg: 'original' } : {};
+  return [label('Open', { action: 'openDefault', ...arg }), label('Show in Explorer', { action: 'reveal', ...arg }), label('Copy Path', { action: 'copyPath', ...arg })];
+}
 const percent = (factor: number) => `${Math.round(factor * 100)}%`;
 const speedName = (factor: number) => `${factor < 2 ? factor.toFixed(2) : factor}x`;
 

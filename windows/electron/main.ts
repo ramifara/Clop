@@ -1077,7 +1077,8 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
     });
     return;
   }
-  const file = () => engine.output(id);
+  // The compare window's file actions name the original's side with `original`: the copy of the original the window shows.
+  const file = () => plan.arg === 'original' ? engine.get(id).originalPath : engine.output(id);
   switch (plan.ui) {
     case 'stop': engine.stop([id]); return;
     case 'dismiss': await dismiss(id); return;
@@ -1089,6 +1090,8 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
     case 'copy': await copy([id]); return;
     case 'reveal': shell.showItemInFolder(file()); return;
     case 'openDefault': { const error = await shell.openPath(file()); if (error) throw new Error(error); return; }
+    // As Clop's own write, so the clipboard watcher does not take the copied path for a file to optimise.
+    case 'copyPath': await writeClipboard({ text: file() }); return;
     case 'openWith': await openWithDialog(file()); return;
     case 'editWith': await startProgram(await editorProgram(editorFor(item.kind), { watched: watchedFolders(settings, home), isFile }), file()); return;
     case 'share': await shareResult(id); return;

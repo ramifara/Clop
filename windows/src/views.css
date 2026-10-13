@@ -121,3 +121,7 @@ html:has(.view-window), body:has(.view-window) { background: var(--bg); }
 .preview-window .preview-bar{display:flex;align-items:center;gap:12px;padding:7px 14px;background:var(--bg);border-top:1px solid var(--line);font-size:11px;color:var(--muted)}
 .preview-window .preview-bar strong{color:var(--ink);max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .preview-window .preview-pages{margin-left:auto;display:flex;align-items:center;gap:8px}
+/* The path field under each side's title (`PathFieldMenu`): the file's path in a small mono button that opens its file menu. */
+.compare-window header .path-field{margin-top:3px;max-width:min(520px,100%);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;border:0;border-radius:6px;padding:2px 8px;font:10px var(--mono);color:var(--muted);background:color-mix(in srgb,var(--well) 55%,transparent);cursor:pointer}
+.compare-window header .path-field:hover,.compare-window header .path-field:focus-visible{color:var(--ink);background:var(--well);outline:0}
+.compare-window .split-headers header{min-width:0;max-width:48%}
