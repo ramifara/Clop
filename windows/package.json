@@ -12,7 +12,7 @@
     "dev": "vite --host 127.0.0.1",
     "desktop": "node scripts/dev.mjs",
     "build": "tsc --noEmit && vite build && node scripts/build.mjs",
-    "test": "tsx --test --test-timeout=300000 \"core/**/*.test.ts\" \"electron/*.test.ts\" \"cli/*.test.ts\" \"src/*.test.ts\"",
+    "test": "tsx --test --test-timeout=300000 \"core/**/*.test.ts\" \"electron/*.test.ts\" \"cli/*.test.ts\" \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
     "typecheck": "tsc --noEmit",
     "dist:win": "npm run build && node scripts/fetch-tools.mjs --platform win32 --arch x64 && electron-builder --win nsis portable --x64 --publish never"
   },

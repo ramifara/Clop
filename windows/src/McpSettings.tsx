@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
-import type { ClopSettings, McpClientRow, McpRequest, McpState } from './types';
+import { useSettings } from './settings/context';
+import { Switch } from './settings/inputs';
+import type { McpClientRow, McpRequest, McpState } from './types';
 
-// The MCP section of Settings (Clop/MCPSettingsPane.swift): the two switches, the agents Clop's server can be installed
+// The MCP tab of Settings (Clop/MCPSettingsPane.swift): the two switches, the agents Clop's server can be installed
 // into, and the command for installing it by hand.
 
 const clean = (error: unknown) => error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': Error: /, '') : String(error);
 
-export function McpSettings({ settings }: { settings: ClopSettings }) {
+/** One of the two MCP switches. Turning scripts on asks first, in the main process. */
+export function McpSwitch({ which }: { which: 'enable' | 'scripts' }) {
+  const { settings, run } = useSettings();
+  const on = which === 'enable' ? settings.mcpEnabled : settings.mcpAllowScriptSteps;
+  return <Switch label={which === 'enable' ? 'Accept changes from agents' : 'Allow agents to write script steps'} checked={on} disabled={which === 'scripts' && !settings.mcpEnabled} onChange={value => void run(() => api.mcp({ action: which === 'enable' ? 'enable' : 'scripts', on: value }))}/>;
+}
+
+/** The agents Clop's MCP server can be installed into, and the command for installing it by hand. */
+export function McpInstall() {
   const [state, setState] = useState<McpState>();
   const [error, setError] = useState('');
   const [more, setMore] = useState(false);
@@ -37,11 +47,7 @@ export function McpSettings({ settings }: { settings: ClopSettings }) {
     <button title="Copies the line" onClick={() => { setCopied(what); void send({ action: 'copy', what }); }}>{copied === what ? 'Copied!' : value}</button>
   </div>;
 
-  return <section className="mcp-settings" aria-label="MCP">
-    <h2>MCP</h2>
-    <label className="preference-row"><span>Enable MCP<small>Allow agents to control Clop, run file optimisations, change settings, write pipelines</small></span><input type="checkbox" checked={settings.mcpEnabled} onChange={event => void send({ action: 'enable', on: event.target.checked })}/></label>
-    <label className="preference-row"><span>Allow agents to write arbitrary scripts in pipelines<small>Using scripts in pipelines allows for flexible operations but can be dangerous if not properly verified</small></span><input type="checkbox" disabled={!settings.mcpEnabled} checked={settings.mcpAllowScriptSteps} onChange={event => void send({ action: 'scripts', on: event.target.checked })}/></label>
-    <h2>Install in</h2>
+  return <section className="mcp-settings" aria-label="Install in agents">
     {state?.clients.filter(client => client.featured).map(row)}
     <button className="mcp-more" aria-expanded={more} onClick={() => setMore(!more)}>{more ? 'See less' : 'See more'}</button>
     {more && state?.clients.filter(client => !client.featured).map(row)}

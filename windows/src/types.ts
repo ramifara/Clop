@@ -5,6 +5,10 @@ import type { EditorState } from '../core/pipeline/editor-state';
 import type { PipelineIssue } from '../core/pipeline/parser';
 import type { PresetTile } from '../core/pipeline/zones';
 import type { EditorReply } from '../electron/editor';
+import type { SettingMeta } from '../core/settings/controls';
+import type { MediaName } from '../core/settings/entries';
+import type { SettingKey } from '../core/settings/schema';
+import type { SettingsTab } from '../core/settings/tabs';
 export type OutputFormat = 'auto' | 'png' | 'jpeg' | 'webp' | 'avif' | 'gif';
 /** `crop` is the crop window's crop size, applied to the original before the scale and longest edge (images and videos). */
 export interface ImageOptions { mode: 'balanced' | 'aggressive' | 'lossless'; scale: number; maxEdge?: number; format: OutputFormat; crop?: CropSize }
@@ -48,7 +52,9 @@ export interface CompareSources { item: ItemResult; original: CompareSide; resul
 export interface AppEntry { name: string; path: string; running: boolean }
 /** The preset zone tiles for the drag in progress. They show while `revealed` (Ctrl or Alt held); `add` is the "new preset" tile after them. */
 export interface PresetTiles { revealed: boolean; tiles: PresetTile[]; add: boolean }
-export interface AppState { items: ItemResult[]; settings: ClopSettings; native: boolean; platform: string; dropActive?: boolean; notice?: string; presets?: PresetTiles }
+/** Where the Settings window was last asked to open (a tray item or `clop://settings/…` link); `nonce` changes with each request so the same target can be asked for again. */
+export interface SettingsRequest { tab: SettingsTab; row?: string; nonce: number }
+export interface AppState { items: ItemResult[]; settings: ClopSettings; native: boolean; platform: string; dropActive?: boolean; notice?: string; presets?: PresetTiles; settingsRequest?: SettingsRequest }
 export type { EditorCommand, EditorReply, EditorState, PipelineIssue, PresetTile };
 export interface ClopApi {
   state(): Promise<AppState>; subscribe(callback: (state: AppState) => void): () => void;
@@ -78,6 +84,8 @@ export interface ClopApi {
     /** Hears that pipelines, attachments or preset zones changed elsewhere, or that the window was asked to open on the preset zones. */
     subscribe(callback: (event: 'changed' | 'zones') => void): () => void;
   };
+  /** The Settings window's actions that need the main process: pickers, validated list edits, previews. */
+  prefs(request: PrefsRequest): Promise<PrefsReply>;
 }
 declare global { interface Window { clop?: ClopApi } }
 /** One agent in the MCP pane: whether Clop's server is in its config, and the line under its name. */
@@ -86,3 +94,24 @@ export interface McpClientRow { id: string; name: string; featured: boolean; sta
 export interface McpState { clients: McpClientRow[]; server?: string; command?: string; missing?: string }
 /** What the MCP pane asks the main process for. Clients are named by id; the main process owns every path. */
 export type McpRequest = { action: 'state' } | { action: 'install' | 'remove' | 'reveal'; id: string } | { action: 'enable' | 'scripts'; on: boolean } | { action: 'copy'; what: 'command' | 'server' };
+/** The settings that open a file or folder picker, or whose value the main process checks before it is saved; the window never writes these through `settings`. */
+export type PrefsRequest =
+  | { action: 'meta' }
+  /** What a name or path template makes of an example file. `key` is one of the template settings. */
+  | { action: 'template'; key: SettingKey; template: string }
+  | { action: 'workdir'; op: 'choose' | 'reset' }
+  | { action: 'folder'; kind: MediaName; op: 'add' | 'remove'; folder?: string }
+  | { action: 'quiet'; folder: string; quiet: boolean }
+  | { action: 'editor'; kind: MediaName; op: 'choose' | 'clear' }
+  | { action: 'ignore'; op: 'add' | 'remove' | 'choose'; entry?: string }
+  /** Opens the pipeline editor window, on its preset zones when `tab` is `zones`. */
+  | { action: 'pipeline-editor'; tab?: 'zones' }
+  | { action: 'open'; target: 'releases' | 'source' | 'upstream' | 'issues' }
+  | { action: 'version' };
+export interface PrefsReply {
+  /** Said to the user: what changed, or why nothing did. */
+  message?: string;
+  meta?: SettingMeta[];
+  preview?: { input: string; output: string };
+  version?: { name: string; platform: string };
+}

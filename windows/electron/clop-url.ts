@@ -1,22 +1,9 @@
+import { SETTINGS_TABS, settingsTab, type SettingsTab } from '../core/settings/tabs';
 // `clop://` links (spec step 27), as Clop/SettingsURL.swift and MCPInstaller.handle read them:
 // `clop://settings/<tab>[/<row>]`, `clop://settings/<row>`, `?highlight=<row>`, and `clop://mcp/start|stop`.
 
-export const SETTINGS_TABS = {
-  general: 'General', clipboard: 'Clipboard', files: 'File handling', video: 'Video', audio: 'Audio', images: 'Images', pdf: 'PDF', dropzone: 'Drop Zone',
-  presetZones: 'Preset Zones', floating: 'Floating Results', keys: 'Keyboard Shortcuts', pipelines: 'Pipelines', automation: 'Automation', mcp: 'MCP', updates: 'Updates', about: 'About',
-} as const;
-export type SettingsTab = keyof typeof SETTINGS_TABS;
+export { SETTINGS_TABS, settingsTab, type SettingsTab };
 export type ClopURL = { kind: 'settings'; tab?: SettingsTab; row?: string } | { kind: 'mcp'; action: 'start' | 'stop' };
-
-const normalized = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
-/** Old macOS name of the Updates tab, kept so a copied link still opens it. */
-const ALIASES: Record<string, SettingsTab> = { licenseupdates: 'updates', licenseandupdates: 'updates' };
-
-/** A tab by its case name (`presetZones`) or title (`Preset zones`), in any case, ignoring spaces and dashes. */
-export function settingsTab(name: string): SettingsTab | undefined {
-  const wanted = normalized(name);
-  return ALIASES[wanted] ?? (Object.keys(SETTINGS_TABS) as SettingsTab[]).find(tab => normalized(tab) === wanted || normalized(SETTINGS_TABS[tab]) === wanted);
-}
 
 /** What a `clop://` link asks for, or undefined when it is not one of ours. */
 export function parseClopURL(text: string): ClopURL | undefined {

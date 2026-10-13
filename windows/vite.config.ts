@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { readFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import sharp from 'sharp';
@@ -9,12 +10,12 @@ import { MediaFiles } from './electron/media-files';
 import { cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './electron/crop';
 import { compareSources, parseCompareView } from './electron/compare';
 import { imageDefaults, rendererSettings } from './electron/settings';
-import os from 'node:os';
 import { seedBuiltinPipelines } from './core/pipeline/builtins';
 import { tilesFor } from './core/pipeline/zones';
 import { EditorService } from './electron/editor';
 import { demoSettings } from './scripts/preview-demo';
 import { defaultSettings, parseSettings } from './core/settings/schema';
+import { createPrefs } from './electron/prefs';
 import type { ImageOptions } from './src/types';
 
 function localImagePreview(): Plugin {
@@ -34,6 +35,12 @@ function localImagePreview(): Plugin {
   });
   const session = path.resolve('.preview-data', `session-${Date.now()}`);
   const engine = new ItemEngine(session, () => settings), media = new MediaFiles([session], '/api/media/');
+  // The settings actions that need a picker answer that pickers work in the desktop app; the rest run for real on the preview's settings.
+  const desktopOnly = async (): Promise<never> => { throw new Error('Pickers work in the desktop app.'); };
+  const prefs = createPrefs({
+    settings: () => settings, defaults: () => defaultSettings(), set: async partial => { settings = parseSettings(partial, settings); }, home: os.homedir(),
+    chooseFolder: desktopOnly, chooseProgram: desktopOnly, apps: async () => [], openEditor: async () => { throw new Error('The pipeline editor opens in the desktop app.'); }, openExternal: desktopOnly, version: () => ({ name: 'preview', platform: 'preview' }),
+  });
   return {
     name: 'clop-local-image-preview',
     transformIndexHtml(html, context) {
@@ -85,6 +92,7 @@ function localImagePreview(): Plugin {
               case '/api/crop': await engine.crop(body.id, parseCropRequest(body.request, engine.get(body.id).result.kind)); break;
               case '/api/save-crop-sizes': settings = parseSettings({ savedCropSizes: parseSavedCropSizes(body.sizes) }, settings); reply = settings.savedCropSizes; break;
               case '/api/compare-sources': reply = await compareSources(engine.get(body.id), parseCompareView(body.view), media); break;
+              case '/api/prefs': reply = await prefs(body); break;
               default: throw new Error('Unknown image operation.');
             }
           }
