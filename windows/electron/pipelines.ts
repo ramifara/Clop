@@ -55,15 +55,17 @@ export interface AutomationOptions {
   done?: (outcome: PipelinesOutcome) => void;
   /** Optimise first even when every pipeline would skip it: macOS skips it for copied images only, never for copied videos, PDFs or audio. */
   alwaysOptimise?: boolean;
+  /** Skip the usual optimisation whatever the pipelines say (a preset zone's pipeline that encodes the file itself). */
+  skipOptimisation?: boolean;
 }
 /**
  * The automation for a file from a source with attached `pipelines`, or undefined when there are none: they run after the usual
  * optimisation, or instead of it when every one skips it (`skipsPreOptimisation`).
  */
-export function attachedAutomation(pipelines: readonly Pipeline[], { host, context, fallback, source, done, alwaysOptimise = false }: AutomationOptions): ItemAutomation | undefined {
+export function attachedAutomation(pipelines: readonly Pipeline[], { host, context, fallback, source, done, alwaysOptimise = false, skipOptimisation }: AutomationOptions): ItemAutomation | undefined {
   if (!pipelines.length) return;
   return {
-    skipOptimisation: !alwaysOptimise && pipelinesSkipOptimisation(pipelines), fallback,
+    skipOptimisation: !alwaysOptimise && (skipOptimisation ?? pipelinesSkipOptimisation(pipelines)), fallback,
     run: async (input: ItemPipelineRun): Promise<ItemPipelineOutcome> => {
       const file = input.optimised ?? source ?? await input.fresh();
       const outcome = await runForApp(host, pipelines, file, context, input.signal);

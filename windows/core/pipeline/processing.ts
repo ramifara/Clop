@@ -32,6 +32,8 @@ const MEDIA: readonly StepKind[] = ['removeAudio', 'changeSpeed', 'capFps', 'nor
 const SOLO: readonly StepKind[] = ['targetSize', 'stripExif', 'watermark', 'capFps', 'normalize', 'extractPagesAsImages'];
 const VIDEO_CODECS: readonly string[] = ['hevc', 'x265', 'av1', 'webm'];
 
+/** `PipelineStep.isProcessingStep`: a step that encodes the file (not a media step such as `removeAudio`). */
+export const isEncodingStep = (step: PipelineStep) => PROCESSING.includes(stepKind(step));
 export const isProcessing = (step: PipelineStep) => PROCESSING.includes(stepKind(step)) || MEDIA.includes(stepKind(step));
 /** `PipelineStep.location`: processing steps only. */
 export const stepLocation = (step: PipelineStep) => { const [kind, p] = stepEntry(step); return PROCESSING.includes(kind) ? (p as { location: string }).location : undefined; };

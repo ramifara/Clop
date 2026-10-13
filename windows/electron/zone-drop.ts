@@ -1,7 +1,12 @@
 import { MAX_BATCH_FILES, type ScanOptions } from '../core/batch/scan';
 import type { ClopFileType, Pipeline, PresetZone } from '../core/pipeline/model';
 import type { Stored } from '../core/pipeline/codec';
-import { zoneTakes, zoneTarget } from '../core/pipeline/zones';
+import { isEncodingStep } from '../core/pipeline/processing';
+import { skipsPreOptimisation } from '../core/pipeline/triggers';
+import { zonePipeline, zoneTakes, zoneTarget } from '../core/pipeline/zones';
+import type { MediaKind } from '../core/media/types';
+import type { ItemAutomation } from './items';
+import { attachedAutomation, type AutomationOptions } from './pipelines';
 import { expandDroppedFolders, splitFolders } from './dropped';
 
 // A drop on a preset zone (DropZonePresetsViewDelegate.performDrop on macOS) always runs the zone's pipeline on what was dropped.
@@ -40,3 +45,19 @@ export async function planZoneDrop(settings: ZoneDropSettings, id: unknown, file
  * macOS, `wantsPipelineLookup`), or a preset zone's, which always runs; Shift then only makes its optimisation aggressive.
  */
 export const dropRunsPipelines = ({ aggressive, zone }: { aggressive: boolean; zone?: unknown }) => zone !== undefined || !aggressive;
+
+/**
+ * Whether a zone's pipeline starts from the dropped file rather than from Clop's usual optimisation: when it says so (`skipOptimisation`,
+ * or it leads with a re-encode), and also when any step encodes the file itself, as `skipOptimiseAndRunPipelineIfEncoding` decides
+ * on macOS, so an `optimise`, `watermark` or `stripExif` later in the pipeline does not encode the file a second time.
+ */
+export const zoneSkipsOptimisation = (pipeline: Pipeline) => skipsPreOptimisation(pipeline) || pipeline.steps.some(isEncodingStep);
+
+/**
+ * The automation of a file of `kind` dropped on the zone `id`: the zone's pipeline as it is in `settings` now (refused for a zone that
+ * cannot run or is for another type). When the pipeline did nothing (a filter left the file out), the drop is optimised as usual.
+ */
+export function zoneAutomation(settings: ZoneDropSettings, id: unknown, kind: MediaKind, options: Omit<AutomationOptions, 'context' | 'fallback' | 'skipOptimisation'>): ItemAutomation {
+  const pipeline = zonePipeline(settings.presetZones, settings.savedPipelines, id, kind);
+  return attachedAutomation([pipeline], { ...options, context: { kind }, fallback: true, skipOptimisation: zoneSkipsOptimisation(pipeline) })!;
+}

@@ -12,8 +12,6 @@ import { decodePipelines, decodePresetZones } from '../core/pipeline/codec';
 import { FakeEffects } from '../core/pipeline/executor.fixtures';
 import { referenceTo, type Pipeline, type PresetZone } from '../core/pipeline/model';
 import { parseSteps } from '../core/pipeline/parser';
-import { skipsPreOptimisation } from '../core/pipeline/triggers';
-import { zonePipeline } from '../core/pipeline/zones';
 import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { SettingsStore } from '../core/settings/store';
 import { needTools } from '../core/testing';
@@ -21,8 +19,8 @@ import { Workdir } from '../core/workdir';
 import { mediaKind } from './clipboard';
 import { EditorService } from './editor';
 import { ItemEngine } from './items';
-import { attachedAutomation, type PipelineHost } from './pipelines';
-import { dropRunsPipelines, planZoneDrop, type ZoneDropSettings } from './zone-drop';
+import type { PipelineHost } from './pipelines';
+import { dropRunsPipelines, planZoneDrop, zoneAutomation, zoneSkipsOptimisation, type ZoneDropSettings } from './zone-drop';
 
 const balanced = { mode: 'balanced', format: 'auto', scale: 1 } as const;
 const pipeline = (id: string, text: string, extra: Partial<Pipeline> = {}): Pipeline => ({ id, name: id, steps: parseSteps(text), rawText: text, skipOptimisation: false, hideResult: false, ...extra });
@@ -110,12 +108,12 @@ async function setup(t: TestContext) {
     const ids: string[] = [];
     for (const file of plan.files) {
       ids.push(await engine.importPath(file, 'drop', aggressive ? { ...balanced, mode: 'aggressive' } : balanced, undefined, dropRunsPipelines({ aggressive, zone: id }) ? {
-        late: kind => ({ automation: attachedAutomation([zonePipeline(settings.presetZones, settings.savedPipelines, id, kind)], { host, context: { kind }, fallback: true }) }),
+        late: kind => ({ automation: zoneAutomation(settings, id, kind, { host }) }),
       } : {}));
     }
     return { plan, results: ids.map(id => ({ ...engine.get(id).result, output: engine.output(id) })) };
   }
-  return { root, engine, folder, drop };
+  return { root, engine, host, folder, drop };
 }
 
 test('a folder dropped on a zone running a library pipeline converts every file in it, leaves the originals alone, and restores', async t => {
@@ -131,17 +129,17 @@ test('a folder dropped on a zone running a library pipeline converts every file 
   assert.deepEqual([path.extname(f.engine.output(results[0].id)), f.engine.get(results[0].id).result.restored], ['.png', true], 'Restore gives back the original');
 });
 
-test('an inline pipeline and a pipeline stored as text only run on a zone; one that does not skip optimisation follows it', async t => {
+test('an inline pipeline and a pipeline stored as text only run on a zone; one that does not encode follows the usual optimisation', async t => {
   const f = await setup(t); if (!f) return;
   const dir = await f.folder('Shots', ['a.png']);
   // As the settings file stores it: no steps, only the text the user wrote.
   const [textOnly] = decodePresetZones([{ id: 'Text', name: 'Text', icon: 'photo', type: 'image', pipeline: { id: 'T', rawText: 'convert(to: webp)', skipOptimisation: true } }]) as PresetZone[];
   assert.equal(textOnly.pipeline.steps.length, 1, 'the text is read into steps');
-  const settings: ZoneDropSettings = { presetZones: [textOnly, zone('Inline', undefined, pipeline('I', 'stripExif'))], savedPipelines: [] };
+  const settings: ZoneDropSettings = { presetZones: [textOnly, zone('Inline', undefined, pipeline('I', 'copyToClipboard'))], savedPipelines: [] };
   const [converted] = (await f.drop(settings, 'Text', [path.join(dir, 'a.png')])).results;
   assert.deepEqual([converted.status, converted.format], ['ready', 'webp']);
   // A pipeline that does not skip optimisation runs on the optimised file, aggressive with Shift.
-  assert.equal(skipsPreOptimisation((settings.presetZones[1] as PresetZone).pipeline), false);
+  assert.equal(zoneSkipsOptimisation((settings.presetZones[1] as PresetZone).pipeline), false);
   const [optimised] = (await f.drop(settings, 'Inline', [path.join(dir, 'a.png')], true)).results;
   assert.deepEqual([optimised.status, optimised.format, optimised.options.mode], ['ready', 'png', 'aggressive'], optimised.error);
   assert.ok(optimised.outputBytes < optimised.originalBytes, 'optimised before the pipeline ran');
@@ -153,6 +151,26 @@ test('Shift on a zone whose pipeline converts still converts: the pipeline runs 
   const settings: ZoneDropSettings = { presetZones: [zone('W', 'image', WEBP)], savedPipelines: [] };
   const { results } = await f.drop(settings, 'W', [dir], true);
   assert.deepEqual(results.map(r => [r.status, r.format, r.options.mode]), [['ready', 'webp', 'aggressive'], ['ready', 'webp', 'aggressive']]);
+});
+
+test('a zone\'s pipeline that encodes the file anywhere starts from the dropped file, not from an optimised copy (skipOptimiseAndRunPipelineIfEncoding)', async t => {
+  for (const text of ['optimise(encoder: lossless)', 'copyToClipboard -> stripExif', 'if(nameContains: "a") -> watermark(image: "w.png")', 'convert(to: webp)']) assert.equal(zoneSkipsOptimisation(pipeline('P', text)), true, text);
+  for (const text of ['copyToClipboard', 'removeAudio', 'rename(to: "%f-small")']) assert.equal(zoneSkipsOptimisation(pipeline('P', text)), false, text);
+  assert.equal(zoneSkipsOptimisation(pipeline('P', 'copyToClipboard', { skipOptimisation: true })), true);
+  const f = await setup(t); if (!f) return;
+  const source = path.join(await f.folder('Encoding', ['a.png']), 'a.png');
+  const settings: ZoneDropSettings = { presetZones: [zone('Encodes', 'image', pipeline('E', 'copyToClipboard -> optimise(encoder: aggressive)')), zone('Copies', 'image', pipeline('C', 'copyToClipboard'))], savedPipelines: [] };
+  /** Whether the zone's pipeline was handed Clop's optimised file rather than a copy of the dropped one. */
+  async function startsOptimised(id: string) {
+    const automation = zoneAutomation(settings, id, 'image', { host: f!.host }), run = automation.run;
+    let optimised: string | undefined;
+    automation.run = async input => { optimised = input.optimised; return run(input); };
+    const item = await f!.engine.importPath(source, 'drop', balanced, undefined, { automation });
+    assert.equal(f!.engine.get(item).result.status, 'ready', f!.engine.get(item).result.error);
+    return optimised !== undefined;
+  }
+  assert.equal(await startsOptimised('Encodes'), false, 'a pipeline that optimises does not get an optimised file to optimise again');
+  assert.equal(await startsOptimised('Copies'), true, 'one that does not encode runs after the usual optimisation');
 });
 
 test('a pipeline made in the editor and set as a zone while the app runs is used by the next drop, with no restart', async t => {

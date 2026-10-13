@@ -31,7 +31,7 @@ import { guarded, recentClipboard, toTemplate, trayMenu, trayTooltip, trayVarian
 import { allPipelineChoices, appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
 import { seedBuiltinPipelines } from '../core/pipeline/builtins';
 import { EDITOR_SETTING_KEYS } from '../core/pipeline/editor-state';
-import { draggedType, tilesFor, zonePipeline } from '../core/pipeline/zones';
+import { draggedType, tilesFor } from '../core/pipeline/zones';
 import { EditorService } from './editor';
 import { PresetReveal } from './preset-reveal';
 import { pipelinesSkipOptimisation, type PipelinesOutcome } from '../core/pipeline/triggers';
@@ -64,7 +64,7 @@ import { applyCrop, cropSource, viewItems, parseCropRequest, parseCropView, pars
 import { compareSources, parseCompareView } from './compare';
 import { setupBatch } from './batch-window';
 import { expandDroppedFolders, splitFolders } from './dropped';
-import { dropRunsPipelines, planZoneDrop } from './zone-drop';
+import { dropRunsPipelines, planZoneDrop, zoneAutomation } from './zone-drop';
 import { MAX_BATCH_FILES } from '../core/batch/scan';
 import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
 import { expandHome } from '../core/settings/paths';
@@ -520,13 +520,13 @@ function afterPipelines(id: string | undefined, outcome: PipelinesOutcome, sourc
   for (const fork of outcome.forks) void makeRoom().then(() => engine.importPath(fork, source, defaults(), undefined, { automation: AS_IS })).catch(error => inform(message(error)));
 }
 /**
- * The pipelines attached to `source` (`clipboard` or `dropZone`) for a file of `kind`, or `pipelines` given outright (a preset
- * zone's), as an import's automation. A copied image skips the usual optimisation when every pipeline does (Images.swift); a
+ * The pipelines attached to `source` (`clipboard` or `dropZone`) for a file of `kind`, as an import's automation. A copied image skips the usual optimisation when every pipeline does (Images.swift); a
  * copied video, PDF or audio file is optimised first (ClopApp.swift), then the pipelines run. A drop skips it for every kind
  * (OptimisationUtils.swift) and is optimised anyway when no pipeline did anything.
  */
-function sourceAutomation(kind: MediaKind, source: 'clipboard' | 'dropZone', result: ItemResult['source'], app?: CopyingApp, pipelines = attachedPipelines(kind, source, settings, home)): ImportExtra | undefined {
+function sourceAutomation(kind: MediaKind, source: 'clipboard' | 'dropZone', result: ItemResult['source'], app?: CopyingApp): ImportExtra | undefined {
   let id: string | undefined;
+  const pipelines = attachedPipelines(kind, source, settings, home);
   const automation = attachedAutomation(pipelines, {
     host: pipelineHost, context: { kind, sourceApp: app }, fallback: true, alwaysOptimise: source === 'clipboard' && kind !== 'image', done: outcome => afterPipelines(id, outcome, result),
   });
@@ -561,9 +561,12 @@ async function importPaths(files: unknown, source: ItemResult['source'], { aggre
   return completed;
 }
 /** The pipelines of the drop zone (or of the preset zone `zone`), chosen for the kind the file turns out to be rather than by its name. */
-const dropExtra = (zone?: unknown): ImportExtra => ({
-  late: kind => sourceAutomation(kind, 'dropZone', 'drop', undefined, zone === undefined ? undefined : [zonePipeline(settings.presetZones, settings.savedPipelines, zone, kind)]),
-});
+const dropExtra = (zone?: unknown): ImportExtra => ({ late: kind => zone === undefined ? sourceAutomation(kind, 'dropZone', 'drop') : zoneExtra(zone, kind) });
+/** The pipeline of the preset zone `zone` for a dropped file of `kind`, as the settings are now. */
+function zoneExtra(zone: unknown, kind: MediaKind): ImportExtra {
+  let id: string | undefined;
+  return { automation: zoneAutomation(settings, zone, kind, { host: pipelineHost, done: outcome => afterPipelines(id, outcome, 'drop') }), staged: staged => { id = staged; } };
+}
 /**
  * What a drop on the drop zone does: with `useBatchModeForFolders` the batch window takes a pile of more files than
  * `batchModeFileCountThreshold` and each folder holding more than that; everything else, the files in smaller folders too, is optimised one by one.
