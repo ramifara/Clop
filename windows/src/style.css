@@ -63,29 +63,20 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .corner-notice button{border:0;background:transparent;color:inherit;align-self:flex-start;display:flex;padding:0}
 @keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 /*
- * The preset zones (`DropZonePresetsView`): while their key is down the drop zone's own tint, ring and hints give way to four slots of
- * glass inside the same box, 2 px apart, so the acrylic behind the zone shows through the seams. Outer corners follow the zone's, inner
- * ones stay small. The zone under the pointer turns peach with a red ring and its icon turns over, as on macOS; "Add preset" is half
- * the glass with a dashed mark, and an empty slot fainter still.
+ * The preset zones (`DropZonePresetsView`): while their key is down the drop zone's ring and hints give way to four soft tiles inside
+ * the same glass. Each tile owns a quarter of the zone for the pointer, margins included. The zone under the pointer turns peach with a
+ * red ring and its icon turns over, as on macOS. "Add preset" keeps the ink of a zone; an empty slot is muted.
  */
-.drop-target.zones{background:transparent;border-color:transparent;box-shadow:none;backdrop-filter:none}
-.preset-grid{position:absolute;inset:-1px;display:grid;grid-template:1fr 1fr/1fr 1fr;gap:2px}
-.preset-slot{position:relative;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:6px 6px 5px;border:0;border-radius:5px;background:var(--glass-solid);color:var(--glass-ink);box-shadow:inset 0 1px 0 var(--glass-edge),inset 0 0 0 1px var(--glass-line);transition:background .12s,box-shadow .12s}
-.preset-slot:nth-child(1){border-top-left-radius:var(--radius)}.preset-slot:nth-child(2){border-top-right-radius:var(--radius)}
-.preset-slot:nth-child(3){border-bottom-left-radius:var(--radius)}.preset-slot:nth-child(4){border-bottom-right-radius:var(--radius)}
-.acrylic .preset-slot{background:var(--glass)}
-.browser-preview .preset-slot{background:var(--glass);backdrop-filter:blur(30px) saturate(1.5)}
-.preset-slot:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
-.preset-icon{display:grid;place-items:center;width:28px;height:28px;font-size:21px;line-height:1;font-family:'Segoe UI Emoji','Segoe UI Symbol',sans-serif;transition:transform .35s cubic-bezier(.34,1.4,.64,1)}
-.preset-name{max-width:100%;font-size:10px;font-weight:600;line-height:1.2;text-align:center;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:anywhere}
-.slot-mark{display:grid;place-items:center;width:20px;height:20px;border:1.5px dashed currentColor;border-radius:5px;font:600 15px/1 var(--font)}
-.preset-slot.add{background:color-mix(in srgb,var(--glass-solid) 55%,transparent);color:var(--glass-muted)}
-.acrylic .preset-slot.add,.browser-preview .preset-slot.add{background:color-mix(in srgb,var(--glass) 50%,transparent)}
-.preset-slot.add .preset-name{font-weight:500}
-.preset-slot.empty{background:color-mix(in srgb,var(--glass-solid) 30%,transparent);color:var(--glass-muted);box-shadow:inset 0 0 0 1px var(--glass-line)}
-.acrylic .preset-slot.empty,.browser-preview .preset-slot.empty{background:color-mix(in srgb,var(--glass) 28%,transparent)}
-.preset-slot.empty>*{opacity:.6}.preset-slot.empty .preset-name{font-weight:500}
-.preset-grid button.preset-slot:is(:hover,.over){background:var(--zone-hover);color:var(--glass-ink);box-shadow:inset 0 1px 0 var(--glass-edge),inset 0 0 0 1.5px var(--zone-hover-line)}
+.preset-grid{position:absolute;inset:0;display:grid;grid-template:1fr 1fr/1fr 1fr;gap:6px;padding:9px 10px}
+.preset-slot{min-width:0;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:5px 6px 4px;border:0;border-radius:13px;background:var(--zone-tile);color:var(--glass-ink);box-shadow:var(--zone-tile-shadow);transition:background .12s,box-shadow .12s,color .12s}
+.preset-slot:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.preset-icon{display:grid;place-items:center;width:24px;height:24px;font-size:19px;line-height:1;font-family:'Segoe UI Emoji','Segoe UI Symbol',sans-serif;transition:transform .35s cubic-bezier(.34,1.4,.64,1)}
+.preset-name{max-width:100%;font-size:10px;font-weight:500;line-height:1.2;text-align:center;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:anywhere}
+.slot-mark{display:block}
+.preset-slot.add{color:var(--zone-add-ink)}
+.preset-slot.empty{color:var(--zone-empty-ink);box-shadow:var(--zone-tile-shadow-flat)}
+.preset-slot.empty .preset-icon{color:var(--zone-empty-mark)}.preset-slot.empty .preset-name{font-weight:400}
+.preset-grid button.preset-slot:is(:hover,.over){background:var(--zone-hover);color:var(--glass-ink);box-shadow:var(--zone-tile-shadow),inset 0 0 0 1.5px var(--zone-hover-line)}
 .preset-grid button.preset-slot:is(:hover,.over) .preset-icon{transform:perspective(70px) rotateY(170deg)}
 .drop-hints{display:flex;flex-direction:column;align-items:center}
 .welcome-card{pointer-events:auto;width:196px;display:flex;flex-direction:column;gap:6px;padding:12px;border-radius:14px;color:var(--glass-ink);background:var(--glass-solid);border:1px solid var(--glass-line);box-shadow:inset 0 1px 0 var(--glass-edge),var(--shadow-pop);backdrop-filter:blur(20px);font-size:10px;line-height:1.4}

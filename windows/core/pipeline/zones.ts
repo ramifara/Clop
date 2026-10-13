@@ -7,8 +7,8 @@ import { resolveRunnable, type ClopFileType, type Pipeline, type PresetZone } fr
 // DOM, so the window and the tests agree.
 
 export const MAX_TILES = 4;
-/** The grid: two columns and two rows filling the drop zone, `gap` CSS pixels between slots (`Grid(horizontalSpacing: 2, verticalSpacing: 2)`). */
-export const TILE = { columns: 2, rows: 2, gap: 2 } as const;
+/** The grid: two columns and two rows inside the drop zone. */
+export const TILE = { columns: 2, rows: 2 } as const;
 
 export interface PresetTile { id: string; name: string; icon: string; type?: ClopFileType }
 export interface TileSet { tiles: PresetTile[] }
@@ -40,13 +40,12 @@ export const slotsFor = ({ tiles }: TileSet): Slot[] =>
   Array.from({ length: MAX_TILES }, (_, index): Slot => index < tiles.length ? { kind: 'zone', tile: tiles[index] } : index === tiles.length ? { kind: 'add' } : { kind: 'empty' });
 
 /**
- * The slot under a point, relative to the top-left corner of a grid `width` by `height`. A gap between slots belongs to the slot before
- * it, so a drag that crosses the gap never leaves every slot; outside the grid there is none.
+ * The slot under a point, relative to the top-left corner of the drop zone, `width` by `height`. Each slot owns its quarter of the
+ * zone, margins and gaps included, so a drag between slots or along the zone's edge always has one under it; outside the zone there is none.
  */
 export function tileAt(x: number, y: number, width: number, height: number): number | undefined {
   if (!(x >= 0 && y >= 0 && x < width && y < height)) return undefined;
-  const pitchX = (width + TILE.gap) / TILE.columns, pitchY = (height + TILE.gap) / TILE.rows;
-  return Math.min(TILE.rows - 1, Math.floor(y / pitchY)) * TILE.columns + Math.min(TILE.columns - 1, Math.floor(x / pitchX));
+  return Math.floor(y / (height / TILE.rows)) * TILE.columns + Math.floor(x / (width / TILE.columns));
 }
 
 /** What dropping on zone `id` runs for a file of `kind`; refuses a zone that is gone, cannot run, or is for another type. */

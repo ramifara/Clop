@@ -182,12 +182,20 @@ function PresetGrid({ presets, run }: { presets: PresetTiles; run: Run }) {
       if (files.length) void run(() => api.runPreset(tile.id, files), `Running ${tile.name}`); else void run(async () => { throw new Error('Drop files on a preset zone.'); });
     }}>
     {slots.map((slot, index) => {
-      if (slot.kind === 'empty') return <div key={`empty-${index}`} className="preset-slot empty" aria-hidden="true"><span className="preset-icon"><span className="slot-mark"/></span><span className="preset-name">No preset</span></div>;
+      if (slot.kind === 'empty') return <div key={`empty-${index}`} className="preset-slot empty" aria-hidden="true"><span className="preset-icon"><SlotMark/></span><span className="preset-name">No preset</span></div>;
       const add = slot.kind === 'add', name = add ? 'Add preset' : slot.tile.name;
       return <button key={add ? 'add' : slot.tile.id} type="button" className={`preset-slot${add ? ' add' : ''}${hover === index ? ' over' : ''}`}
         title={add ? 'Add a preset zone' : `Drop here to run ${name}`} onClick={() => void run(() => api.window('presets'))}>
-        <span className="preset-icon" aria-hidden="true">{add ? <span className="slot-mark">+</span> : glyph(slot.tile.icon)}</span><span className="preset-name">{name}</span>
+        <span className="preset-icon" aria-hidden="true">{add ? <SlotMark add/> : glyph(slot.tile.icon)}</span><span className="preset-name">{name}</span>
       </button>;
     })}
   </div>;
+}
+
+/** The dashed square of an empty slot, with a plus on the one that adds a zone (`square.dashed`, `plus.square.dashed`). */
+function SlotMark({ add = false }: { add?: boolean }) {
+  return <svg className="slot-mark" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
+    <rect x="1.75" y="1.75" width="16.5" height="16.5" rx="4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3.4 2.4" strokeDashoffset="1.4"/>
+    {add && <path d="M10 6.2v7.6M6.2 10h7.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>}
+  </svg>;
 }

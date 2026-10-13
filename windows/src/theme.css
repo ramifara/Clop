@@ -22,8 +22,11 @@
   /* The glass of the floating surfaces: a tint over the acrylic window behind it, or over the desktop where Windows has no acrylic. */
   --glass: #f6f3f0b8; --glass-solid: #f3f0ede6; --glass-edge: #ffffffb3; --glass-line: #3a2f3824; --glass-ink: #2b272d; --glass-muted: #463e45;
   --button-glass: #ebe5d8e0; --button-glass-hover: #fff9e9; --button-glass-ink: #4c444a;
-  /* The preset zone under a dragged file: Clop's peach (`Color.peach`), ringed in its red. */
-  --zone-hover: #ffdca2eb; --zone-hover-line: #dc3a55a6;
+  /* The preset zones inside the drop zone: soft tiles a shade off the glass, and the zone under a dragged file in Clop's peach
+     (`Color.peach`) ringed in its red. "Add preset" is the stronger of the empty slots. */
+  --zone-tile: #fcfbf9e6; --zone-tile-shadow: 0 0 0 1px #3a2f3814, 0 1px 2px #2b1f2a12, 0 3px 8px #2b1f2a14; --zone-tile-shadow-flat: 0 0 0 1px #3a2f3812, 0 1px 2px #2b1f2a0d;
+  --zone-add-ink: #3a343a; --zone-empty-ink: #716872; --zone-empty-mark: #7d747f;
+  --zone-hover: #ffdca2f0; --zone-hover-line: #dc3a55a6;
   --code-step-processing: #1d6a43; --code-step-file: #8a4b0b; --code-step-filter: #6a3d9a; --code-step-media: #0d5f8a; --code-step-action: #a02f5a;
   --code-param: #7d6a8a; --code-value: #1f5f7a; --code-punct: #8c8290;
 }
@@ -44,7 +47,9 @@
     --shadow-pop: 0 2px 6px #00000059, 0 14px 34px #00000080;
     --glass: #211d23b3; --glass-solid: #241f26e6; --glass-edge: #ffffff1f; --glass-line: #ffffff1a; --glass-ink: #f2ecf3; --glass-muted: #c9bfcb;
     --button-glass: #2d2832e0; --button-glass-hover: #433c48; --button-glass-ink: #f1e8da;
-    --zone-hover: #57402ceb; --zone-hover-line: #ff6079a6;
+    --zone-tile: #ffffff12; --zone-tile-shadow: inset 0 1px 0 #ffffff14, 0 0 0 1px #ffffff12, 0 2px 6px #00000040; --zone-tile-shadow-flat: inset 0 1px 0 #ffffff0d, 0 0 0 1px #ffffff0d;
+    --zone-add-ink: #e4dce6; --zone-empty-ink: #a99fab; --zone-empty-mark: #968c98;
+    --zone-hover: #5a422ef0; --zone-hover-line: #ff6079a6;
     --code-step-processing: #7fd3a2; --code-step-file: #f0b46a; --code-step-filter: #c6a2ef; --code-step-media: #79c2ec; --code-step-action: #f08cb4;
     --code-param: #c0a9cf; --code-value: #8fd0ea; --code-punct: #8a808c;
   }

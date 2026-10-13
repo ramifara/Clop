@@ -44,11 +44,11 @@ test('a zone that cannot run has no tile: its pipeline is deleted, unreadable, o
   assert.deepEqual(tilesFor(zones, saved, 'image').tiles.map(tile => tile.id), ['OK']);
 });
 
-test('the grid fills the drop zone in two rows of two, and a point finds its slot, gaps included', () => {
-  // The drop zone is 196 by 148: slots of 97 by 73 with a 2 px gap.
+test('the grid sits in the drop zone in two rows of two, and every point of the zone finds its slot, margins and gaps included', () => {
+  // The drop zone is 196 by 148; each slot owns a quarter of it.
   const hit = (x: number, y: number) => tileAt(x, y, 196, 148);
-  assert.deepEqual([hit(0, 0), hit(96, 72), hit(99, 0), hit(0, 75), hit(195, 147)], [0, 0, 1, 2, 3]);
-  assert.deepEqual([hit(97.5, 10), hit(10, 73.5)], [0, 0], 'the gap after a slot belongs to it');
+  assert.deepEqual([hit(0, 0), hit(97, 73), hit(98, 0), hit(0, 74), hit(195, 147)], [0, 0, 1, 2, 3]);
+  assert.deepEqual([hit(2, 2), hit(194, 2), hit(2, 146)], [0, 1, 2], 'the margin around the slots belongs to the nearest one');
   for (const [x, y] of [[-1, 5], [5, -1], [196, 5], [5, 148], [NaN, 0], [0, Infinity]]) assert.equal(hit(x, y), undefined, `${x}, ${y} is outside`);
   assert.equal(tileAt(5, 5, 0, 0), undefined, 'no grid, no slot');
 });
