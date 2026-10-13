@@ -48,6 +48,9 @@ export function folderPlacement(file: string, kind: MediaKind, env: () => Folder
     // replaced, or else gets the untouched original, as macOS restores a templated copy.
     if (backup) { await copyTo(backup, file); await mark(file); if (!samePath(placed, file)) await vacate(placed); }
     else if (replaced.has(key(placed))) { await vacate(placed); keeps = false; }
+    // A conversion beside the file (`shot.webp` by `shot.png`) left the original as it was: the converted copy goes, rather than
+    // taking the original's bytes under a name that says another format.
+    else if (path.extname(placed).toLowerCase() !== path.extname(file).toLowerCase()) { await vacate(placed); keeps = false; }
     else { target = placed; await copyTo(file, placed); await mark(placed); }
     if (resume && keeps) { placed = target; stamp = await stat(target).then(({ size, mtimeMs }) => ({ size, mtimeMs }), () => undefined); }
     else { placed = undefined; stamp = undefined; }

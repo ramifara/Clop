@@ -81,7 +81,7 @@ export interface ImportExtra {
   /** Stops the import while it stages and the optimisation after it, as Stop does. */
   signal?: AbortSignal;
   /** More of the above for what the file turns out to be, once its content has been read: a dropped file's name can lie about its kind. */
-  late?: (kind: MediaKind) => Pick<ImportExtra, 'staged' | 'automation'> | undefined;
+  late?: (kind: MediaKind) => Pick<ImportExtra, 'staged' | 'automation' | 'placement'> | undefined;
 }
 /** A change to a result's current file, writing into `outputDir` under `name`. */
 type Edit = (input: string, outputDir: string, name: string, signal: AbortSignal) => Promise<MediaOutput>;
@@ -157,7 +157,7 @@ export class ItemEngine extends EventEmitter {
       entry = kind === 'image' ? await this.stageImage(staged, directory, result, signal) : await this.stageMedia(staged, directory, { ...result, kind }, signal);
       signal.throwIfAborted();
       const late = extra.late?.(kind);
-      entry.placement = extra.placement; entry.automation = extra.automation ?? late?.automation;
+      entry.placement = extra.placement ?? late?.placement; entry.automation = extra.automation ?? late?.automation;
       this.entries.set(id, entry);
       this.emit('add', id); extra.staged?.(id); late?.staged?.(id);
       this.changed();
