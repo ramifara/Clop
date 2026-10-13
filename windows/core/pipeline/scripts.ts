@@ -108,14 +108,21 @@ export function decodeOutput(stdout: Buffer) {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(stdout); } catch { return new TextDecoder('windows-1252').decode(stdout); }
 }
 
-/** The watched folder (any type) that holds `file`, if one does. */
-function watchedFolderHolding(run: RunState, file: string) {
+/**
+ * The watched folder that holds `file`, if one does. A program counts when any watched folder holds it. A script counts only
+ * when the folder is being watched right now (its type is switched on and automatic optimisations are not paused) and also holds
+ * the file the pipeline is working on, which is the one that just arrived there: a script kept in the Desktop folder still runs
+ * for a clipboard or drop pipeline, or a file that comes from elsewhere.
+ */
+function watchedFolderHolding(run: RunState, file: string, program: boolean) {
   const { settings, home, platform = process.platform } = run.opts.env;
   const fold = (value: string) => platform === 'win32' ? value.toLowerCase() : value;
-  return [...settings.imageDirs, ...settings.videoDirs, ...settings.pdfDirs, ...settings.audioDirs].map(dir => path.resolve(expandHome(dir, home))).find(dir => {
-    const relative = path.relative(fold(dir), fold(path.resolve(file)));
-    return !!relative && !relative.startsWith('..') && !path.isAbsolute(relative);
-  });
+  const inside = (dir: string, target: string) => { const relative = path.relative(fold(dir), fold(path.resolve(target))); return !!relative && !relative.startsWith('..') && !path.isAbsolute(relative); };
+  const dirs = program ? [...settings.imageDirs, ...settings.videoDirs, ...settings.pdfDirs, ...settings.audioDirs]
+    : settings.pauseAutomaticOptimisations ? []
+      : [...settings.enableAutomaticImageOptimisations ? settings.imageDirs : [], ...settings.enableAutomaticVideoOptimisations ? settings.videoDirs : [],
+        ...settings.enableAutomaticPDFOptimisations ? settings.pdfDirs : [], ...settings.enableAutomaticAudioOptimisations ? settings.audioDirs : []];
+  return dirs.map(dir => path.resolve(expandHome(dir, home))).find(dir => inside(dir, file) && (program || inside(dir, run.original)));
 }
 
 async function runFile(run: RunState, script: string | undefined, code: string | undefined, label: string) {
@@ -123,10 +130,10 @@ async function runFile(run: RunState, script: string | undefined, code: string |
   const input = run.current, name = script ? path.basename(script) : 'inline code';
   if (script) {
     if (!await isFile(script)) throw new Error(`Script not found: ${script}`);
-    if (/\.(exe|com)$/i.test(script)) {
-      const watched = watchedFolderHolding(run, script);
-      if (watched) throw new Error(`${script} is inside the watched folder ${watched}. A program loads DLLs from its own folder, so a file arriving there could run inside it. Move the program out of the watched folder.`);
-    }
+    // Files arrive in a watched folder unmarked (synced, unzipped, copied from a share), so nothing there runs: a script could be replaced, and a program loads DLLs from its own folder.
+    const program = /\.(exe|com)$/i.test(script), watched = watchedFolderHolding(run, script, program);
+    if (watched && program) throw new Error(`${script} is inside the watched folder ${watched}. A program loads DLLs from its own folder, so a file arriving there could run inside it. Move the program out of the watched folder.`);
+    if (watched) throw new Error(`${script} is inside the watched folder ${watched}. Files arrive there without Windows marking where they came from, so Clop does not run a script from the folder a file arrived in. Move the script out of the watched folder.`);
     if (await markedAsDownloaded(script)) throw new Error(`${script} was downloaded from the internet. Check it, then unblock it in its Properties (or with Unblock-File) to run it.`);
   }
   const { command, args, verbatim } = script ? await scriptCommand(script, input) : await inlineCommand(code!, input);
@@ -145,6 +152,8 @@ async function runFile(run: RunState, script: string | undefined, code: string |
   // One absolute path to another existing file of the kind being processed (or an unknown kind) carries on. Several lines
   // are the script's own log; one line that names no usable file is reported, so a mangled path does not go unnoticed.
   if (!printed || /[\r\n]/.test(printed) || (path.isAbsolute(printed) && samePath(printed, input))) return;
+  run.expanded(printed);
+  if (path.isAbsolute(printed)) run.local(path.resolve(printed));
   if (!path.isAbsolute(printed) || !await isFile(printed)) { run.warnings.push(`Script '${name}' printed a path that was not found, so the pipeline carried on with ${input}: ${printed}`); return; }
   const kind = await detectKind(printed, { signal: run.signal }).catch(() => undefined);
   if (!kind || kind === run.fileType) run.current = path.resolve(printed);
@@ -159,6 +168,8 @@ export async function runScript(run: RunState, { path: scriptPath, code }: { pat
   if (code?.trim()) return runFile(run, undefined, code, 'runScript');
   const script = run.resolve(scriptPath ?? '');
   if (!path.isAbsolute(script)) throw new Error(`runScript needs the full path of a script, such as "%P/fix.ps1" or "~/scripts/fix.ps1", not "${script}".`);
+  run.expanded(script);
+  run.local(path.resolve(script));
   return runFile(run, path.resolve(script), undefined, 'runScript');
 }
 

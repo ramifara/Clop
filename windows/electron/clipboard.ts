@@ -7,6 +7,18 @@ import type { ItemResult } from '../src/types';
 import type { ClipboardChange } from './pickup';
 import { ignoredApp } from './apps';
 
+/**
+ * Whether results go on the clipboard as a file list. A single image goes on as pixels, with its file only when `copyImageFilePath` is on;
+ * anything else, several results, or `files` (Share, which puts the file itself on) always carries the files.
+ */
+export const copiesFiles = ({ allImages, count, copyImageFilePath, extra = 0, files = false }: { allImages: boolean; count: number; copyImageFilePath: boolean; extra?: number; files?: boolean }) => files || !allImages || count > 1 || copyImageFilePath || extra > 0;
+
+/**
+ * Whether a poll of the clipboard (the fallback when the Windows helper is not running) lets a change go by because "pause for the next
+ * clipboard event" is armed. Only a change Clop would have optimised counts, so a poll that finds nothing new leaves the pause armed.
+ */
+export const pausedForPoll = (plan: { type: string }, consume: () => boolean) => ['files', 'image', 'url'].includes(plan.type) && consume();
+
 /** `DEFAULT_NAME_TEMPLATE` in SettingsView.swift, for clipboard images when the custom template is empty. */
 export const DEFAULT_NAME_TEMPLATE = 'clop_%y-%m-%d_%i';
 const MAX_FILES = 64, MAX_PATH = 32_767;
@@ -49,6 +61,11 @@ export function clipboardFiles(files: readonly string[], { manual, bitmap, setti
   const take = wanted.filter(file => manual || isLocalPath(file, platform));
   return { files: take, media: media.length > 0, remote: wanted.filter(file => !take.includes(file)) };
 }
+
+/** The most files of a copied list one optimisation takes. */
+const LIST_LIMIT = 20;
+/** Splits a copied list into the files to optimise and everything else, which goes back on the clipboard as it was. */
+export const splitClipboardList = (files: readonly string[], rest: readonly string[] = []) => ({ take: files.slice(0, LIST_LIMIT), rest: [...files.slice(LIST_LIMIT), ...rest] });
 
 export type ClipboardText = { type: 'path'; path: string } | { type: 'image'; bytes: Buffer; ext: string } | { type: 'url'; url: string };
 const DATA_URL = /^(?:url\(\s*["']?)?data:image\/([a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)["']?\s*\)?$/i;
@@ -162,7 +179,8 @@ export function copyingApp({ owner, aumid }: Pick<ClipboardSnapshot, 'owner' | '
   if (owner) return { id: owner, name: owner.split(/[\\/]/).pop()!.replace(/\.exe$/i, '') };
 }
 export type ClipboardPlan =
-  | { type: 'files'; files: string[]; sequence?: number; text?: boolean; app?: CopyingApp }
+  /** `rest` is the copied list's other entries, which go back on the clipboard beside the results. */
+  | { type: 'files'; files: string[]; rest?: string[]; sequence?: number; text?: boolean; app?: CopyingApp }
   | { type: 'image'; bytes: Buffer; ext: string; sequence?: number; app?: CopyingApp }
   | { type: 'url'; url: string; sequence?: number }
   /** The clipboard changed while it was read; look at the newer change instead. */
@@ -181,6 +199,8 @@ export async function clipboardIntake(change: ClipboardSnapshot | undefined, man
   let snapshot = change;
   if (!snapshot) {
     snapshot = await sources.read();
+    // Without the helper there is no way to tell whether the app marked the content private, so on Windows nothing is read.
+    if (!snapshot && (sources.platform ?? process.platform) === 'win32') return manual ? { type: 'none', notice: 'The Windows helper is not running, so Clop cannot tell whether this copy is private. Try again once it is back.' } : none;
     // Content its app marked private, as password managers do, is never read, even on request.
     if (snapshot?.transient) return manual ? { type: 'none', notice: 'The app that copied this marked it private, so Clop leaves it alone.' } : none;
     if (!manual && snapshot?.owned) return none;
@@ -197,7 +217,8 @@ export async function clipboardIntake(change: ClipboardSnapshot | undefined, man
       if (hash === memory.fingerprint) return none;
       memory.fingerprint = hash;
     }
-    return { type: 'files', files: listed.files, sequence, ...app };
+    const rest = (snapshot?.paths ?? []).filter(file => !listed.files.includes(file));
+    return { type: 'files', files: listed.files, ...(rest.length ? { rest } : {}), sequence, ...app };
   }
   if (listed.media && !manual) {
     // Another copy came between, so copying the last optimised file again optimises it again.
@@ -243,9 +264,10 @@ export class ClipboardIntake {
   private chain: Promise<void> = Promise.resolve();
   private running = new Set<Promise<void>>();
   constructor(private report: (error: unknown) => void) {}
-  /** Queues `read`, which returns the import to start, if any. Resolves once the read is done. */
-  submit(read: () => Promise<(() => Promise<unknown>) | void>): Promise<void> {
+  /** Queues `read`, which returns the import to start, if any. Resolves once the read is done. `wanted` is asked again when the read's turn comes, since settings can change while it waits. */
+  submit(read: () => Promise<(() => Promise<unknown>) | void>, wanted: () => boolean = () => true): Promise<void> {
     const step = this.chain.then(async () => {
+      if (!wanted()) return;
       const work = await read();
       if (!work) return;
       const job: Promise<void> = work().then(() => {}, this.report).finally(() => this.running.delete(job));

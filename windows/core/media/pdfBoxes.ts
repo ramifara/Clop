@@ -71,7 +71,9 @@ export async function cropPDF(input: string, outputDir: string, opts: PDFEditOpt
       const r = clampRect(rotateCropRect(rect, rotation(page)));
       page.setCropBox(media.x + media.width * r.x, media.y + media.height * (1 - r.y - r.height), media.width * r.width, media.height * r.height);
     } else {
-      const r = cropToAspectRatio(media.width, media.height, opts as PageFit);
+      // A forced orientation is the displayed page's, and a page turned a quarter is sideways in the unrotated box the crop is made in.
+      const fit = opts as PageFit, sideways = rotation(page) % 180 !== 0;
+      const r = cropToAspectRatio(media.width, media.height, sideways ? { ...fit, alwaysPortrait: fit.alwaysLandscape, alwaysLandscape: fit.alwaysPortrait } : fit);
       page.setCropBox(media.x + r.x, media.y + r.y, r.width, r.height);
     }
   });

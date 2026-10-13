@@ -54,7 +54,7 @@ test('Zed: the member lands in context_servers and every comment and trailing co
 
 test('VS Code: a tab-indented mcp.json with comments gets a stdio server under servers', async t => {
   const p = await profile(t), original = await p.place('vscode', 'vscode-mcp.json');
-  const expected = original.replace('\t"servers": {\n', `\t"servers": {\n\t\t"clop": {\n\t\t  "type": "stdio",\n\t\t  "command": ${Q},\n\t\t  "args": ["mcp", "serve"]\n\t\t},\n`);
+  const expected = original.replace('\t"servers": {\n', `\t"servers": {\n\t\t"clop": {\n\t\t\t"type": "stdio",\n\t\t\t"command": ${Q},\n\t\t\t"args": ["mcp", "serve"]\n\t\t},\n`);
   await roundTrip(p, 'vscode', original, expected);
   assert.equal(p.client('vscode-insiders').configs[0].path, path.join(p.folders.appData, 'Code - Insiders', 'User', 'mcp.json'));
 });
@@ -149,6 +149,47 @@ test('files that cannot be edited safely are refused and left alone', async t =>
   assert.equal(await configState(p.client('claude-code')), 'unusable');
 });
 
+test('the entry is written in the file\'s own indent: four spaces or tabs', async t => {
+  const p = await profile(t);
+  const file = configOf(p.client('cursor')).path;
+  await mkdir(path.dirname(file), { recursive: true });
+  for (const unit of ['    ', '\t']) {
+    const before = `{\n${unit}"theme": "x",\n${unit}"mcpServers": {\n${unit}${unit}"other": { "command": "x" }\n${unit}}\n}\n`;
+    await writeFile(file, before);
+    await installClient(p.client('cursor'), SERVER);
+    const entry = [`"clop": {`, `${unit}"command": ${Q},`, `${unit}"args": ["mcp", "serve"]`, '},'].map(line => `${unit}${unit}${line}`).join('\n');
+    assert.equal(await readFile(file, 'utf8'), before.replace(`${unit}${unit}"other"`, `${entry}\n${unit}${unit}"other"`));
+    await removeClient(p.client('cursor'));
+    assert.equal(await readFile(file, 'utf8'), before);
+  }
+});
+
+test('the indent step is read from a key, never from the lines of a comment block', async t => {
+  const p = await profile(t);
+  const file = configOf(p.client('cursor')).path;
+  await mkdir(path.dirname(file), { recursive: true });
+  const before = '/*\n * Notes on this file\n */\n{\n    "mcpServers": {\n        "other": { "command": "x" }\n    }\n}\n';
+  await writeFile(file, before);
+  await installClient(p.client('cursor'), SERVER);
+  const written = await readFile(file, 'utf8');
+  assert.match(written, new RegExp(`\n {8}"clop": \\{\n {12}"command": `), 'four-space steps, not the comment\'s one space');
+  await removeClient(p.client('cursor'));
+  assert.equal(await readFile(file, 'utf8'), before);
+});
+
+test('a member whose key is written with escapes is found as the parser reads it', async t => {
+  const p = await profile(t);
+  const file = configOf(p.client('cursor')).path;
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, '{ "mcpServers": { "cl\\u006fp": { "command": "old" }, "other": { "command": "x" } } }\n');
+  assert.equal(await configState(p.client('cursor')), 'installed');
+  await installClient(p.client('cursor'), SERVER);
+  assert.deepEqual(Object.keys(readObject(await readFile(file, 'utf8')).mcpServers as object), ['clop', 'other'], 'replaced in place, not added twice');
+  assert.deepEqual(await installedCommand(p.client('cursor')), SERVER);
+  await removeClient(p.client('cursor'));
+  assert.deepEqual(Object.keys(readObject(await readFile(file, 'utf8')).mcpServers as object), ['other']);
+});
+
 test('a JSON file that is not valid JSON is refused whole: nothing is written, not even a backup', async t => {
   const p = await profile(t);
   const cases: [string, string][] = [
@@ -157,6 +198,7 @@ test('a JSON file that is not valid JSON is refused whole: nothing is written, n
     ['zed', '{\n  "theme": "One",\n  "context_servers": { "other": { "command": "x" } },\n}} oops\n'],
     ['vscode', '{ "servers": { "other": { "command": "x" } } '],
     ['claude-code', '{ "mcpServers": { "clop": { "command": "old" }, } } {}'],
+    ['cursor', '{ "mcpServers": {} } /* never closed'],
   ];
   for (const [id, content] of cases) {
     const file = configOf(p.client(id)).path;
@@ -177,6 +219,19 @@ test('a key listed twice where Clop writes makes the file unusable', async t => 
     ['cursor', '{ "mcpServers": { "clop": { "command": "old" }, "clop": { "command": "older" } } }\n'],
     ['zed', '{ "context_servers": {}, // first\n  "context_servers": { "clop": { "command": "old" } } }\n'],
   ];
+  const layoutCases: [string, string][] = [
+    ['goose', 'extensions:\n  developer:\n    enabled: true\nextensions:\n  clop:\n    cmd: old\n'],
+    ['goose', 'extensions:\n  clop:\n    cmd: old\n  clop:\n    cmd: older\n'],
+  ];
+  for (const [id, content] of layoutCases) {
+    const file = configOf(p.client(id)).path;
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, content);
+    await assert.rejects(installClient(p.client(id), SERVER, { backups: p.backups }), /layout that can't be edited safely/, content);
+    await assert.rejects(removeClient(p.client(id), { backups: p.backups }), /layout that can't be edited safely/, content);
+    assert.equal(await readFile(file, 'utf8'), content);
+    assert.notEqual(await configState(p.client(id)), 'installed', content);
+  }
   for (const [id, content] of cases) {
     const file = configOf(p.client(id)).path;
     await mkdir(path.dirname(file), { recursive: true });

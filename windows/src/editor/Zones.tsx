@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { FILE_TYPES, type ClopFileType } from '../../core/pipeline/model';
 import type { EditorState, PipelineView, ZoneView } from '../../core/pipeline/editor-state';
 import { TYPE_NAMES } from './Library';
 import { ICON_NAMES, glyph } from './glyphs';
+import { zoneRowKey } from './guards';
 import type { Send } from './types';
 
 const serves = (pipeline: PipelineView, type: ClopFileType | undefined) => !pipeline.fileType || pipeline.fileType === type;
@@ -19,7 +20,7 @@ export function Zones({ state, send }: { state: EditorState; send: Send }) {
   return <div className="zones">
     <p className="explain">Drag a file and hold <kbd>Ctrl</kbd> or <kbd>Alt</kbd>: tiles for these zones show next to the drop target. Drop the file on a tile to optimise it and run that tile's pipeline. Up to four tiles show, those for the dragged file type first.</p>
     <ul className="zone-list" aria-label="Preset zones">
-      {state.zones.map((zone, index) => <ZoneRow key={`${zone.key}:${zone.revision}`} zone={zone} index={index} count={state.zones.length} library={library} send={send}/>)}
+      {state.zones.map((zone, index) => <ZoneRow key={zoneRowKey(zone)} zone={zone} index={index} count={state.zones.length} library={library} send={send}/>)}
       {!state.zones.length && <li className="empty">No preset zones yet.</li>}
     </ul>
     <form className="zone-add" onSubmit={event => { event.preventDefault(); void send({ type: 'zone-save', name: adding.name, icon: adding.icon, fileType: type, pipelineId }).then(reply => { if (reply && !reply.issues) setAdding({ ...adding, name: '' }); }); }}>
@@ -37,6 +38,8 @@ export function Zones({ state, send }: { state: EditorState; send: Send }) {
 
 function ZoneRow({ zone, index, count, library, send }: { zone: ZoneView; index: number; count: number; library: PipelineView[]; send: Send }) {
   const [name, setName] = useState(zone.name);
+  // Saved from elsewhere, the row keeps its place and follows the stored name.
+  useEffect(() => setName(zone.name), [zone.name]);
   if (!zone.readable) return <li className="zone bad"><span className="glyph" aria-hidden="true">⚠</span><span className="zone-name">{zone.name}</span><small>{zone.reason}</small>
     <button type="button" className="danger" onClick={() => void send({ type: 'zone-delete', key: zone.key, base: zone.revision })}>Remove</button></li>;
   const save = (patch: { name?: string; icon?: string; fileType?: ClopFileType | null; pipelineId?: string }) => {

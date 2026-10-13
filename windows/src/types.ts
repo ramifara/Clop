@@ -16,6 +16,8 @@ export interface ImageOptions {
   mode: 'balanced' | 'aggressive' | 'lossless'; scale: number; maxEdge?: number; format: OutputFormat; crop?: CropSize;
   /** A compression picked from the card's menu (adaptive, or a factor of 5–100), which wins over `mode`. */
   compression?: { tier: 'adaptive' | 'custom'; factor: number };
+  /** Videos and audio: the playback speed the result has had from the card's menu or a shortcut (absent is 1x). A video's downscale is in `scale`. */
+  speed?: number;
 }
 /**
  * A result card's item. Video, PDF and audio items have no pixel size of their own (0 for PDF and audio), keep their
@@ -28,6 +30,10 @@ export interface ItemResult {
   width: number; height: number; format: string; originalPreview: string; preview: string;
   options: ImageOptions; error?: string; unchanged?: boolean; restored?: boolean; animated: boolean; createdAt: number;
   durationMs?: number; pages?: number; progress?: number;
+  /** Audio: whether the current file has cover art, which decides whether the card offers to downscale it. */
+  coverArt?: boolean;
+  /** Counts the changes to the result's file, so a window showing it can tell a new one from the one it has. */
+  revision?: number;
   /** What attached or chosen pipelines reported: warnings, and pipelines that failed. */
   notes?: string[];
 }
@@ -120,6 +126,8 @@ export type PrefsRequest =
   | { action: 'folder'; kind: MediaName; op: 'add' | 'remove'; folder?: string }
   | { action: 'quiet'; folder: string; quiet: boolean }
   | { action: 'editor'; kind: MediaName; op: 'choose' | 'clear' }
+  /** One chip of a format list: turned on or off against the stored list. */
+  | { action: 'format'; key: SettingKey; format: string; on: boolean }
   | { action: 'ignore'; op: 'add' | 'remove' | 'choose'; entry?: string }
   /** Opens the pipeline editor window, on its preset zones when `tab` is `zones`. */
   | { action: 'pipeline-editor'; tab?: 'zones' }

@@ -108,7 +108,8 @@ export function isAbsoluteTemplate(template: string, ctx: Pick<TemplateContext, 
   return /^%[PF]/.test(template) || pathApi(ctx.platform).isAbsolute(resolveHome(template, ctx.home, ctx.platform));
 }
 
-// `%n` takes any text without a separator: month names across locales contain spaces, hyphens, apostrophes,
+// `%f` takes any text, as `FileNameToken.filename` does on macOS, so a file nested under a specific-folder template's folder still counts as placed;
+// `singleFileName` (a chosen folder) makes it one file name that never spans a folder. `%n` takes any text without a separator: month names across locales contain spaces, hyphens, apostrophes,
 // commas, `#`, ZWNJ and calendar marks (vi "Tháng 3", gd "An t-Ògmhios", as "মে’", he "אדר א׳").
 const TOKEN_PATTERNS: Record<string, string> = {
   y: '\\d{4}', m: '\\d{2}', d: '\\d{2}', H: '\\d{2}', M: '\\d{2}', S: '\\d{2}', n: '[^/]+', w: '\\d', p: 'AM|PM', r: '[a-z]{5}', i: '\\d+', e: '[^./]+', f: '.+', P: '.+', F: '.+',
@@ -118,10 +119,12 @@ const literal = (text: string, first: boolean) => {
   const drive = first ? /^[A-Za-z]:/.exec(text)?.[0] ?? '' : '';
   return drive + text.slice(drive.length).replace(/[\\:{}<>*|?$#&^;'"`\x00-\x1F]/g, '_');
 };
+/** The trailing dot and space rule `expandTemplate` applies to a name and to each folder: it ends the template or a component, but not `.` or `..`. */
+const fixEnds = (text: string, first: boolean, last: boolean) => text.split('/').map((piece, i, all) => (i < all.length - 1 || last) && !((first || i > 0) && (piece === '.' || piece === '..')) ? fixTrailing(piece) : piece).join('/');
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
 /** Port of `nameMatchesTemplate`: whether `name` could have come out of `template`, so a template is never applied twice to one file. On Windows both sides are compared with `/` separators and ignoring case. */
-export function nameMatchesTemplate(name: string, template: string, { allowPathPrefix = false, platform = process.platform }: { allowPathPrefix?: boolean; platform?: NodeJS.Platform } = {}): boolean {
+export function nameMatchesTemplate(name: string, template: string, { allowPathPrefix = false, platform = process.platform, singleFileName = false }: { allowPathPrefix?: boolean; platform?: NodeJS.Platform; singleFileName?: boolean } = {}): boolean {
   if (!template) return false;
   const windows = platform === 'win32';
   if (windows) { name = name.replaceAll('\\', '/'); template = template.replaceAll('\\', '/'); }
@@ -129,7 +132,7 @@ export function nameMatchesTemplate(name: string, template: string, { allowPathP
   const parts = template.split(/(%.)/);
   for (const [index, part] of parts.entries()) {
     const token = /^%(.)$/.exec(part)?.[1];
-    pattern += token && TOKEN_PATTERNS[token] ? `(?:${TOKEN_PATTERNS[token]})` : escape(literal(part, index === 0 && windows));
+    pattern += token && TOKEN_PATTERNS[token] ? `(?:${token === 'f' && singleFileName ? '[^/]+' : TOKEN_PATTERNS[token]})` : escape(fixEnds(literal(part, index === 0 && windows), index === 0, index === parts.length - 1));
   }
   return new RegExp(`${pattern}$`, windows ? 'iu' : 'u').test(name);
 }

@@ -4,7 +4,7 @@ import { DEVICE_SIZE_GROUPS } from '../core/data/deviceSizes';
 import { PAPER_SIZE_GROUPS } from '../core/data/paperSizes';
 import { computedSize } from '../core/media/crop-size';
 import { api, errorText } from './api';
-import { area, centeredMaxRect, evenSide, extendedCanvas, fractionalAspect, FULL, HANDLES, handlePoint, marquee, moved, orientationOf, oriented, resized, sameRect, selectionSize, sizedRect, targetSize, toBox, toRect, type Box, type Handle, type Size } from './crop-geometry';
+import { area, centeredMaxRect, evenSide, extendedCanvas, fractionalAspect, FULL, HANDLES, handlePoint, marquee, moved, orientationOf, oriented, reorientedAspect, resized, sameRect, selectionSize, sizedRect, targetSize, toBox, toRect, type Box, type Handle, type Size } from './crop-geometry';
 import type { CropOrientation, CropRect, CropRequest, CropSize, CropSource } from './types';
 import './views.css';
 
@@ -93,10 +93,10 @@ export function CropWindow({ id }: { id: string }) {
   }
   function changeOrientation(next: CropOrientation) {
     setOrientation(next);
-    if (next === 'adaptive' || lockedAspect === undefined) return;
-    const turned = next === 'landscape' ? Math.max(lockedAspect, 1 / lockedAspect) : Math.min(lockedAspect, 1 / lockedAspect);
-    if (turned === lockedAspect) return;
-    setLockedAspect(turned); setRect(centeredMaxRect(turned, space));
+    if (lockedAspect === undefined) return;
+    const turned = reorientedAspect(lockedAspect, next, sourceSize, adaptiveAspect);
+    if (turned === undefined || turned === lockedAspect) return;
+    setLockedAspect(turned); setRect(centeredMaxRect(turned, extending ? extendedCanvas(sourceSize, fractionalAspect(adaptiveAspect!), next) : space));
   }
   function setPixelSize(value: string, changed: 'width' | 'height') {
     const n = Number(value);

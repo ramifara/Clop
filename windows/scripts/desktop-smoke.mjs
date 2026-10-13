@@ -28,12 +28,16 @@ const app = spawn(executable, ['--remote-debugging-port=9227', `--user-data-dir=
 let output = '';
 app.stdout.on('data', chunk => { output += chunk; }); app.stderr.on('data', chunk => { output += chunk; });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function until(task, description, timeout = 30000) {
+/** Waits for `task` to return something. On a timeout the error says what `explain` reports (the app's state), if given, to make the failure diagnosable. */
+async function until(task, description, timeout = 30000, explain) {
   let last;
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) { try { const value = await task(); if (value) return value; } catch (error) { last = error; } await pause(250); }
-  throw new Error(`${description}: ${last?.message ?? output.slice(-2000)}`);
+  const state = explain ? `\nApp state: ${await explain().catch(error => `could not be read (${error.message})`)}` : '';
+  throw new Error(`${description}: ${last?.message ?? output.slice(-2000)}${state}`);
 }
+/** The app's items (status, error, kind, source, name) and notice, for a failure message. */
+const appState = async window => { const state = await window.evaluate('window.clop.state()'); return JSON.stringify({ notice: state.notice, items: state.items.map(({ id, kind, source, status, error, name, progress }) => ({ id, kind, source, status, error, name, progress })) }); };
 async function connect(target) {
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let sequence = 0;
@@ -69,6 +73,10 @@ try {
   assert.equal(initial.items.length, 0, 'The app should start quietly, with no sample or workbench');
   // A first run shows the welcome card until it is dismissed, and dismissing it is remembered.
   assert.equal(initial.welcome, true, 'A first run shows the welcome card');
+  // The window that holds it is on screen, not waiting for some later event to show it.
+  const welcomeWindow = await connect(await until(async () => (await pages()).find(page => page.type === 'page' && page.url.includes('floating')), 'Floating window did not open for the welcome card'));
+  await until(() => welcomeWindow.evaluate("document.visibilityState === 'visible' && Boolean(document.querySelector('.welcome-card'))"), 'The welcome card is not showing on a first run');
+  welcomeWindow.close();
   await main.evaluate("window.clop.window('finish-welcome')");
   const welcomed = await main.evaluate('window.clop.state()');
   assert.equal(welcomed.welcome, undefined, 'The welcome card is gone once dismissed');
@@ -193,7 +201,7 @@ try {
   for (const [file, kind] of [[video, 'video'], [scan, 'pdf'], [song, 'audio']]) {
     const before = new Set((await main.evaluate('window.clop.state()')).items.map(item => item.id));
     copyFiles([file]);
-    const item = await until(async () => (await main.evaluate('window.clop.state()')).items.find(item => !before.has(item.id) && item.kind === kind && item.source === 'clipboard' && item.status !== 'processing'), `Copying a ${kind} file did not produce a result`, 120000);
+    const item = await until(async () => (await main.evaluate('window.clop.state()')).items.find(item => !before.has(item.id) && item.kind === kind && item.source === 'clipboard' && item.status !== 'processing'), `Copying a ${kind} file did not produce a result`, 90000, () => appState(main));
     console.log(`Clipboard ${kind}:`, JSON.stringify({ status: item.status, error: item.error, format: item.format, originalBytes: item.originalBytes, outputBytes: item.outputBytes, durationMs: item.durationMs, pages: item.pages }));
     assert.equal(item.status, 'ready', item.error);
     assert.ok(item.outputBytes < item.originalBytes, `The ${kind} should be smaller after optimising`);
@@ -234,9 +242,11 @@ try {
   const pipelineCopy = await until(async () => { const [result] = (await externalClipboard.request({ type: 'read' })).paths; return result?.endsWith('.webp') && result; }, 'The clipboard did not get the pipeline\'s WebP');
   assert.equal((await sharp(pipelineCopy).metadata()).format, 'webp');
   // Explorer's right-click verbs (spec step 39): Explorer starts the app once per selected file. Every launch reaches the running app,
-  // which gathers them and optimises them in place; the files may be named like options, and no other process does the work.
+  // which gathers them and optimises them in place, and no other process does the work. This proves the routing while the app is running (the warm
+  // path); that a file named like an option stays a file comes from the `--` before the files, which the unit tests of `explorerVerb` pin. Nothing here
+  // covers a verb launched while the app is not running yet (the cold start).
   const verbFiles = [];
-  for (const name of ['--clop-downscale first.png', 'second verb.png']) {
+  for (const name of ['first verb.png', 'second verb.png']) {
     const file = path.join(profile, name);
     await sharp({ create: { width: 900, height: 600, channels: 3, background: '#3a7bd5' } }).composite([{ input: Buffer.from('<svg width="900" height="600"><circle cx="450" cy="300" r="250" fill="#f5a623"/></svg>') }]).png({ compressionLevel: 0 }).toFile(file);
     verbFiles.push([file, (await stat(file)).size]);

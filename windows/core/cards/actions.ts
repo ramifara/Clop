@@ -29,7 +29,7 @@ export type MenuNode =
 export interface CardItem {
   kind: MediaKind; status: 'processing' | 'ready' | 'error'; format: string; animated: boolean; name?: string;
   restored?: boolean; unchanged?: boolean; pages?: number; outputBytes?: number;
-  options: { mode: 'balanced' | 'aggressive' | 'lossless'; scale: number; format: string; compression?: { tier: string; factor: number } };
+  options: { mode: 'balanced' | 'aggressive' | 'lossless'; scale: number; speed?: number; format: string; compression?: { tier: string; factor: number } };
 }
 /** What a menu needs to know beyond the card, which only the main process can look up. */
 export interface Facts {
@@ -177,7 +177,7 @@ const percent = (factor: number) => `${Math.round(factor * 100)}%`;
 const speedName = (factor: number) => `${factor < 2 ? factor.toFixed(2) : factor}x`;
 
 function downscaleMenu(item: CardItem, title = 'Downscale resolution to', restore = 'Restore original size (100%)'): MenuNode[] {
-  const current = item.kind === 'image' ? item.options.scale : 1;
+  const current = item.options.scale;
   return [label(restore, { action: 'downscale', arg: 1 }, { enabled: current !== 1 }), { header: title }, ...DOWNSCALE_FACTORS.map(f => label(percent(f), { action: 'downscale', arg: f }, { checked: f === current }))];
 }
 function compressionMenu(item: CardItem): MenuNode[] {
@@ -190,10 +190,10 @@ function compressionMenu(item: CardItem): MenuNode[] {
   return [label('Lossless', { action: 'compression', arg: 'lossless' }), { header: 'Compression factor' }, ...COMPRESSION_FACTORS.map(f => label(`${f}%`, { action: 'compression', arg: f }))];
 }
 const targetSizeMenu = (item: CardItem): MenuNode[] => TARGET_SIZES.map(size => label(size.label, { action: 'fitUnder', arg: size.bytes }, { enabled: !(item.outputBytes && item.outputBytes <= size.bytes) }));
-const speedMenu = (): MenuNode[] => [
-  label('Restore normal playback speed (1x)', { action: 'speed', arg: 1 }), { header: 'Playback speed up' }, ...SPEED_UP.map(f => label(speedName(f), { action: 'speed', arg: f })),
-  { header: 'Playback slow down' }, ...SLOW_DOWN.map(f => label(speedName(f), { action: 'speed', arg: f })),
-];
+const speedMenu = (item: CardItem): MenuNode[] => {
+  const current = item.options.speed ?? 1, entry = (f: number) => label(speedName(f), { action: 'speed', arg: f }, { checked: f === current });
+  return [label('Restore normal playback speed (1x)', { action: 'speed', arg: 1 }, { enabled: current !== 1 }), { header: 'Playback speed up' }, ...SPEED_UP.map(entry), { header: 'Playback slow down' }, ...SLOW_DOWN.map(entry)];
+};
 const gifMenu = (): MenuNode[] => GIF_FPS.flatMap(fps => [{ header: `${fps}fps` } as MenuNode, ...GIF_WIDTHS.map(w => label(`${w}px max width @ ${fps}fps${fps === 20 && w === 800 ? ' (recommended)' : ''}`, { action: 'toGif', arg: `${w}x${fps}` }))]);
 const convertMenu = (item: CardItem): MenuNode[] => item.kind === 'pdf' ? [] : CONVERSIONS[item.kind].map(c => label(c.name, { action: 'convert', arg: c.to }, { checked: c.to === item.format || (c.to === 'jpeg' && item.format === 'jpg') }));
 const pipelinesMenu = (facts: Facts): MenuNode[] => facts.pipelines?.length ? facts.pipelines.map(p => label(p.name, { action: 'pipeline', arg: p.id }, p.text ? { hint: p.text } : {})) : [label('No saved pipelines', undefined, { enabled: false }), label('Save a pipeline in Settings, Pipelines', undefined, { enabled: false })];
@@ -212,7 +212,7 @@ export function submenu(name: string, item: CardItem, facts: Facts): MenuNode[] 
     case 'targetSize': return targetSizeMenu(item);
     case 'convert': return convertMenu(item);
     case 'pipelines': return pipelinesMenu(facts);
-    case 'speed': return speedMenu();
+    case 'speed': return speedMenu(item);
     case 'resolution': return resolutionMenu();
     case 'bitrate': return bitrateMenu(facts);
     case 'coverDownscale': return coverMenu(item);
@@ -271,13 +271,13 @@ export function itemMenu(item: CardItem, facts: Facts): MenuNode[] {
 export const BATCH_ACTIONS: readonly ActionId[] = ['saveAs', 'copy', 'restore', 'stripExif', 'dismiss', 'downscale', 'speed', 'aggressive', 'bitrate', 'hdrToSdr'];
 /**
  * The menu over a selection of results (`BatchRightClickMenuView`): what works on several at once. `facts` is for the first video (HDR) and
- * the first audio file (its format's bitrates), as macOS looks at the first one too. macOS also offers QuickLook, sending and shelf apps,
+ * the first audio file (its format's bitrates), as macOS looks at the first one too. Saving and copying work on the finished results, so they wait for one. macOS also offers QuickLook, sending and shelf apps,
  * which have no counterpart here (Preview opens one window per result and is left out).
  */
 export function batchMenu(items: CardItem[], facts: Facts = { native: true }): MenuNode[] {
   const of = (...kinds: MediaKind[]) => items.filter(item => kinds.includes(item.kind));
   const sized = of('image', 'video'), nodes: MenuNode[] = [
-    label('Save all to folder…', { action: 'saveAs' }), label('Copy to clipboard', { action: 'copy' }), sep,
+    label('Save all to folder…', { action: 'saveAs' }, { enabled: items.some(item => item.status === 'ready') }), label('Copy to clipboard', { action: 'copy' }, { enabled: items.some(item => item.status === 'ready') }), sep,
     label('Restore all', { action: 'restore' }, { enabled: items.some(item => !item.restored) }), sep,
   ];
   if (sized.length) nodes.push(sub('Downscale', 'downscale', sized[0], facts, { enabled: sized.some(item => item.kind !== 'image' || item.options.scale > 0.1) }));

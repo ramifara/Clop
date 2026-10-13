@@ -87,9 +87,9 @@ test('hints show the shortcuts that are on and drop with them', () => {
   assert.equal(find(on, 'Optimise clipboard').accelerator, 'Control+Shift+C');
   assert.equal(find(on, 'Pause automatic optimisations').accelerator, undefined, 'P is off by default on Windows');
   assert.equal(find(trayMenu(state({ shortcuts: shortcutsFor({ ...settings, enabledKeys: ['P'] }) }), recorder().actions), 'Pause automatic optimisations').accelerator, 'Control+Shift+P');
-  const off = trayMenu(state({ shortcuts: shortcutsFor({ ...settings, enabledKeys: ['Z'], keyComboModifiers: ['Alt', 'Control'] }) }), recorder().actions);
+  const off = trayMenu(state({ shortcuts: shortcutsFor({ ...settings, enabledKeys: ['Z'], keyComboModifiers: ['Alt', 'Shift'] }) }), recorder().actions);
   assert.equal(find(off, 'Optimise clipboard').accelerator, undefined);
-  assert.equal(find(off, 'Revert last optimisations').accelerator, 'Control+Alt+Z');
+  assert.equal(find(off, 'Revert last optimisations').accelerator, 'Shift+Alt+Z');
 });
 
 test('update checks sit above the screenshots switch, and About holds the version and the debug dump', () => {
@@ -138,4 +138,13 @@ test('a checkbox click passes the new state to the handler', () => {
   const [option] = toTemplate([{ label: 'box', type: 'checkbox', checked: false, click: checked => { seen = checked; } }], () => assert.fail('no error'));
   (option.click as unknown as (item: { checked: boolean }) => void)({ checked: true });
   assert.equal(seen, true);
+});
+
+test('a shortcut hint in the tray menu does not register the accelerator a second time', () => {
+  const [hinted, plain, nested] = toTemplate([
+    { label: 'Optimise clipboard', accelerator: 'Control+Shift+C' }, { label: 'Quit' }, { label: 'More', submenu: [{ label: 'Revert', accelerator: 'Control+Shift+Z' }] },
+  ], () => assert.fail('no error'));
+  assert.deepEqual([hinted.accelerator, hinted.registerAccelerator], ['Control+Shift+C', false]);
+  assert.equal('registerAccelerator' in plain, false);
+  assert.equal((nested.submenu as { registerAccelerator?: boolean }[])[0].registerAccelerator, false);
 });

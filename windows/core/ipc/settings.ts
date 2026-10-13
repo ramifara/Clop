@@ -3,7 +3,8 @@ import { COMPRESSION_TIERS, settingsSchema, SETTING_KEYS, type ClopSettings, typ
 import { shortcutProblem } from '../shortcuts';
 import { isReadable, type Stored } from '../pipeline/codec';
 import { namesProgramByPath } from '../pipeline/app-resolve';
-import { stepEntry, type Pipeline, type PipelineStep, type PresetZone } from '../pipeline/model';
+import { stepEntry, stepPaths, type Pipeline, type PipelineStep, type PresetZone } from '../pipeline/model';
+import { isRemoteTemplate, remotePathRefusal } from '../local-path';
 import { parsePipelineText } from '../pipeline/parser';
 import { SETTINGS_CHANGED, type MCPSettingInfo, type SettingsRequest, type SettingsResponse } from './protocol';
 
@@ -21,12 +22,15 @@ export interface SettingsAccess {
   update<T>(change: (current: ClopSettings) => { patch?: unknown; result: T }): Promise<{ settings: ClopSettings; result: T }>;
 }
 
-/** Switches only the user may flip: an agent that could turn them on would need no permission at all. */
-const USER_ONLY: readonly SettingKey[] = ['mcpEnabled', 'mcpAllowScriptSteps'];
+/**
+ * Switches only the user may flip: an agent that could turn on the MCP ones would need no permission at all, and one that
+ * could hide the tray icon or start Clop at login could keep working out of the user's sight.
+ */
+const USER_ONLY: readonly SettingKey[] = ['mcpEnabled', 'mcpAllowScriptSteps', 'showMenubarIcon', 'launchAtLogin'];
 /**
  * What an agent may change with `set`: the keys of the macOS bridge's registry (`MCPSettingsBridge.keys` in
  * Clop/MCPSettings.swift) that Windows uses, plus the Windows-only display switches. macOS also lets an agent write
- * `mcpAllowScriptSteps`; here it is the user's alone, since it is the very permission script steps need.
+ * `mcpAllowScriptSteps` and `showMenubarIcon`; here those and the Windows-only `launchAtLogin` are the user's alone (`USER_ONLY`).
  */
 export const MCP_WRITABLE: ReadonlySet<SettingKey> = new Set<SettingKey>([
   'optimisedImageBehaviour', 'optimisedVideoBehaviour', 'optimisedAudioBehaviour', 'optimisedPDFBehaviour', 'convertedImageBehaviour', 'convertedVideoBehaviour', 'convertedAudioBehaviour',
@@ -44,9 +48,9 @@ export const MCP_WRITABLE: ReadonlySet<SettingKey> = new Set<SettingKey>([
   'imageFormatsToSkip', 'formatsToConvertToJPEG', 'formatsToConvertToPNG', 'enableAutomaticAudioOptimisations', 'minAudioSizeKB', 'maxAudioSizeMB', 'maxAudioFileCount',
   'sameFolderNameTemplateAudio', 'specificFolderNameTemplateAudio', 'convertedSameFolderNameTemplateAudio', 'convertedSpecificFolderNameTemplateAudio', 'audioCompression', 'formatsToConvertToAAC',
   'formatsToConvertToMP3', 'enableAutomaticPDFOptimisations', 'pdfDPI', 'minPDFSizeKB', 'maxPDFSizeMB', 'maxPDFFileCount', 'sameFolderNameTemplatePDF', 'specificFolderNameTemplatePDF', 'workdir',
-  'showMenubarIcon', 'allowClopToAppearInScreenshots', 'pauseAutomaticOptimisations', 'floatingResultActions', 'compactResultActions',
+  'allowClopToAppearInScreenshots', 'pauseAutomaticOptimisations', 'floatingResultActions', 'compactResultActions',
   // Windows only.
-  'keepDropZoneVisible', 'floatingResultsAlwaysOnTop', 'launchAtLogin', 'defaultImageFormat', 'persistDebugLogs',
+  'keepDropZoneVisible', 'floatingResultsAlwaysOnTop', 'defaultImageFormat', 'persistDebugLogs',
 ]);
 /** Programs Clop starts ("Edit with"). On macOS they are writable like any setting; an exe path runs anything, so here an agent needs the script permission for them. */
 const PROGRAM_KEYS: readonly SettingKey[] = ['editorAppImage', 'editorAppVideo', 'editorAppPDF', 'editorAppAudio'];
@@ -87,9 +91,16 @@ export function formatSettingValue(key: SettingKey, value: unknown): string {
   const s = spec(key);
   if (isCompression(key)) { const c = value as CompressionQuality; return `${c.tier}:${c.factor}`; }
   if (value === null || value === undefined) return '';
-  if (s.type === 'list') return (value as string[]).join(', ');
+  // Commas are valid in paths, so a list that holds one is printed as the JSON array `set` also reads.
+  if (s.type === 'list') { const items = value as string[]; return items.some(item => item.includes(',')) || items[0]?.startsWith('[') ? JSON.stringify(items) : items.join(', '); }
   if (s.type === 'object') return JSON.stringify(value);
   return String(value);
+}
+
+/** A list written as a JSON array of strings, which can hold the commas that the plain form splits on. */
+function jsonList(text: string): string[] | undefined {
+  if (!text.startsWith('[')) return undefined;
+  try { const value: unknown = JSON.parse(text); return Array.isArray(value) && value.every(item => typeof item === 'string') ? value.map(item => item.trim()).filter(Boolean) : undefined; } catch { return undefined; }
 }
 
 /** Parses the string form of `key`. Returns the stored value, or a sentence saying what the key takes. */
@@ -113,14 +124,14 @@ export function parseSettingValue(key: SettingKey, raw: string, current: ClopSet
     case 'integer':
       if (s.default === null && (!trimmed || ['none', 'off', 'unlimited', 'no limit'].includes(lower))) return checked(null, '');
       return /^-?\d+$/.test(trimmed) ? checked(Number(trimmed), `${key} takes a whole number${s.min !== undefined ? ` from ${s.min}` : ''}${s.max !== undefined ? ` to ${s.max}` : ''}, not '${raw}'`) : { error: `${key} takes a whole number, not '${raw}'` };
-    case 'number': return trimmed && Number.isFinite(Number(trimmed)) ? checked(Number(trimmed), `${key} takes a number of at least 0, not '${raw}'`) : { error: `${key} takes a number, not '${raw}'` };
+    case 'number': return trimmed && Number.isFinite(Number(trimmed)) ? checked(Number(trimmed), `${key} takes a number of at least 0${s.min !== undefined && s.min < 0 ? ', or -2 or -4 for a half or a quarter of the video\'s rate' : ''}, not '${raw}'`) : { error: `${key} takes a number, not '${raw}'` };
     case 'string': return { value: raw };
     case 'enum': {
       const match = s.values?.find(v => String(v).toLowerCase() === lower);
       return match === undefined ? { error: `${key} takes one of: ${s.values?.join(', ')}. Got '${raw}'` } : checked(match, '');
     }
     case 'list': {
-      const items = raw.split(',').map(item => item.trim()).filter(Boolean);
+      const items = jsonList(trimmed) ?? raw.split(',').map(item => item.trim()).filter(Boolean);
       const unknown = s.values ? items.filter(item => !s.values!.includes(item)) : [];
       if (unknown.length) return { error: `${key} does not know ${unknown.join(', ')}. It takes any of: ${s.values!.join(', ')}` };
       return checked(items, `${key} does not accept ${raw}.`);
@@ -232,6 +243,32 @@ function libraryRefusal(values: Record<string, unknown>, settings: ClopSettings)
   return undefined;
 }
 
+/**
+ * An agent's write that names a network share or a device: in a text or list setting (the working directory, name
+ * templates, watched folders), as a folder a pipeline is attached to, or in a step of a pipeline it adds or changes. Only
+ * what the write brings in counts, so a share the user set up stays usable while an agent changes something else.
+ */
+function remoteRefusal(values: Record<string, unknown>, settings: ClopSettings): string | undefined {
+  const json = (value: unknown) => JSON.stringify(value) ?? '';
+  const texts = (value: unknown): string[] => typeof value === 'string' ? [value] : Array.isArray(value) ? value.filter(item => typeof item === 'string') : [];
+  for (const [key, value] of Object.entries(values)) {
+    if (!isKey(key)) continue;
+    const before = spec(key).parse(settings[key]) ?? settings[key], after = spec(key).parse(value) ?? value, known = new Set(texts(before));
+    const text = texts(after).find(item => !known.has(item) && isRemoteTemplate(item));
+    if (text !== undefined) return remotePathRefusal(text);
+    const was = placedPipelines(key, before);
+    for (const [place, entries] of placedPipelines(key, after)) {
+      if (!was.has(place) && isRemoteTemplate(place)) return remotePathRefusal(place);
+      const kept = new Set((was.get(place) ?? []).map(json));
+      for (const entry of entries) {
+        const found = isReadable(entry) && !kept.has(json(entry)) ? entry.steps.flatMap(stepPaths).find(isRemoteTemplate) : undefined;
+        if (found !== undefined) return remotePathRefusal(found);
+      }
+    }
+  }
+  return undefined;
+}
+
 /** Why an agent may not write `key`, or undefined when it may. */
 function keyRefusal(key: SettingKey, settings: ClopSettings, viaLibrary: boolean): string | undefined {
   if (USER_ONLY.includes(key)) return `${key} can only be changed by the user, in Clop Settings.`;
@@ -270,6 +307,8 @@ export async function handleSettingsRequest(req: SettingsRequest, store: Setting
         if (refused) return refuse(refused);
         const parsed = parseSettingValue(req.key, req.value, current);
         if ('error' in parsed) return refuse(parsed.error);
+        const remote = req.origin === 'mcp' ? remoteRefusal({ [req.key]: parsed.value }, current) : undefined;
+        if (remote) return refuse(remote);
         const unusable = shortcutProblem({ [req.key]: parsed.value }, current);
         if (unusable) return refuse(unusable);
         return { patch: { [req.key]: parsed.value }, result: undefined };
@@ -281,6 +320,9 @@ export async function handleSettingsRequest(req: SettingsRequest, store: Setting
       const written = await store.update((current): { patch?: unknown; result: Refusal } => {
         const gate = mcpRefusal(req.origin, req.pipeline, current);
         if (gate) return refuse(gate);
+        // A payload built on values that have changed since is refused first, whatever else is wrong with it: the client reads again and
+        // builds a new one, so the checks below always see an edit made on the current settings (a stale one could look like a planted script step).
+        if (req.base && !unchanged(req.base, current)) return refuse(SETTINGS_CHANGED);
         for (const [key, value] of Object.entries(values)) {
           if (!isKey(key)) return refuse(`no setting named '${key}'.`);
           const refused = req.origin === 'mcp' ? keyRefusal(key, current, true) : undefined;
@@ -288,9 +330,8 @@ export async function handleSettingsRequest(req: SettingsRequest, store: Setting
           if (spec(key).parse(value) === undefined) return refuse(`${key} does not accept that value.`);
         }
         // The payload itself is checked: the `pipeline` text an agent sends alongside proves nothing.
-        const refusal = req.origin === 'mcp' ? libraryRefusal(values, current) : undefined;
+        const refusal = req.origin === 'mcp' ? libraryRefusal(values, current) ?? remoteRefusal(values, current) : undefined;
         if (refusal) return refuse(refusal);
-        if (req.base && !unchanged(req.base, current)) return refuse(SETTINGS_CHANGED);
         const unusable = shortcutProblem(Object.fromEntries((['keyComboModifiers', 'enabledKeys', 'quickResizeKeys'] as const).filter(key => key in values).map(key => [key, spec(key).parse(values[key])])), current);
         if (unusable) return refuse(unusable);
         return { patch: values, result: undefined };

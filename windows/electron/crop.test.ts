@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -11,8 +11,9 @@ import { boxes, photoPDF, round } from '../core/media/pdf.fixtures';
 import type { CropSize } from '../core/settings/schema';
 import { ItemEngine } from './items';
 import { MediaFiles } from './media-files';
-import { applyCrop, cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
+import { applyCrop, cropSource, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
 import { compareSources, parseCompareView } from './compare';
+import { viewFile } from './previews';
 
 const balanced = { mode: 'balanced', format: 'auto', scale: 1 } as const;
 const size = (width: number, height: number, cropRect?: CropSize['cropRect'], name = ''): CropSize => ({ width, height, name, longEdge: false, smartCrop: false, ...(cropRect ? { cropRect } : {}) });
@@ -162,6 +163,32 @@ test('crops, extends and uncrops a PDF\'s pages on the current result, showing e
   assert.throws(() => engine.crop(id, { type: 'size', size: size(10, 10) }), /paper size/);
 });
 
+test('crop and compare work on the file a pipeline left, which is outside the session, and a window can tell each revision', async t => {
+  const f = await fixture(t, 'gs'); if (!f) return;
+  const { engine, files, dir } = f;
+  const id = await engine.importBuffer(Buffer.from(await photoPDF({ pages: 2 })), 'scan.pdf', 'drop', balanced);
+  const first = engine.get(id).result.revision!;
+  const piped = path.join(dir, 'piped.pdf');
+  await writeFile(piped, await photoPDF({ pages: 3 }));
+  await engine.runPipeline(id, async () => ({ file: piped, started: piped, anyRan: true, warnings: [] }));
+  const afterPipeline = engine.get(id).result, piping = afterPipeline.revision!;
+  assert.equal(afterPipeline.status, 'ready', afterPipeline.error);
+  assert.ok(piping > first, 'a pipeline result is a new revision');
+  assert.equal((await cropSource(engine.get(id), { page: 3, time: 0 }, files)).pages, 3, 'the crop window shows the pipeline\'s file');
+  const compare = await compareSources(engine.get(id), { page: 3 }, files);
+  assert.equal(compare.pages, 3);
+  assert.ok((await fetchFile(files, compare.result.url)).length > 0);
+  // A page change asks again: the copy of the pipeline's file made for this revision is served, not made anew.
+  const copy = viewFile(engine.get(id).directory, piped, `compare-r${piping}.pdf`), made = (await stat(copy)).mtimeMs;
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal((await compareSources(engine.get(id), { page: 2 }, files)).pages, 3);
+  assert.equal((await stat(copy)).mtimeMs, made, 'not copied again');
+  await engine.crop(id, { type: 'pdf-aspect', aspectRatio: 1, orientation: 'adaptive', extend: false });
+  assert.equal(engine.get(id).result.status, 'ready', engine.get(id).result.error);
+  assert.equal((await boxes(engine.output(id))).length, 3, 'the crop started from the pipeline\'s file, not the optimised one');
+  assert.ok(engine.get(id).result.revision! > piping, 'so does a crop');
+});
+
 test('compares originals and results the window can load, and refuses to crop audio', async t => {
   const f = await fixture(t, 'gs'); if (!f) return;
   const { engine, files, dir } = f;
@@ -196,3 +223,12 @@ function bmpFile(rgb: Buffer, width: number, height: number) {
   }
   return Buffer.concat([header, pixels]);
 }
+
+test('a crop or compare window is sent its own result and no other', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine } = f;
+  const a = await engine.importBuffer(await halves(), 'a.png', 'drop', balanced), b = await engine.importBuffer(await halves(), 'b.png', 'drop', balanced);
+  assert.deepEqual(viewItems(engine.list(), `crop:${a}`).map(item => item.id), [a]);
+  assert.deepEqual(viewItems(engine.list(), `compare:${b}`).map(item => item.id), [b]);
+  assert.deepEqual(viewItems(engine.list(), 'crop:gone'), []);
+});

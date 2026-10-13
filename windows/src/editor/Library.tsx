@@ -5,6 +5,7 @@ import { FILE_TYPES, type ClopFileType } from '../../core/pipeline/model';
 import type { EditorState, PipelineView, UnreadableView } from '../../core/pipeline/editor-state';
 import { StepTextEditor, type Problem } from './StepTextEditor';
 import { ICON_NAMES, glyph } from './glyphs';
+import { LostJson } from './guards';
 import type { Send } from './types';
 
 export const TYPE_NAMES: Record<ClopFileType, string> = { image: 'Image', video: 'Video', pdf: 'PDF', audio: 'Audio' };
@@ -31,12 +32,13 @@ function usedBy(state: EditorState, id: string): string[] {
   return [...places, ...state.zones.filter(zone => zone.libraryID === id).map(zone => `Preset zone ${zone.name}`)];
 }
 
-export function Library({ state, send }: { state: EditorState; send: Send }) {
+export function Library({ state, send, onDirty }: { state: EditorState; send: Send; onDirty?: (dirty: boolean) => void }) {
   const [selected, setSelected] = useState<string>(), [draft, setDraft] = useState<Draft>(blank), [saved, setSaved] = useState(() => JSON.stringify(blank())), [filter, setFilter] = useState(''), [note, setNote] = useState(''), [confirming, setConfirming] = useState(false);
   const [serverProblems, setServerProblems] = useState<Problem[]>([]);
   const [fix, setFix] = useState<FixDraft>();
   const entry = state.library.find(candidate => candidate.key === selected);
   const dirty = JSON.stringify(draft) !== saved || (fix !== undefined && fix.json !== fix.raw);
+  useEffect(() => { onDirty?.(dirty); return () => onDirty?.(false); }, [dirty, onDirty]);
   const problems = useMemo(() => [...problemsIn(draft), ...serverProblems], [draft, serverProblems]);
   const shown = useMemo(() => state.library.filter(candidate => !filter.trim() || (candidate.readable ? candidate.name : candidate.id ?? 'unreadable').toLowerCase().includes(filter.trim().toLowerCase())), [state.library, filter]);
 
@@ -105,7 +107,8 @@ export function Library({ state, send }: { state: EditorState; send: Send }) {
     <section className="library-pane">
       {!selected && <div className="placeholder"><h2>Pipelines</h2><p>A pipeline is a list of steps, such as <code>downscale(factor: 0.5) -&gt; convert(to: webp)</code>. Pick one to edit it, or press New. Attach pipelines to the clipboard, the drop zone or a watched folder in the Attached tab.</p></div>}
       {entry && !entry.readable && fix?.key === entry.key && <UnreadableEditor key={entry.key} entry={entry} fix={fix} setFix={setFix} send={send} onDone={() => { setFix(undefined); setSelected(undefined); }}/>}
-      {gone && <p className="conflict" role="alert">This pipeline was changed or removed elsewhere.{' '}
+      {gone && fix && fix.json !== fix.raw && <LostJson json={fix.json} copy={() => { void navigator.clipboard.writeText(fix.json); }} discard={() => { setSelected(undefined); setFix(undefined); }}/>}
+      {gone && !(fix && fix.json !== fix.raw) && <p className="conflict" role="alert">This pipeline was changed or removed elsewhere.{' '}
         {draft.id === selected && <button type="button" onClick={() => { setSelected(NEW); setDraft({ ...draft, id: undefined, base: undefined }); setServerProblems([]); }}>Keep mine as a new pipeline</button>}
         <button type="button" onClick={() => { setSelected(undefined); setDraft(blank()); setSaved(JSON.stringify(blank())); setFix(undefined); }}>Discard</button></p>}
       {conflict && <p className="conflict" role="alert">This pipeline was changed elsewhere while you edited it.{' '}

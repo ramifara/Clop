@@ -77,3 +77,20 @@ test('entries of the same exe that moved are told from the installer\'s, which t
   await installVerbs(paths, host);
   assert.equal(await verbsStatus(paths, host), 'current');
 });
+
+test('a newer portable build takes over the entries of the one before it, and the installer\'s are still left alone', async () => {
+  const { host } = fakeHost();
+  const previous = { app: 'D:\\Tools\\Clop-Windows-0.1.1-x64-Portable.exe' };
+  await installVerbs(previous, host);
+  assert.equal(await verbsStatus(paths, host), 'moved', 'the version in the file name does not make it another app');
+  assert.equal(await verbsStatus({ app: 'C:\\Apps\\Other-Portable.exe' }, host), 'none');
+});
+
+test('a portable app under a non-ASCII path is told from the way reg.exe prints it, so its entries are not rewritten at every start', async () => {
+  const { host, keys } = fakeHost();
+  const jose = { app: 'C:\\Users\\Jos\u00e9\\Clop-Windows-0.2.0-x64-Portable.exe' };
+  await installVerbs(jose, host);
+  // What reg.exe's OEM-coded output looks like once decoded as UTF-8.
+  for (const [key, value] of keys) keys.set(key, value.replace('Jos\u00e9', 'Jos\ufffd'));
+  assert.equal(await verbsStatus(jose, host), 'current');
+});

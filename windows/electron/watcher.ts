@@ -15,6 +15,11 @@ export interface WatcherHost {
   isOptimised: (file: string) => Promise<boolean>;
   /** Whether a file's content is on this computer, rather than a cloud placeholder that reading would download. */
   isLocal?: (file: string) => Promise<boolean>;
+  /**
+   * The Windows helper that says whether a file is a cloud placeholder: `starting` files wait until `resume`, and while it is
+   * `stopped` (it is never restarted) they are left alone, with one notice. Anything but `ready` is Windows only.
+   */
+  helper?: () => 'ready' | 'starting' | 'stopped';
   /** Optimises a file from the watched folder `dir` (as stored in settings). Resolves when done, with where the result went. */
   handle: (file: string, dir: string) => Promise<string | undefined>;
   /** Stops optimising files that turned out to be part of too large a batch. */
@@ -32,6 +37,8 @@ export interface WatcherHost {
 export const TIMING = { stabilityMs: 1000, checkMs: 100, pollMs: 5000, settleMs: 300, windowMs: 1000, safeMs: 30_000, safeDelayMs: 3000 };
 const NOUN = { image: 'image', video: 'video', pdf: 'PDF', audio: 'audio file' } as const;
 const SPURIOUS = 5;
+/** The most files remembered while the helper starts. */
+const MAX_DEFERRED = 500;
 /** The longest wait between attempts to watch a folder that keeps failing. */
 const MAX_BACKOFF = 5 * 60_000;
 /**
@@ -66,6 +73,13 @@ export class FolderWatcher {
   private recent = new Map<string, { file: string; dir: string; timer?: NodeJS.Timeout }>();
   private cancelled = new Set<string>();
   private running = new Set<string>();
+  /** Files saved again while their optimisation ran: looked at once more when it ends, unless its result is the file. */
+  private queued = new Set<string>();
+  /** Files that changed before the helper was ready, by id, with when they did. */
+  private deferred = new Map<string, { file: string; at: number }>();
+  /** Held files being replayed at their original gaps. */
+  private replays = new Set<NodeJS.Timeout>();
+  private toldStopped = false;
   /** Files waiting for their writes to finish: when they were first reported, and whether they have new content. */
   private settling = new Map<string, { timer?: NodeJS.Timeout; content: boolean; at: number }>();
   /** Size and file id of files seen settled, so a replaced file's new content shows even when it keeps an old modification time. */
@@ -189,7 +203,24 @@ export class FolderWatcher {
   private reset() {
     for (const { timer } of this.settling.values()) clearTimeout(timer);
     for (const { timer } of this.recent.values()) clearTimeout(timer);
-    this.settling.clear(); this.recent.clear(); this.cancelled.clear(); clearTimeout(this.held); clearTimeout(this.cleaner);
+    this.settling.clear(); this.recent.clear(); this.cancelled.clear(); this.queued.clear(); this.deferred.clear(); clearTimeout(this.held); clearTimeout(this.cleaner);
+    for (const timer of this.replays) clearTimeout(timer);
+    this.replays.clear();
+  }
+
+  /**
+   * The helper is ready, or has stopped: looks at the files that changed while it started. They come back in the order and with
+   * the gaps they arrived with, so files saved seconds apart do not count as one burst.
+   */
+  resume() {
+    const files = [...this.deferred.values()].sort((a, b) => a.at - b.at);
+    this.deferred.clear(); this.toldStopped = false;
+    for (const { file, at } of files) {
+      if (at === files[0].at) { this.event(file).catch(() => {}); continue; }
+      const timer = setTimeout(() => { this.replays.delete(timer); this.event(file).catch(() => {}); }, at - files[0].at);
+      timer.unref();
+      this.replays.add(timer);
+    }
   }
 
   /** Stops watching for good. */
@@ -206,7 +237,14 @@ export class FolderWatcher {
 
   private async event(file: string) {
     const s = this.host.settings(), w = watchSettings(this.kind, s), id = this.id(file);
-    if (!w.enabled || s.pauseAutomaticOptimisations || this.protectedFiles.has(id) || this.running.has(id)) return;
+    if (!w.enabled || s.pauseAutomaticOptimisations || this.protectedFiles.has(id)) return;
+    if (this.running.has(id)) { this.queued.add(id); return; }
+    const helper = this.host.helper?.() ?? 'ready';
+    if (helper === 'starting') { if (this.deferred.size < MAX_DEFERRED || this.deferred.has(id)) this.deferred.set(id, { file, at: this.deferred.get(id)?.at ?? Date.now() }); return; }
+    if (helper === 'stopped') {
+      if (!this.toldStopped) { this.toldStopped = true; this.host.notice('The Windows helper is not running, so Clop cannot tell cloud-only files from local ones and leaves new files in watched folders alone. Restart Clop to have watched folders optimise new files again.'); }
+      return;
+    }
     const dir = matchingWatchedDir(file, w.dirs, this.host.home);
     if (!dir || !await qualifies(this.kind, file, s, this.host)) return;
     // One save can change a file several times; the first change handles it.
@@ -215,21 +253,28 @@ export class FolderWatcher {
     const entry: { file: string; dir: string; timer?: NodeJS.Timeout } = { file, dir };
     if (!safe) { entry.timer = setTimeout(() => this.recent.delete(id), this.timing.windowMs); entry.timer.unref(); }
     this.recent.set(id, entry);
+    // A file the .clopignore names is no part of a burst or of the files held at first launch, and does not hold off the cleanup after a burst.
+    if (await clopIgnored(this.kind, path.resolve(expandHome(dir, this.host.home)), file)) { clearTimeout(entry.timer); this.recent.delete(id); return; }
     clearTimeout(this.cleaner);
-    if (await clopIgnored(this.kind, path.resolve(expandHome(dir, this.host.home)), file)) return;
     if (safe) return this.hold();
     if (this.recent.size > w.maxFiles) {
       this.host.notice(`More than ${w.maxFiles} ${NOUN[this.kind]}${w.maxFiles === 1 ? '' : 's'} appeared in ${path.dirname(file)}, so Clop is leaving them alone.`);
       const files = [...this.recent].filter(([key]) => !this.cancelled.has(key));
       for (const [key] of files) this.cancelled.add(key);
       this.host.cancel(files.map(([, { file }]) => file));
-      this.cleaner = setTimeout(() => { this.cancelled.clear(); this.recent.clear(); }, this.timing.windowMs);
+      clearTimeout(this.cleaner);
+      this.cleaner = this.forgetBurst();
       return;
     }
+    // A file that is no part of the burst leaves the burst's files to be forgotten after the window, as they would have been.
+    if (this.cancelled.size) this.cleaner = this.forgetBurst();
     await sleep(this.timing.settleMs);
     if (this.cancelled.has(id) || !(await stat(file).then(info => info.isFile(), () => false))) return;
     // A writer still holding the file is waited for; one that never lets go leaves the file alone rather than failing on it.
     if (!await writable(file, { delayMs: this.timing.settleMs })) return;
+    // Pausing or switching the kind off while the file settled stops it.
+    const now = this.host.settings();
+    if (!this.watching || !watchSettings(this.kind, now).enabled || now.pauseAutomaticOptimisations) return;
     this.dispatch(file, dir);
   }
 
@@ -252,12 +297,21 @@ export class FolderWatcher {
     }, this.timing.safeDelayMs);
   }
 
+  private forgetBurst() { return setTimeout(() => { this.cancelled.clear(); this.recent.clear(); }, this.timing.windowMs); }
+
   private dispatch(file: string, dir: string) {
     const id = this.id(file);
     this.running.add(id);
-    void Promise.resolve().then(() => this.host.handle(file, dir)).catch(() => undefined).then(placed => {
-      this.running.delete(id); this.protect(file);
+    void Promise.resolve().then(() => this.host.handle(file, dir)).catch(() => undefined).then(async placed => {
+      this.running.delete(id);
+      // Saved again meanwhile: unless the file now is Clop's own result, the new content is optimised in its turn.
+      const again = this.queued.delete(id) && !this.closed && !await this.host.isOptimised(file).catch(() => true);
+      if (!again) this.protect(file);
       if (placed) this.protect(placed);
+      if (again) {
+        clearTimeout(this.recent.get(id)?.timer); this.recent.delete(id);
+        this.event(file).catch(() => {});
+      }
     });
   }
 }

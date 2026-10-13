@@ -10,10 +10,17 @@ import path from 'node:path';
 export const SENSITIVE_KEY = /licen[sc]e|serial|e-?mail|activation|paddle|token|secret|passw(or)?d|credential|api[-_]?key|private[-_]?key/i;
 export const REDACTED = '<redacted>';
 
-/** A copy of `value` with every property named like a secret blanked, at any depth. */
+/**
+ * A copy of `value` with every property named like a secret blanked, at any depth. Script steps are blanked too: the code
+ * and path of a `runScript` step, and the text of a pipeline (`rawText`) that has one, since a script may hold a token.
+ */
 export function redact(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redact);
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, SENSITIVE_KEY.test(key) ? REDACTED : redact(entry)]));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key,
+    SENSITIVE_KEY.test(key) ? REDACTED
+      : key === 'runScript' && entry && typeof entry === 'object' ? Object.fromEntries(Object.keys(entry).map(name => [name, REDACTED]))
+        : key === 'rawText' && typeof entry === 'string' && /\brunScript\b/.test(entry) ? REDACTED
+          : redact(entry)]));
   return value;
 }
 

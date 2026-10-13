@@ -86,6 +86,15 @@ test('a crop the image already fits leaves it as it is', async t => {
   assert.deepEqual(await w.backups(), []);
 });
 
+test('targetSize on a file already under the size still puts a temporary result in the temporary folder', async t => {
+  const w = await pipelineWorkspace(t, 'pngquant'); if (!w) return;
+  const input = w.file('small.png');
+  await graphic(100, 80).png().toFile(input);
+  const result = await w.run('targetSize(size: 5MB, location: temporaryFolder)', input);
+  assert.notEqual(result.file, input);
+  assert.deepEqual(await readFile(result.file), await readFile(input));
+});
+
 test('targetSize, stripExif and watermark run on their own', async t => {
   const w = await pipelineWorkspace(t, 'jpegoptim', 'exiftool', 'pngquant'); if (!w) return;
   const input = w.file('holiday.jpg');

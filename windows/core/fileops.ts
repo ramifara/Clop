@@ -9,7 +9,15 @@ export const samePath = (a: string, b: string, platform: NodeJS.Platform = proce
   return platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
 };
 
-export const exists = (file: string) => stat(file).then(() => true, () => false);
+/** A key for the file a path names: equal for paths that `samePath` calls one file. */
+export const pathKey = (file: string, platform: NodeJS.Platform = process.platform) => platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file);
+
+/** Whether `file` exists. Only absence (`ENOENT`, `ENOTDIR`) means no; a locked or unreadable file throws, so a safety check never reads it as missing. */
+export const exists = (file: string) => retryBusy(() => stat(file)).then(() => true, error => {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+  throw error;
+});
 
 /** Copies `source` to `dest` through a sibling temporary file, so `dest` is either the old file or the whole new one. Keeps the modification time. Returns `dest`; with `force: false` an existing `dest` is left alone. */
 export async function copyTo(source: string, dest: string, { force = true } = {}): Promise<string> {

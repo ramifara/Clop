@@ -209,10 +209,11 @@ async function encodePDF(run: RunState, batch: PipelineStep[], progress: Progres
 
 /** `handleCompiledBatch`: runs consecutive processing and media steps, then places the result where the last located step says. */
 export async function runBatch(run: RunState, batch: PipelineStep[], progress: Progress) {
-  let location = batch.map(stepLocation).filter(where => where !== undefined && where !== 'inPlace').at(-1) ?? 'inPlace';
-  // A location the conversion setting chose is the user's own, which an agent's run may meet again; one the pipeline names is not.
-  let fromSettings = false;
-  if (batch.some(step => 'convert' in step)) { const chosen = convertLocation(run, location); fromSettings = chosen !== location; location = chosen; }
+  const placing = batch.filter(step => { const where = stepLocation(step); return where !== undefined && where !== 'inPlace'; }).at(-1);
+  let location = (placing && stepLocation(placing)) ?? 'inPlace';
+  // A location the placement or conversion setting chose is the user's own, which an agent's run may meet again; one the pipeline names is not.
+  let fromSettings = !!placing && placing === run.opts.refuseExisting?.settingsStep;
+  if (batch.some(step => 'convert' in step)) { const chosen = convertLocation(run, location); fromSettings ||= chosen !== location; location = chosen; }
   const input = run.current;
   const encode = { image: encodeImage, video: encodeVideo, audio: encodeAudio, pdf: encodePDF }[run.fileType];
   run.current = await applyLocation(run, location, await encode(run, batch, progress), input, fromSettings);
@@ -221,15 +222,20 @@ export async function runBatch(run: RunState, batch: PipelineStep[], progress: P
 /** The steps that run on their own. */
 export async function runSolo(run: RunState, step: PipelineStep, progress: Progress) {
   const [kind, p] = stepEntry(step), input = run.current, { signal } = run;
-  const place = async (location: string, result: string) => { run.current = await applyLocation(run, location, result, input); };
+  const place = async (location: string, result: string, fromSettings = false) => { run.current = await applyLocation(run, location, result, input, fromSettings); };
   switch (kind) {
     case 'convert': {
       // Only a video to GIF gets here: gifski makes it, outside the ffmpeg pass.
       const gif = await convertVideoToGIF(input, await run.scratch(), { maxWidth: 960, fps: 15, aggressive: run.settings.useAggressiveOptimisationGIF, signal, onProgress: progress });
-      return place(convertLocation(run, p.location), gif.path);
+      const chosen = convertLocation(run, p.location);
+      return place(chosen, gif.path, chosen !== p.location);
     }
     case 'targetSize': {
-      if ((await stat(input)).size <= p.bytes) return p.location !== 'inPlace' ? place(p.location, input) : undefined;
+      if ((await stat(input)).size <= p.bytes) {
+        if (p.location === 'inPlace') return;
+        // A temporary result is a copy of its own, so later steps never change the file it came from.
+        return place(p.location, p.location === 'temporaryFolder' ? await copyTo(input, path.join(await run.scratch(), path.basename(input))) : input);
+      }
       return place(p.location, await fitUnder(run, p.bytes, progress));
     }
     case 'stripExif': {
@@ -239,6 +245,8 @@ export async function runSolo(run: RunState, step: PipelineStep, progress: Progr
     }
     case 'watermark': {
       const file = run.resolve(p.image);
+      run.expanded(file);
+      run.local(path.resolve(file));
       if (!await exists(file)) throw new Error(`Watermark image not found: ${file}`);
       const watermark = { file, position: (WATERMARK_POSITIONS.includes(p.position as WatermarkPosition) ? p.position : 'bottomRight') as WatermarkPosition, opacity: p.opacity, scale: p.scale };
       const dir = await run.scratch();
@@ -253,11 +261,15 @@ export async function runSolo(run: RunState, step: PipelineStep, progress: Progr
   }
 }
 
+/** A path template expanded for an agent's run, refused when it names a network share or a device. */
+function expandedFor(run: RunState, template: string) { const text = run.resolve(template); run.expanded(text); return text; }
+
 /** `handleExtractPagesAsImages`: renders every page, optimises each image, and carries on with the image of a one-page PDF. */
 async function extractPages(run: RunState, { format, quality, location }: Params<'extractPagesAsImages'>, progress: Progress) {
   const input = run.current;
   const dir = location === 'temporaryFolder' ? await run.scratch()
-    : location !== 'sameFolder' && /[\\/]/.test(location) ? path.resolve(path.dirname(input), run.resolve(location)) : path.dirname(input);
+    : location !== 'sameFolder' && /[\\/]/.test(location) ? path.resolve(path.dirname(input), expandedFor(run, location)) : path.dirname(input);
+  run.local(dir);
   const pages = await renderPDFPages(input, dir, {
     format: format === 'png' ? 'png' : 'jpeg', scale: quality === 'low' ? 1 : quality === 'high' ? 3 : 2, optimise: run.settings.imageCompression, signal: run.signal, onProgress: progress,
   });

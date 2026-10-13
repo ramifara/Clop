@@ -96,6 +96,34 @@ test('a started batch runs, reports its rows, reverts, and a later drop starts a
   assert.deepEqual([host.state().files, host.state().batch], [[], undefined]);
 });
 
+test('stopping for quit also waits for a revert that is under way', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { host, file } = await setup(t);
+  const a = await file('a.jpg', await photo(320, 240, 1).jpeg({ quality: 98 }).toBuffer()), original = await readFile(a);
+  await host.add([a]);
+  await host.start({ files: [a], params: defaultBatchParams(defaultSettings()) });
+  await until(() => host.state().batch?.phase === 'finished');
+  const id = host.state().batch!.id, reverting = host.revert(id);
+  const settling = host.stop();
+  assert.ok(settling, 'there is a revert to wait for');
+  await settling;
+  assert.equal(host.state().batch?.phase, 'reverted', 'the originals were all given back before quitting went on');
+  assert.ok((await readFile(a)).equals(original));
+  await reverting;
+});
+
+test('stopping for quit waits until the running batch has settled', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { host, file } = await setup(t);
+  const files = await Promise.all([1, 2, 3, 4].map(async n => file(`${n}.jpg`, await photo(640, 480, n).jpeg({ quality: 98 }).toBuffer())));
+  await host.add(files);
+  await host.start({ files, params: defaultBatchParams(defaultSettings()) });
+  assert.equal(host.state().batch?.phase, 'running');
+  await host.stop();
+  assert.notEqual(host.state().batch?.phase, 'running', 'no file is still being worked on');
+  assert.equal(host.stop(), undefined, 'a batch that is over has nothing to wait for');
+});
+
 test('results go only to a folder the folder chooser returned', async t => {
   const { dir, host, file } = await setup(t);
   const a = await file('a.png'), out = path.join(dir, 'out'), other = path.join(dir, 'other');

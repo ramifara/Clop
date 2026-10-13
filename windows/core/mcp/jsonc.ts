@@ -29,13 +29,16 @@ export function sanitized(text: string): string {
       continue;
     }
     if (c === '/' && out[i + 1] === '*') {
+      let closed = false;
       while (i < out.length) {
         const end = out[i] === '*' && out[i + 1] === '/';
         // Newlines stay, so line numbers in any parse error still line up.
         if (!isNewline(out[i])) out[i] = ' ';
-        if (end) { out[i + 1] = ' '; i += 2; break; }
+        if (end) { out[i + 1] = ' '; i += 2; closed = true; break; }
         i++;
       }
+      // A comment that never ends is invalid JSONC to the client, whatever came before it.
+      if (!closed) throw new NotAnObjectError('not a JSON object');
       continue;
     }
     switch (c) {
@@ -68,8 +71,7 @@ export function readObject(text: string): Record<string, unknown> {
 export function repeatsMember(text: string, container: string, name: string): boolean {
   const clean = sanitized(text), root = firstBrace(clean);
   if (root === undefined) return false;
-  const unescaped = (key: string) => { try { return JSON.parse(`"${key}"`) as string; } catch { return key; } };
-  const count = (brace: number, wanted: string) => { const spans: number[] = []; forEachMember(clean, brace, (key, _, value) => { if (unescaped(key) === wanted) spans.push(value[0]); return false; }); return spans; };
+  const count = (brace: number, wanted: string) => { const spans: number[] = []; forEachMember(clean, brace, (key, _, value) => { if (key === wanted) spans.push(value[0]); return false; }); return spans; };
   const containers = count(root, container);
   return containers.length > 1 || containers.some(start => clean[start] === '{' && count(start, name).length > 1);
 }
@@ -113,7 +115,7 @@ export function setMember(text: string, container: string, name: string, member:
   const existing = memberSpan(clean, containerSpan[0], name);
   if (existing) {
     const pad = lineIndent(text, existing[0]);
-    return text.slice(0, existing[0]) + nl(`"${name}": ${indented(member, pad)}`) + text.slice(existing[1]);
+    return text.slice(0, existing[0]) + nl(`"${name}": ${indented(reunit(member, indentUnit(clean)), pad)}`) + text.slice(existing[1]);
   }
   return insert(name, member, containerSpan[0], text, clean, nl);
 }
@@ -169,7 +171,10 @@ function endOfValue(clean: string, start: number): number | undefined {
   return i;
 }
 
-/** Each member of the object opening at `brace`: its key, the whole `"key": value` span and the value's span. Stops when `body` returns true. */
+/** A key as the parser reads it, so `"cl\u006fp"` is `clop`. */
+const unescaped = (key: string) => { try { return JSON.parse(`"${key}"`) as string; } catch { return key; } };
+
+/** Each member of the object opening at `brace`: its key (unescaped), the whole `"key": value` span and the value's span. Stops when `body` returns true. */
 function forEachMember(clean: string, brace: number, body: (key: string, member: [number, number], value: [number, number]) => boolean) {
   let i = brace + 1;
   while (i < clean.length) {
@@ -182,7 +187,7 @@ function forEachMember(clean: string, brace: number, body: (key: string, member:
     j = skipSpace(clean, j + 1);
     const valueEnd = j < clean.length ? endOfValue(clean, j) : undefined;
     if (valueEnd === undefined) return;
-    if (body(clean.slice(i + 1, keyEnd), [i, valueEnd], [j, valueEnd])) return;
+    if (body(unescaped(clean.slice(i + 1, keyEnd)), [i, valueEnd], [j, valueEnd])) return;
     i = skipSpace(clean, valueEnd);
     if (clean[i] === ',') i++;
   }
@@ -197,6 +202,14 @@ function memberValueSpan(clean: string, brace: number, name: string) { let found
 /** Re-indents a multi-line member so it sits under its new parent, with the parent line's own spaces or tabs. */
 const indented = (member: string, pad: string) => member.split('\n').map((line, n) => n === 0 ? line : pad + line).join('\n');
 
+/** The file's own indent step (the first indented line that starts a key, read with comments blanked), two spaces when it has none. */
+function indentUnit(clean: string) {
+  const first = /^([ \t]+)"/m.exec(clean)?.[1];
+  return first ? (first.startsWith('\t') ? '\t' : first) : '  ';
+}
+/** Member text written with two-space steps, in the file's own step. */
+const reunit = (member: string, unit: string) => unit === '  ' ? member : member.split('\n').map(line => line.replace(/^( {2})+/, spaces => unit.repeat(spaces.length / 2))).join('\n');
+
 /** The whitespace starting the line `offset` is on: what the file already uses beats any house style. */
 function lineIndent(text: string, offset: number) {
   let start = Math.min(offset, text.length);
@@ -208,7 +221,7 @@ function lineIndent(text: string, offset: number) {
 function insert(key: string, member: string, brace: number, text: string, clean: string, nl: (s: string) => string) {
   const after = skipSpace(clean, brace + 1), empty = after >= clean.length || clean[after] === '}';
   const closing = lineIndent(text, brace), pad = empty ? `${closing}  ` : lineIndent(text, after);
-  const insertion = nl(`\n${pad}"${key}": ${indented(member, pad)}${empty ? `\n${closing}` : ','}`);
+  const insertion = nl(`\n${pad}"${key}": ${indented(reunit(member, indentUnit(clean)), pad)}${empty ? `\n${closing}` : ','}`);
   return text.slice(0, brace + 1) + insertion + text.slice(brace + 1);
 }
 

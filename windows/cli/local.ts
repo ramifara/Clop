@@ -5,32 +5,27 @@ import sharp from 'sharp';
 import { findDeviceSize, DEVICE_SIZE_GROUPS } from '../core/data/deviceSizes';
 import { findPaperSize, PAPER_SIZE_GROUPS } from '../core/data/paperSizes';
 import type { CropSizeGroup } from '../core/data/cropSizes';
-import { copyTo, exists, moveTo, samePath } from '../core/fileops';
+import { exists, moveTo, samePath } from '../core/fileops';
 import { factorText } from '../core/ipc/service';
-import { markOptimised } from '../core/marker';
+import { markOptimised, OptimisedMarker } from '../core/marker';
+import { VIDEO_EXTENSIONS } from '../core/media/detect';
 import { toPNG } from '../core/media/image-codecs';
-import { stripExifFile } from '../core/media/strip-copy';
+import { stripExifFile, type StripKeep } from '../core/media/strip-copy';
 import { cropPDF, extendPDF, uncropPDF } from '../core/media/pdf';
-import { run } from '../core/run';
+import { queue, run } from '../core/run';
+import { requireLocalDrive, requireNotRemote } from '../core/local-path';
 import { expandPathTemplate, expandTemplate, type Counter } from '../core/template';
 import { ExitCode, ValidationError } from './args';
 import { openWorkdir } from './backend';
 import { ARROW, bold, CHECKMARK, CIRCLE, dim, ERROR_X, EXCLAMATION, underline } from './colors';
 import { flag, list, on, option, str, type ClopCommand, type Context } from './context';
-import { checkOutputIsDir, chosenTypes, folderFiles, localPath, normalizeOutput } from './items';
+import { checkOutputIsDir, chosenTypes, folderFiles, gate, localPath, normalizeOutput } from './items';
 import { cropSize } from './optimise';
 import { readSettings } from './read-settings';
 import { shellString } from './results';
 
 // The commands that work in this process without the app (ClopCLI/main.swift): `convert` (legacy), `strip-exif`,
 // `crop-pdf` and `uncrop-pdf`. For agents the app's MCP gate is still asked first.
-
-/** `refuseUnallowedMCPRequest`: an agent's request asks the gate; anyone else needs no permission. */
-async function gate(ctx: Context, pipeline?: string) {
-  if (ctx.origin !== 'mcp') return;
-  const response = await (await ctx.backend()).settings({ action: 'gate', origin: ctx.origin, pipeline });
-  if (!response.ok) throw new ValidationError(response.error ?? 'Clop refused the request.');
-}
 
 /** The `%i` counter, read from and written back to `lastAutoIncrementingNumber`. */
 async function withCounter<T>(ctx: Context, task: (counter: Counter) => Promise<T>): Promise<T> {
@@ -79,15 +74,16 @@ The extension of the conversion format is automatically added.`, 'o'),
     if (!/^\d+$/.test(quality) || Number(quality) > 100) throw new ValidationError(`The value '${quality}' is invalid for '-q <quality>'`);
     const given = (list(v, 'files') ?? []).map(file => localPath(file, ctx.cwd, ctx.home));
     if (!given.length) throw new ValidationError('At least one image must be specified');
+    await gate(ctx, undefined, [...list(v, 'files') ?? [], str(v, 'output')]);
     const files: string[] = [];
     for (const file of given) if ((await stat(file).catch(() => undefined))?.isFile()) files.push(file);
     const output = normalizeOutput(str(v, 'output'), ctx.cwd, ctx.home)?.replaceAll('%q', quality);
     let converted = 0;
     await withCounter(ctx, async counter => {
-      await Promise.all(files.map(async file => {
+      await Promise.all(files.map(file => queue('image')(async () => {
         try { if (await convert(ctx, file, format, Number(quality), output, on(v, 'force'), counter)) converted++; }
         catch (error) { ctx.io.err(`${ERROR_X()} ${underline(shellString(file))} ${ARROW()} ${(error as Error).message}\n`); }
-      }));
+      })));
     });
     // Non-zero only when every file failed, so callers do not retry work that partly succeeded.
     if (!converted && files.length) throw new ExitCode(1);
@@ -97,9 +93,14 @@ The extension of the conversion format is automatically added.`, 'o'),
 /** `ConvertLegacyCommand.convert`: AVIF and WebP through sharp, HEIC through heif-enc (the macOS CLI uses heif-enc and cwebp). */
 async function convert(ctx: Context, file: string, format: string, quality: number, output: string | undefined, force: boolean, counter: Counter) {
   const { dir, name } = path.parse(file);
+  const agent = ctx.origin === 'mcp';
   let target = output ? expandPathTemplate(output, { path: file, counter }).replace(/\.[^.\\/]*$/, '') : path.join(dir, name);
+  // Whatever the template's tokens made of the path is judged before it is looked up, for an agent.
+  requireNotRemote(agent, target);
+  requireLocalDrive(agent, path.resolve(target));
   if (output && (/[\\/]$/.test(output) || (await stat(target).catch(() => undefined))?.isDirectory())) target = path.join(target, name);
   target = `${target}.${format}`;
+  requireLocalDrive(agent, path.resolve(target));
   ctx.io.out(`${dim(`${CIRCLE()} Converting ${underline(shellString(file))} to ${bold(format)}`)}\n`);
   const temp = await mkdtemp(path.join(os.tmpdir(), 'clop-convert-')), produced = path.join(temp, path.basename(target));
   try {
@@ -136,20 +137,23 @@ const stripExif: ClopCommand = {
   async run(v, ctx) {
     const given = (list(v, 'files') ?? []).map(file => localPath(file, ctx.cwd, ctx.home));
     if (!given.length) throw new ValidationError('At least one file or folder must be specified');
+    await gate(ctx, undefined, list(v, 'files'));
     const first = await stat(given[0]).catch(() => undefined);
     const files = first?.isDirectory() ? await folderFiles(given[0], on(v, 'recursive'), chosenTypes(list(v, 'types'), list(v, 'excludeTypes'))) : given;
-    await gate(ctx);
-    const results = await Promise.all(files.map(file => strip(ctx, file)));
+    // Originals go to the work folder's backups, as for every write over a file, and stripped files are marked as Clop's.
+    const keep = { workdir: await openWorkdir((await readSettings(ctx)).workdir, ctx.options), marker: new OptimisedMarker(path.join(ctx.options.userData, 'optimised.json')) };
+    // Through the per-type queues, as every tool run is: a folder of thousands of photos must not start thousands of exiftools at once.
+    const results = await Promise.all(files.map(file => queue(VIDEO_EXTENSIONS.includes(path.extname(file).slice(1).toLowerCase()) ? 'video' : 'image')(() => strip(ctx, file, keep))));
     if (files.length && !results.some(Boolean)) throw new ExitCode(1);
   },
 };
 
 /** `StripExif.strip`: exiftool writes a stripped copy, which then replaces the file; resolution, orientation and colour stay. */
-async function strip(ctx: Context, file: string): Promise<boolean> {
+async function strip(ctx: Context, file: string, keep: StripKeep): Promise<boolean> {
   if (!await exists(file)) { ctx.io.err(`${ERROR_X()} ${underline(file)} does not exist\n`); return false; }
   if (path.extname(file).toLowerCase() === '.pdf') { ctx.io.err(`${EXCLAMATION()} ${underline(file)} is a PDF and \`strip-exif\` does not work on this type of file\n`); return false; }
   try {
-    await stripExifFile(file);
+    await stripExifFile(file, keep);
     ctx.io.out(`${dim(`${CHECKMARK()} ${underline(file)} done`)}\n`);
     return true;
   } catch (error) {
@@ -167,7 +171,8 @@ export const PAPER_SIZES_TEXT = `Paper sizes, grouped by aspect ratio.\nSizes in
 const fractional = (size: { width: number; height: number }) => { const ratio = size.width / size.height; return ratio > 1 ? 1 / ratio : ratio; };
 
 /** The PDFs a `crop-pdf`/`uncrop-pdf` call names: the PDFs in a folder given first, else the files as given. */
-async function pdfs(ctx: Context, items: string[], recursive: boolean) {
+async function pdfs(ctx: Context, items: string[], recursive: boolean, output: string | undefined) {
+  await gate(ctx, undefined, [...items, output]);
   const given = items.map(item => localPath(item, ctx.cwd, ctx.home));
   if (!given.length) throw new ValidationError('At least one PDF file or folder must be specified');
   return (await stat(given[0]).catch(() => undefined))?.isDirectory() ? folderFiles(given[0], recursive, ['pdf']) : given;
@@ -178,6 +183,11 @@ async function pdfs(ctx: Context, items: string[], recursive: boolean) {
  * own `.pdf` is dropped, since the extension is added after it (macOS writes `-o a4.pdf` as `a4.pdf.pdf`).
  */
 async function pdfOutput(pdf: string, output: string | undefined, ctx: Context, counter: Counter) {
+  const dest = await pdfDestination(pdf, output, ctx, counter);
+  requireLocalDrive(ctx.origin === 'mcp', path.resolve(dest));
+  return dest;
+}
+async function pdfDestination(pdf: string, output: string | undefined, ctx: Context, counter: Counter) {
   if (output === undefined) return pdf;
   output = output.replace(/\.pdf$/i, '');
   if (/[\\/]/.test(output)) {
@@ -199,7 +209,7 @@ async function checkOutput(output: string | undefined, count: number, ctx: Conte
  */
 async function keepReplaced(ctx: Context, dest: string, pdf: string) {
   if (samePath(dest, pdf) || !await exists(dest)) return;
-  if (ctx.origin === 'mcp') throw new Error(`${dest} already exists. Agents can't replace a file that is already there: ask for an output path that doesn't exist yet.`);
+  if (ctx.origin === 'mcp') throw new Error(`${dest} already exists, and this request may not replace a file that is already there: ask for an output path that doesn't exist yet.`);
   const workdir = await openWorkdir((await readSettings(ctx)).workdir, ctx.options);
   await workdir.backup(dest, { force: true }).catch(error => { throw new Error(`Could not back up ${dest} before replacing it: ${error instanceof Error ? error.message : error}`); });
 }
@@ -238,20 +248,23 @@ const cropPdf: ClopCommand = {
     if (!size) throw new ValidationError('Invalid aspect ratio, at least one of --for-device, --paper-size or --aspect-ratio must be specified');
     const ratio = fractional(size);
     if (!(ratio > 0)) throw new ValidationError('Invalid aspect ratio, must be greater than 0');
-    const output = str(v, 'output'), files = await pdfs(ctx, list(v, 'pdfs') ?? [], on(v, 'recursive'));
+    const output = str(v, 'output'), files = await pdfs(ctx, list(v, 'pdfs') ?? [], on(v, 'recursive'), output);
     await checkOutput(output, files.length, ctx);
-    await gate(ctx);
     const fit = { aspectRatio: ratio, alwaysPortrait: layout === 'portrait', alwaysLandscape: layout === 'landscape' };
+    let edited = 0;
     await withCounter(ctx, async counter => {
       for (const pdf of files) {
-        if (!await exists(pdf)) continue;
+        if (!await exists(pdf)) { ctx.io.err(`${ERROR_X()} ${underline(pdf)} does not exist\n`); continue; }
         const dest = await pdfOutput(pdf, output, ctx, counter);
         await keepReplaced(ctx, dest, pdf);
         ctx.io.out(`${on(v, 'extend') ? 'Extending' : 'Cropping'} ${pdf} to aspect ratio ${factorText(ratio)}`);
         await editPDF(dest, dir => on(v, 'extend') ? extendPDF(pdf, dir, fit) : cropPDF(pdf, dir, fit));
         ctx.io.out(` -> saved to ${dest}\n`);
+        edited++;
       }
     });
+    // Non-zero only when nothing was edited, so a caller is not told a missing file was cropped.
+    if (files.length && !edited) throw new ExitCode(1);
   },
 };
 
@@ -263,19 +276,21 @@ const uncropPdf: ClopCommand = {
   ],
   arguments: [{ name: 'pdfs', help: 'PDFs to uncrop (can be a file, folder, or list of files)', variadic: true }],
   async run(v, ctx) {
-    const output = str(v, 'output'), files = await pdfs(ctx, list(v, 'pdfs') ?? [], on(v, 'recursive'));
+    const output = str(v, 'output'), files = await pdfs(ctx, list(v, 'pdfs') ?? [], on(v, 'recursive'), output);
     await checkOutput(output, files.length, ctx);
-    await gate(ctx);
+    let edited = 0;
     await withCounter(ctx, async counter => {
       for (const pdf of files) {
-        if (!await exists(pdf)) continue;
+        if (!await exists(pdf)) { ctx.io.err(`${ERROR_X()} ${underline(pdf)} does not exist\n`); continue; }
         const dest = await pdfOutput(pdf, output, ctx, counter);
         await keepReplaced(ctx, dest, pdf);
         ctx.io.out(`Uncropping ${pdf}`);
         await editPDF(dest, dir => uncropPDF(pdf, dir));
         ctx.io.out(` -> saved to ${dest}\n`);
+        edited++;
       }
     });
+    if (files.length && !edited) throw new ExitCode(1);
   },
 };
 

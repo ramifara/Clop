@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { PDFDocument } from '@cantoo/pdf-lib';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -15,7 +17,7 @@ import { needTools } from '../testing';
 import { shellEffects } from '../shell-effects';
 import { Workdir } from '../workdir';
 import { fileURL, type OptimisationRequest, type ServerMessage } from './protocol';
-import { ClopService, cropSizeText, factorText, requestSteps, type ServiceDeps } from './service';
+import { ClopService, cropSizeText, factorText, isPublicAddress, publicLookup, requestSteps, type ServiceDeps } from './service';
 
 async function setup(t: TestContext, deps: Partial<ServiceDeps> = {}, values: Partial<ClopSettings> = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-service-'));
@@ -105,6 +107,64 @@ test('agents are refused before any file is touched unless the user allowed them
   assert.match((review[0] as { error: { error: string } }).error.error, /batch optimiser window/);
 });
 
+test('an agent\'s request that names a network share or a device anywhere is refused before any file is touched', async t => {
+  const s = await setup(t, {}, { mcpEnabled: true, mcpAllowScriptSteps: true });
+  const input = s.file('a.png');
+  await graphic(50, 50).png().toFile(input);
+  const before = (await stat(input)).mtimeMs, local = fileURL(input);
+  const requests: (Partial<OptimisationRequest> & { urls: string[] })[] = [
+    { urls: ['file://server/share/a.png'] }, { urls: [local], output: '\\\\server\\share\\%f' }, { urls: [local], output: '%e\\\\host\\share\\%f' }, { urls: [local], placement: { optimised: 'sameFolder', sameFolderTemplate: '%e//host/share/%f' } },
+    { urls: [local], pipeline: 'if(regex: "^(z*)") -> copy(to: "$1//host/share/")' },
+    { urls: [local], placement: { optimised: 'specificFolder', specificFolderTemplate: '//server/share/%f' } },
+    ...['copy(to: "\\\\\\\\server\\\\share\\\\")', 'move(to: "//server/share/")', 'watermark(image: "\\\\\\\\server\\\\share\\\\logo.png")', 'delete(path: "\\\\\\\\?\\\\UNC\\\\server\\\\share")', 'optimise(location: "\\\\\\\\.\\\\C:\\\\out\\\\%f")', 'runScript(path: "//server/share/x.ps1")', 'openWith(app: "\\\\\\\\server\\\\share\\\\x.exe")'].map(pipeline => ({ urls: [local], pipeline })),
+  ];
+  for (const request of requests) {
+    const messages = await s.send({ ...request, origin: 'mcp' });
+    assert.equal(messages.length, 2, JSON.stringify(request));
+    assert.match((messages[0] as { error: { error: string } }).error.error, /is on a network share or a device\. Agents may only use files and folders on this PC's own drives/, JSON.stringify(request));
+  }
+  assert.equal((await stat(input)).mtimeMs, before);
+  assert.deepEqual(await readdir(s.workdir.backups), []);
+});
+
+test('an agent\'s download reaches only the internet: a host on this PC or its network is refused, a person\'s is fetched', async t => {
+  if (!needTools(t, 'pngquant')) return;
+  const s = await setup(t, {}, { mcpEnabled: true });
+  const png = await graphic(60, 40).png({ compressionLevel: 0 }).toBuffer();
+  const server = createServer((_request, response) => { response.writeHead(200, { 'content-type': 'image/png' }); response.end(png); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/shot.png`;
+  const [refused] = await s.send({ urls: [url], origin: 'mcp' });
+  assert.match((refused as { error: { error: string } }).error.error, /^Download failed: 127\.0\.0\.1 is on this PC or its local network, and agents may only download from the internet\.$/);
+  const [fetched] = answers(await s.send({ urls: [url] }));
+  assert.equal(fetched.kind, 'response', JSON.stringify(fetched));
+  for (const address of ['127.0.0.1', '10.1.2.3', '172.20.0.1', '192.168.1.10', '169.254.1.1', '100.64.0.1', '0.0.0.0', '::1', 'fe80::1', 'fd00::1', '::ffff:127.0.0.1', '::ffff:7f00:1']) assert.equal(isPublicAddress(address), false, address);
+  for (const address of ['8.8.8.8', '1.1.1.1', '2606:4700:4700::1111']) assert.equal(isPublicAddress(address), true, address);
+});
+
+test('an agent\'s download connects only to an address that passed the check, whatever the name answers next', async t => {
+  const asked: string[] = [];
+  const s = await setup(t, { resolve: async host => { asked.push(host); return host === 'mixed.test' ? [{ address: '93.184.216.34' }, { address: '127.0.0.1' }] : [{ address: '127.0.0.1' }]; } }, { mcpEnabled: true });
+  let hits = 0;
+  const server = createServer((_request, response) => { hits++; response.end('secret'); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const port = (server.address() as AddressInfo).port;
+  for (const host of ['mixed.test', 'plain.test']) {
+    const [refused] = await s.send({ urls: [`http://${host}:${port}/a.png`], origin: 'mcp' });
+    assert.match((refused as { error: { error: string } }).error.error, new RegExp(`^Download failed: ${host} is on this PC or its local network`));
+  }
+  assert.deepEqual([hits, asked], [0, ['mixed.test', 'plain.test']], 'the name is looked up once, by the connection itself, and nothing reached the server');
+  // The connection gets the address that was checked, not a second answer: a name that turns to loopback after the first lookup does not matter.
+  const answers = [[{ address: '93.184.216.34' }], [{ address: '127.0.0.1' }]];
+  const lookup = publicLookup(async () => answers.shift()!);
+  const first = await new Promise<unknown>(resolve => lookup('rebind.test', { all: true }, (error, found) => resolve(error ?? found)));
+  assert.deepEqual(first, [{ address: '93.184.216.34', family: 4 }]);
+  const single = await new Promise<unknown[]>(resolve => publicLookup(async () => [{ address: '2606:4700:4700::1111' }])('v6.test', {}, (error, address, family) => resolve([error, address, family])));
+  assert.deepEqual(single, [null, '2606:4700:4700::1111', 6]);
+});
+
 test('a request that shows its result lets the app optimise it with a card, then places that result', async t => {
   const seen: string[] = [];
   const s = await setup(t, {
@@ -123,6 +183,99 @@ test('a request that shows its result lets the app optimise it with a card, then
   assert.ok(shown.kind === 'response');
   assert.deepEqual(shown.response.newWidthHeight, [10, 8]);
   assert.deepEqual(s.copied, [[input]]);
+});
+
+test('a card that placed its result itself is the answer, and the service places nothing more', async t => {
+  const s = await setup(t, { async withCard(file) { return { placed: file }; } });
+  const input = s.file('a.png');
+  await graphic(100, 80).png().toFile(input);
+  const before = await readFile(input);
+  const [shown] = answers(await s.send({ urls: [fileURL(input)], hideFloatingResult: false }));
+  assert.ok(shown.kind === 'response');
+  assert.equal(shown.response.path, input);
+  assert.ok(before.equals(await readFile(input)));
+  assert.deepEqual(await readdir(s.workdir.backups), [], 'no second placement and no second backup');
+});
+
+test('requests number %i files from the app\'s own counter, so they never reuse a number its watched folders gave out', async t => {
+  if (!needTools(t, 'pngquant')) return;
+  const shared = { value: 50 };
+  const s = await setup(t, { counter: () => shared }, { lastAutoIncrementingNumber: 10 });
+  const input = s.file('a.png');
+  await graphic(120, 80).png({ compressionLevel: 0 }).toFile(input);
+  const [first] = answers(await s.send({ urls: [fileURL(input)], output: s.file('out-%i') }));
+  assert.ok(first.kind === 'response', JSON.stringify(first));
+  assert.equal(path.basename(first.response.path), 'out-51.png');
+  assert.equal(shared.value, 51);
+  assert.equal(s.store.current.lastAutoIncrementingNumber, 51, 'the settings hear the shared value');
+});
+
+test('stopping a request also cancels the files no worker has taken yet', async t => {
+  const started: string[] = [];
+  const s = await setup(t, {
+    withCard: (file, _kind, _request, signal) => new Promise((_, reject) => { started.push(path.basename(file)); signal.addEventListener('abort', () => reject(signal.reason)); }),
+  });
+  const urls: string[] = [];
+  for (let i = 0; i < 7; i++) { const file = s.file(`f${i}.png`); await graphic(20, 20).png().toFile(file); urls.push(fileURL(file)); }
+  const sent = s.send({ urls, hideFloatingResult: false });
+  while (started.length < 4) await new Promise(resolve => setTimeout(resolve, 10));
+  s.service.stop({ ids: urls, remove: false });
+  const messages = answers(await sent);
+  assert.deepEqual(started.sort(), ['f0.png', 'f1.png', 'f2.png', 'f3.png']);
+  assert.equal(messages.filter(m => m.kind === 'error' && m.error.error === 'Stopped.').length, 7);
+  assert.equal(messages.at(-1)?.kind, 'done');
+});
+
+test('stopping everything reaches every request, its running files and those still waiting', async t => {
+  const started: string[] = [];
+  const s = await setup(t, {
+    withCard: (file, _kind, _request, signal) => new Promise((_, reject) => { started.push(path.basename(file)); signal.addEventListener('abort', () => reject(signal.reason)); }),
+  });
+  const urls: string[] = [];
+  for (let i = 0; i < 6; i++) { const file = s.file(`f${i}.png`); await graphic(20, 20).png().toFile(file); urls.push(fileURL(file)); }
+  const first = s.send({ urls: urls.slice(0, 5), hideFloatingResult: false }), second = s.send({ urls: urls.slice(5), hideFloatingResult: false });
+  while (started.length < 5) await new Promise(resolve => setTimeout(resolve, 10));
+  s.service.stopAll();
+  const messages = [...answers(await first), ...answers(await second)];
+  assert.equal(messages.filter(m => m.kind === 'error' && m.error.error === 'Stopped.').length, 6);
+});
+
+test('the same file twice in one request is worked on one pass after the other', async t => {
+  let active = 0, most = 0;
+  const s = await setup(t, { async withCard() { most = Math.max(most, ++active); await new Promise(resolve => setTimeout(resolve, 50)); active--; throw new Error('done with it'); } });
+  const file = s.file('a.png');
+  await graphic(20, 20).png().toFile(file);
+  const messages = answers(await s.send({ urls: [fileURL(file), fileURL(file)], hideFloatingResult: false }));
+  assert.equal(most, 1);
+  assert.equal(messages.filter(m => m.kind === 'error').length, 2);
+});
+
+test('the same file under two spellings of its path is also worked on one pass after the other', async t => {
+  let active = 0, most = 0;
+  const s = await setup(t, { async withCard() { most = Math.max(most, ++active); await new Promise(resolve => setTimeout(resolve, 50)); active--; throw new Error('done with it'); } });
+  const file = s.file('a.png');
+  await graphic(20, 20).png().toFile(file);
+  // The same file, spelled differently in the URL (on Windows, `A.PNG` for `a.png` is the same kind of difference).
+  const other = fileURL(file).replace('/a.png', '/%61.png');
+  assert.notEqual(other, fileURL(file));
+  const messages = answers(await s.send({ urls: [fileURL(file), other], hideFloatingResult: false }));
+  assert.equal(most, 1);
+  assert.equal(messages.filter(m => m.kind === 'error').length, 2);
+});
+
+test('an agent\'s pipeline cannot replace a file by naming the same location text as the placement setting', async t => {
+  if (!needTools(t, 'pngquant')) return;
+  const s = await setup(t, {}, { mcpEnabled: true, optimisedImageBehaviour: 'sameFolder', sameFolderNameTemplateImage: '%f-optimised' });
+  const input = s.file('a.png'), earlier = s.file('a-optimised.png');
+  await graphic(60, 40).png().toFile(input);
+  await writeFile(earlier, 'earlier result');
+  const [explicit] = answers(await s.send({ urls: [fileURL(input)], origin: 'mcp', pipeline: 'optimise(location: "%f-optimised")' }));
+  assert.ok(explicit.kind === 'error' && /already exists/.test(explicit.error.error), JSON.stringify(explicit));
+  assert.equal(await readFile(earlier, 'utf8'), 'earlier result');
+  s.store.current.savedPipelines = [{ id: 'HALF', name: 'Half', steps: parseSteps('downscale(factor: 0.5)'), skipOptimisation: false, hideResult: false }];
+  const [saved] = answers(await s.send({ urls: [fileURL(input)], origin: 'mcp', pipeline: 'half' }));
+  assert.ok(saved.kind === 'response', JSON.stringify(saved));
+  assert.notEqual(await readFile(earlier, 'utf8'), 'earlier result', 'the placement setting itself may replace an earlier result');
 });
 
 test('only the user\'s own pipelines may open a program by path; an agent without script permission opens apps by name', async t => {

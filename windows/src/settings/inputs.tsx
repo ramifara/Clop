@@ -57,12 +57,12 @@ export function ResolutionField({ label, value, onCommit, min = 0 }: { label: st
 }
 
 /** Chips for a list of file extensions; each one on is in the setting. Extensions the setting already holds that are not offered stay as chips too. */
-export function FormatSelect({ options, value, onChange, label }: { options: readonly string[]; value: readonly string[]; onChange(next: string[]): void; label: string }) {
+export function FormatSelect({ options, value, onToggle, label }: { options: readonly string[]; value: readonly string[]; onToggle(item: string, on: boolean): void; label: string }) {
   const all = [...options, ...value.filter(item => !options.includes(item))];
   return <div className="s-chips" role="group" aria-label={label}>
     {all.map(item => {
       const on = value.includes(item);
-      return <button key={item} type="button" className={`s-chip ${on ? 'on' : ''}`} aria-pressed={on} onClick={() => onChange(on ? value.filter(other => other !== item) : [...value, item])}>{item}</button>;
+      return <button key={item} type="button" className={`s-chip ${on ? 'on' : ''}`} aria-pressed={on} onClick={() => onToggle(item, !on)}>{item}</button>;
     })}
   </div>;
 }

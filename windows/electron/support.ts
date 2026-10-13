@@ -17,13 +17,17 @@ export interface UpdatesHost {
   portable: boolean;
   releases(): Promise<void>;
   inform(text: string): void;
+  /** Resolves once no placement is under way, so the installer does not close Clop in the middle of one. */
+  settle(): Promise<void>;
+  /** Stops new work from starting while an update installs; the returned function lifts it. */
+  hold(): () => void;
 }
 
 /** The update check and its dialogs. `check` is the tray's and the Settings window's button; `start` begins the daily check. */
 export function setupUpdates(host: UpdatesHost) {
   const updates = new Updates({
     env: () => ({ packaged: app.isPackaged, platform: process.platform, enabled: host.settings().checkForUpdates, beta: host.settings().betaUpdates }),
-    load: loadAutoUpdater, version: app.getVersion(), log: text => console.warn(text),
+    load: loadAutoUpdater, version: app.getVersion(), log: text => console.warn(text), settle: host.settle, hold: host.hold,
   });
   let offered: string | undefined, open: { version: string; done: Promise<void> } | undefined;
   /** The offer dialog for `version`. A second ask for the same version while it is open (the daily check and a button) shares it. */
@@ -92,14 +96,16 @@ export function setupWatchdog() {
     for (const action of actions) {
       if (action.kind === 'log') { (action.level === 'warn' ? console.warn : console.log)(action.text); continue; }
       if (action.kind === 'withdraw-offer') { offers.get(action.window)?.abort(); continue; }
-      if (!window || window.isDestroyed()) continue;
+      // A re-offer comes from the timer, which names the window by its id.
+      const target = window ?? BrowserWindow.getAllWindows().find(other => String(other.id) === action.window);
+      if (!target || target.isDestroyed()) continue;
       const id = action.window, abort = new AbortController();
       offers.set(id, abort);
       dialog.showMessageBox({ type: 'warning', buttons: ['Reload window', 'Keep waiting'], defaultId: 0, cancelId: 1, title: 'Clop', message: 'A Clop window is not responding', detail: 'Reload it to get going again. Other windows are not affected.', signal: abort.signal })
         .then(({ response }) => {
           // A withdrawn offer (the window recovered or closed) answers like "Keep waiting", but nobody chose it.
           if (abort.signal.aborted) return;
-          if (response === 0 && !window.isDestroyed()) { dog.closed(id); window.webContents.forcefullyCrashRenderer(); window.webContents.reload(); } else dog.declined(id, Date.now());
+          if (response === 0 && !target.isDestroyed()) { dog.closed(id); target.webContents.forcefullyCrashRenderer(); target.webContents.reload(); } else dog.declined(id, Date.now());
         }, () => {}).finally(() => { if (offers.get(id) === abort) offers.delete(id); });
     }
   };
@@ -110,7 +116,8 @@ export function setupWatchdog() {
     window.on('closed', () => { offers.get(id)?.abort(); dog.closed(id); });
     window.webContents.on('render-process-gone', (_e, details) => console.warn(`The ${label()} window's renderer stopped: ${details.reason} (exit code ${details.exitCode}).`));
   });
-  // A sleeping PC stops the timer, which is not a blocked app.
+  // A sleeping PC stops the timer, which is not a blocked app. The first tick after waking can come before `resume` is delivered, so going to sleep starts over too.
+  powerMonitor.on('suspend', () => dog.resume());
   powerMonitor.on('resume', () => dog.resume());
   setInterval(() => act(undefined, dog.sample(Date.now())), 500).unref();
 }

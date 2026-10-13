@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { graphic } from '../media/image.fixtures';
 import { pipelineWorkspace, quoted } from './executor.fixtures';
@@ -17,6 +17,7 @@ test('copy, move and rename resolve templates, captures and folders, and carry o
   assert.equal(copied.file, path.join(w.files, 'copies', `12-shot-12-${year}.png`));
   assert.deepEqual(await readFile(copied.file), await readFile(input));
 
+  assert.equal(await w.marker.isOptimised(copied.file), true, 'a copy is marked, so a watcher does not copy it again');
   const moved = await w.run(`move(to: ${quoted(path.join(w.dir, 'sorted') + '/')}) -> rename(to: "%f-done")`, copied.file);
   assert.equal(moved.file, path.join(w.dir, 'sorted', `12-shot-12-${year}-done.png`), 'the template tokens name the file the run started with');
   assert.deepEqual(await readdir(path.join(w.files, 'copies')), []);
@@ -26,6 +27,11 @@ test('copy, move and rename resolve templates, captures and folders, and carry o
   assert.equal(renamed.file, path.join(w.dir, 'sorted', 'Screenshot 10.32.11.png'));
   const relative = await w.run('copy(to: "backup/keep.png")', renamed.file);
   assert.equal(relative.file, path.join(w.dir, 'sorted', 'backup', 'keep.png'), 'a relative destination lands next to the file');
+  // A moved file is marked too, so a watcher over the folder it lands in leaves it alone.
+  const fresh = w.file('fresh.png');
+  await graphic(40, 30).png().toFile(fresh);
+  const sorted = await w.run(`move(to: ${quoted(path.join(w.dir, 'elsewhere') + '/')})`, fresh);
+  assert.equal(await w.marker.isOptimised(sorted.file), true);
 });
 
 test('a file in the way of a move is kept in the backups', async t => {
@@ -64,6 +70,22 @@ test('filters stop the pipeline quietly when they do not match', async t => {
   assert.deepEqual(w.effects.trashed, []);
 });
 
+test('an agent\'s copy, move and rename may not replace a file that is already there, while a person\'s are backed up first', async t => {
+  const w = await pipelineWorkspace(t); if (!w) return;
+  const input = w.file('a.png');
+  await graphic(40, 30).png().toFile(input);
+  await writeFile(w.file('victim.png'), 'precious');
+  const agent = { refuseExisting: {} };
+  for (const step of ['copy(to: "victim.png")', 'move(to: "victim.png")', 'rename(to: "victim.png")']) {
+    await assert.rejects(w.run(step, input, agent), /already exists/, step);
+    assert.equal(await readFile(w.file('victim.png'), 'utf8'), 'precious', step);
+  }
+  assert.deepEqual(await w.backups(), []);
+  assert.equal((await w.run('copy(to: "fresh.png")', input, agent)).file, w.file('fresh.png'));
+  await w.run('copy(to: "victim.png")', input);
+  assert.equal((await w.backups()).length, 1, 'the person\'s run kept the file it replaced');
+});
+
 test('a stored step with a value out of range or empty is refused before it runs', async t => {
   const w = await pipelineWorkspace(t); if (!w) return;
   const input = w.file('keep.png');
@@ -79,4 +101,53 @@ test('a stored step with a value out of range or empty is refused before it runs
   assert.deepEqual(await readdir(w.files), ['keep.png'], 'nothing ran, not even the steps before the bad one');
   assert.deepEqual(w.effects.trashed, []);
   assert.equal((await w.run([makeStep('optimise', { dpi: 0 })], input)).didWork, true, 'a stored dpi of 0 means adaptive');
+});
+
+test('an agent\'s path step is judged where it is used: a token or capture that expands to nothing cannot make a network path', async t => {
+  const w = await pipelineWorkspace(t); if (!w) return;
+  const photo = w.file('photo.jpg'), bare = w.file('photo');
+  await writeFile(photo, 'pixels');
+  await graphic(40, 30).png().toFile(bare);
+  const agent = { fileType: 'image' as const, env: { settings: w.settings, workdir: w.workdir, counter: w.counter, marker: w.marker, agent: true } };
+  const refused = /is on a network share or a device\. Agents may only use files and folders on this PC's own drives/;
+  // The reviewer's reproduction: the capture matches nothing, so `$1//host/share/` is `//host/share/`.
+  await assert.rejects(w.run('if(regex: "^(z*)") -> copy(to: "$1//host/share/")', photo, agent), refused);
+  await assert.rejects(w.run('if(regex: "^(z*)") -> move(to: "$1//host/share/x")', photo, agent), refused);
+  await assert.rejects(w.run('if(regex: "^(z*)") -> delete(path: "$1//host/share/x")', photo, agent), refused);
+  await assert.rejects(w.run('if(regex: "^(z*)") -> rename(to: "$1//host/share/x")', photo, agent), refused);
+  // `%e` is empty for a file with no extension.
+  await assert.rejects(w.run([makeStep('copy', { to: '%e//host/share/' })], bare, agent), refused);
+  await assert.rejects(w.run([makeStep('copy', { to: '%e\\\\host\\share\\' })], bare, agent), refused);
+  // A leading `//` as written, and the long UNC form an empty token produces.
+  await assert.rejects(w.run([makeStep('copy', { to: '//host/share/' })], photo, agent), refused);
+  await assert.rejects(w.run([makeStep('copy', { to: '%e\\\\?\\UNC\\host\\share\\' })], bare, agent), refused);
+  await assert.rejects(w.run([makeStep('fork', { location: '%e//host/share/%f' })], bare, agent), refused);
+  await assert.rejects(w.run([makeStep('watermark', { image: '%e//host/share/logo.png' })], bare, agent), refused);
+  assert.deepEqual((await readdir(w.files)).sort(), ['photo', 'photo.jpg'], 'nothing was copied, moved or removed');
+  // Where the path is local, the same steps work for an agent.
+  assert.equal((await w.run('copy(to: "%P/copies/")', photo, agent)).file, path.join(w.files, 'copies', 'photo.jpg'));
+  assert.equal((await w.run('if(regex: "^(ph)") -> rename(to: "$1-renamed")', photo, agent)).file, w.file('ph-renamed.jpg'));
+});
+
+test('an agent cannot write into the folders where Clop keeps what it needs to put originals back', async t => {
+  const w = await pipelineWorkspace(t); if (!w) return;
+  const photo = w.file('photo.jpg');
+  await writeFile(photo, 'pixels');
+  const agent = { fileType: 'image' as const, env: { settings: w.settings, workdir: w.workdir, counter: w.counter, marker: w.marker, agent: true } };
+  const refused = /where Clop keeps the originals it is replacing/;
+  const notes = path.join(w.workdir.root, 'placing'), link = path.join(w.dir, 'shortcut');
+  await symlink(w.workdir.backups, link, 'dir');
+  // The forged pair: a payload in the backups and a note in the placing folder that tells the next start to copy it anywhere.
+  const into = (dir: string, name = '') => quoted(path.join(dir, name) + (name ? '' : path.sep));
+  for (const to of [into(w.workdir.backups, 'payload.png'), into(notes, 'forged.json'), into(w.workdir.batchBackups), into(link, 'payload.png'), into(path.join(w.workdir.backups, 'sub', 'deeper'))]) {
+    await assert.rejects(w.run(`copy(to: ${to})`, photo, agent), refused, to);
+    await assert.rejects(w.run(`move(to: ${to})`, photo, agent), refused, to);
+  }
+  await assert.rejects(w.run([makeStep('fork', { location: path.join(w.workdir.backups, 'forked') })], photo, agent), refused);
+  assert.deepEqual(await w.backups(), [], 'nothing was written');
+  assert.equal(await readFile(photo, 'utf8'), 'pixels');
+  assert.equal((await readdir(notes).catch(() => [])).length, 0);
+  // A person's own pipeline is not restricted, and an agent's copy elsewhere works.
+  assert.equal((await w.run(`copy(to: ${into(w.workdir.backups, 'mine.jpg')})`, photo)).file, path.join(w.workdir.backups, 'mine.jpg'));
+  assert.equal((await w.run(`copy(to: ${into(path.join(w.files, 'ok'))})`, photo, agent)).file, path.join(w.files, 'ok', 'photo.jpg'));
 });

@@ -43,9 +43,15 @@ export interface UpdatesOptions {
   /** The running version, to tell "up to date" from "available". */
   version: string;
   log(text: string): void;
+  /** Resolves once nothing that must not be cut short is under way (a placement that moved an original aside), so the installer does not close Clop in the middle of it. */
+  settle?(): Promise<void>;
+  /** Stops new work from starting (watched folders, the clipboard, the command line) until the returned function is called. */
+  hold?(): () => void;
+  /** How long the installer waits for `settle` before going ahead, as a placement stuck on a stalled share would hold it for ever. A start after a forced end repairs what is cut short. Default two minutes. */
+  settleLimitMs?: number;
 }
 
-const DAY = 24 * 60 * 60 * 1000, FIRST_CHECK = 30_000;
+const DAY = 24 * 60 * 60 * 1000, FIRST_CHECK = 30_000, SETTLE_LIMIT = 120_000;
 
 export class Updates {
   private driver?: Promise<UpdateDriver>;
@@ -89,7 +95,13 @@ export class Updates {
     if (!gate.ok) throw new Error(gate.message);
     const driver = await this.configured();
     await driver.downloadUpdate();
-    driver.quitAndInstall(false, true);
+    // No new placement starts while the running ones finish, and a stuck one is not waited for for ever: the next start repairs it.
+    const resume = this.options.hold?.();
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([this.options.settle?.(), new Promise<void>(resolve => { timer = setTimeout(resolve, this.options.settleLimitMs ?? SETTLE_LIMIT); })]).finally(() => clearTimeout(timer));
+      driver.quitAndInstall(false, true);
+    } catch (error) { resume?.(); throw error; }
   }
 
   /** Checks shortly after start and once a day after. Calls `found` for a new version. Returns what stops it. */

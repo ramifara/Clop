@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
-import { defaultSettings, parseSettings, type ClopSettings } from '../core/settings/schema';
+import { defaultSettings, parseSettings, settingsSchema, type ClopSettings } from '../core/settings/schema';
 import { TEMPLATE_KEYS, createPrefs, LINKS, type PrefsHost } from './prefs';
 
 let root: string, home: string, folderA: string, folderB: string, file: string, exe: string;
@@ -19,10 +19,13 @@ after(() => rm(root, { recursive: true, force: true }));
 /** A host that keeps settings in memory, answers pickers from `picks` and records what the main process was asked to do. */
 function harness(platform: NodeJS.Platform = process.platform, apps = [{ name: 'Figma', path: 'C:\\Apps\\Figma.exe', running: true }]) {
   let settings = defaultSettings({ home, desktop: path.join(home, 'Desktop'), userData: path.join(home, 'AppData') });
+  // Writes take turns and take a moment, as the settings store's do, so a click that read the settings before the last one landed shows.
+  let queue: Promise<unknown> = Promise.resolve();
+  const turn = (write: () => void) => { const job = queue.then(() => new Promise<void>(done => setTimeout(done, 5))).then(write); queue = job.catch(() => {}); return job; };
   const picks: string[] = [], opened: unknown[] = [], links: string[] = [], checks: (string | undefined)[] = [];
   const host: PrefsHost = {
     settings: () => settings, defaults: () => defaultSettings({ home, desktop: path.join(home, 'Desktop'), userData: path.join(home, 'AppData') }),
-    set: async partial => { settings = parseSettings(partial, settings); }, chooseFolder: async () => picks.shift(), chooseProgram: async () => picks.shift(),
+    set: partial => turn(() => { settings = parseSettings(partial, settings); }), update: change => turn(() => { settings = parseSettings(change(settings), settings); }), chooseFolder: async () => picks.shift(), chooseProgram: async () => picks.shift(),
     apps: async () => apps, openEditor: tab => { opened.push(tab); }, openExternal: async url => { links.push(url); }, version: () => ({ name: '1.2.3', platform: 'win32' }), checkUpdates: async () => checks.shift(), saveDebugDump: async () => path.join(root, 'debug', 'clop-debug-dump-1.zip'), home, platform,
   };
   return { host, prefs: createPrefs(host), picks, opened, links, checks, get: () => settings as ClopSettings };
@@ -71,6 +74,31 @@ test('watched folders are added from the picker, once, and removed with their qu
   await h.prefs({ action: 'folder', kind: 'pdf', op: 'remove', folder: folderB });
   assert.deepEqual(h.get().pdfDirs, []);
   assert.deepEqual(h.get().dirsHideFloatingResult, []);
+});
+
+test('two removals clicked before the first is saved both stick, and so do two silenced folders and two ignored apps', async () => {
+  const h = harness();
+  h.picks.push(folderB, folderA);
+  await h.prefs({ action: 'folder', kind: 'image', op: 'add' });
+  await h.prefs({ action: 'folder', kind: 'image', op: 'add' });
+  assert.deepEqual(h.get().imageDirs.slice(-2), [folderB, '~/Pictures']);
+  await Promise.all([
+    h.prefs({ action: 'quiet', folder: folderB, quiet: true }),
+    h.prefs({ action: 'quiet', folder: folderA, quiet: true }),
+  ]);
+  assert.deepEqual([...h.get().dirsHideFloatingResult].sort(), [folderB, '~/Pictures'].sort());
+  await Promise.all([
+    h.prefs({ action: 'folder', kind: 'image', op: 'remove', folder: folderB }),
+    h.prefs({ action: 'folder', kind: 'image', op: 'remove', folder: folderA }),
+  ]);
+  assert.ok(!h.get().imageDirs.includes(folderB) && !h.get().imageDirs.includes('~/Pictures'));
+  assert.deepEqual(h.get().dirsHideFloatingResult, [], 'the quiet entries of both go with them');
+  await Promise.all([h.prefs({ action: 'ignore', op: 'add', entry: 'C:\\Apps\\Figma.exe' }), h.prefs({ action: 'ignore', op: 'choose' })]);
+  h.picks.push(exe);
+  await h.prefs({ action: 'ignore', op: 'choose' });
+  assert.equal(h.get().clipboardIgnoredAppBundleIds.length, 2);
+  await Promise.all([h.prefs({ action: 'ignore', op: 'remove', entry: 'C:\\Apps\\Figma.exe' }), h.prefs({ action: 'ignore', op: 'remove', entry: exe })]);
+  assert.deepEqual(h.get().clipboardIgnoredAppBundleIds, []);
 });
 
 test('only folders in the list can be removed or silenced, and kinds and flags are checked', async () => {
@@ -136,9 +164,21 @@ test('template previews run the real template on an example file without moving 
   assert.equal(h.get().lastAutoIncrementingNumber, 0);
 });
 
+test('a blank template previews the name Clop gives when it finds the setting empty', async () => {
+  const h = harness('win32');
+  const win = path.win32, preview = async (key: string) => (await h.prefs({ action: 'template', key, template: ' ' })).preview!.output;
+  assert.equal(await preview('sameFolderNameTemplateAudio'), 'Voice memo-optimised.wav');
+  assert.equal(win.normalize(await preview('specificFolderNameTemplateAudio')), 'C:\\Users\\You\\Pictures\\optimised\\Voice memo.wav');
+  assert.equal(await preview('convertedSameFolderNameTemplateAudio'), 'Voice memo.m4a');
+  assert.equal(win.normalize(await preview('convertedSpecificFolderNameTemplateImage')), 'C:\\Users\\You\\Pictures\\optimised\\Screenshot.jpeg');
+  assert.match(await preview('customNameTemplateForClipboardImages'), /^clop_\d{4}-\d{2}-\d{2}_1\.png$/);
+});
+
 test('template previews are only for template settings and reasonable lengths', async () => {
   const h = harness();
-  assert.equal(TEMPLATE_KEYS.length, 17);
+  assert.equal(TEMPLATE_KEYS.length, 15);
+  // Every key is a real setting: the schema has no converted PDF templates.
+  for (const key of TEMPLATE_KEYS) assert.ok(key in settingsSchema, key);
   for (const key of ['workdir', 'editorAppImage', '__proto__', 7]) await assert.rejects(h.prefs({ action: 'template', key, template: '%f' }), /name template setting/, String(key));
   await assert.rejects(h.prefs({ action: 'template', key: 'sameFolderNameTemplateImage', template: 'x'.repeat(2000) }), /template up to/);
   await assert.rejects(h.prefs({ action: 'template', key: 'sameFolderNameTemplateImage', template: 5 }), /template up to/);
@@ -168,4 +208,25 @@ test('the Updates and About buttons check for updates and save the debug dump', 
 test('anything that is not a known action is refused', async () => {
   const h = harness();
   for (const bad of [null, 'folder', [], { action: 'rm' }, {}]) await assert.rejects(h.prefs(bad), /settings action|Unknown/);
+});
+
+test('format chips switch against the stored list, and a format converted one way leaves the other list', async () => {
+  const h = harness();
+  // Two chips clicked before the first write lands both stay.
+  await Promise.all([h.prefs({ action: 'format', key: 'imageFormatsToSkip', format: 'bmp', on: true }), h.prefs({ action: 'format', key: 'imageFormatsToSkip', format: 'webp', on: true })]);
+  assert.deepEqual(h.get().imageFormatsToSkip, [...defaultSettings({ home, desktop: '', userData: '' }).imageFormatsToSkip, 'bmp', 'webp']);
+  await h.prefs({ action: 'format', key: 'imageFormatsToSkip', format: 'bmp', on: false });
+  assert.ok(!h.get().imageFormatsToSkip.includes('bmp'));
+  // wav starts under MP3; turning it on under AAC takes it out of MP3 (and the other way round for the image pair).
+  assert.ok(h.get().formatsToConvertToMP3.includes('wav'));
+  await h.prefs({ action: 'format', key: 'formatsToConvertToAAC', format: 'wav', on: true });
+  assert.ok(h.get().formatsToConvertToAAC.includes('wav') && !h.get().formatsToConvertToMP3.includes('wav'));
+  await h.prefs({ action: 'format', key: 'formatsToConvertToMP3', format: 'flac', on: true });
+  assert.ok(h.get().formatsToConvertToMP3.includes('flac') && !h.get().formatsToConvertToAAC.includes('flac'));
+  await h.prefs({ action: 'format', key: 'formatsToConvertToPNG', format: 'webp', on: true });
+  assert.ok(h.get().formatsToConvertToPNG.includes('webp') && !h.get().formatsToConvertToJPEG.includes('webp'));
+  // Turning one off leaves the other list alone.
+  await h.prefs({ action: 'format', key: 'formatsToConvertToPNG', format: 'webp', on: false });
+  assert.ok(!h.get().formatsToConvertToJPEG.includes('webp'));
+  for (const bad of [{ key: 'workdir', format: 'png', on: true }, { key: 'imageFormatsToSkip', format: '.png', on: true }, { key: 'imageFormatsToSkip', format: 'png', on: 'yes' }]) await assert.rejects(h.prefs({ action: 'format', ...bad }), /Choose/);
 });

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { defaultSettings } from '../core/settings/schema';
-import { ClipboardIntake, importClipboardList, replacedClipboardImages, serial, clipboardChange, clipboardFiles, clipboardIntake, copyReply, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources } from './clipboard';
+import { ClipboardIntake, importClipboardList, replacedClipboardImages, serial, clipboardChange, clipboardFiles, clipboardIntake, copiesFiles, copyReply, pausedForPoll, splitClipboardList, isLocalPath, parseClipboardText, sequenceReply, takesFile, type ClipboardMemory, type ClipboardSnapshot, type IntakeSources } from './clipboard';
 
 // The macOS defaults; Windows differs only in optimiseImagePathClipboard, checked below.
 const settings = { ...defaultSettings(), optimiseImagePathClipboard: false };
@@ -232,4 +232,54 @@ test('a copy an ignored app made does not count as handled: the same content cop
   // Text between the copies lets the same image be optimised again.
   await clipboardIntake(change(4), false, mem, sources({ snapshots: [change(4)], settings }).value);
   assert.equal((await copy(5, [])).type, 'image');
+});
+
+test('the entries of a copied list Clop leaves alone, and files past the limit, go back on the clipboard beside the results', async () => {
+  const paths = ['C:\\a\\photo.png', 'C:\\a\\notes.txt', 'C:\\work\\temp\\own.png', 'C:\\a\\clip.mp4'];
+  const plan = await clipboardIntake(change(1, { paths }), false, memory(), sources({ settings: { ...settings, optimiseImagePathClipboard: true } }).value);
+  assert.deepEqual(plan, { type: 'files', files: ['C:\\a\\photo.png'], rest: ['C:\\a\\notes.txt', 'C:\\work\\temp\\own.png', 'C:\\a\\clip.mp4'], sequence: 1 });
+  const many = Array.from({ length: 30 }, (_, i) => `C:\\a\\${i}.png`);
+  const split = splitClipboardList(many, ['C:\\a\\notes.txt']);
+  assert.deepEqual([split.take.length, split.rest.length, split.rest[0], split.rest.at(-1)], [20, 11, 'C:\\a\\20.png', 'C:\\a\\notes.txt']);
+});
+
+test('on Windows nothing is read while the helper is down, since a private copy could not be told apart', async () => {
+  const s = sources({ snapshots: [undefined], text: 'C:\\a\\clip.mp4', image: Buffer.from('png'), files: ['C:\\a\\clip.mp4'], settings: all });
+  assert.deepEqual(await clipboardIntake(undefined, false, memory(), s.value), { type: 'none' });
+  assert.match(((await clipboardIntake(undefined, true, memory(), s.value)) as { notice: string }).notice, /helper/);
+  assert.deepEqual([s.calls.text, s.looked], [0, []]);
+  // Elsewhere there is no helper to ask, and the clipboard is read as before.
+  const other = sources({ snapshots: [undefined], text: '/a/clip.mp4', files: ['/a/clip.mp4'], settings: all });
+  other.value.platform = 'linux';
+  assert.equal((await clipboardIntake(undefined, false, memory(), other.value)).type, 'files');
+});
+
+test('a queued read that is no longer wanted when its turn comes does nothing', async () => {
+  const intake = new ClipboardIntake(error => { throw error; });
+  let wanted = true, reads = 0;
+  const first = intake.submit(async () => { await new Promise(resolve => setTimeout(resolve, 30)); reads++; });
+  const second = intake.submit(async () => { reads++; return async () => { reads++; }; }, () => wanted);
+  wanted = false;
+  await Promise.all([first, second]); await intake.idle();
+  assert.equal(reads, 1);
+});
+
+test('a single image goes on the clipboard without its file only when copying the file path is off, and Share always carries the file', () => {
+  const image = { allImages: true, count: 1, copyImageFilePath: false };
+  assert.equal(copiesFiles(image), false);
+  assert.equal(copiesFiles({ ...image, copyImageFilePath: true }), true);
+  assert.equal(copiesFiles({ ...image, files: true }), true, 'Share puts the file itself on');
+  assert.equal(copiesFiles({ ...image, count: 2 }), true);
+  assert.equal(copiesFiles({ ...image, allImages: false }), true);
+  assert.equal(copiesFiles({ ...image, extra: 1 }), true);
+});
+
+test('a poll lets the next change go by when the pause is armed, and a poll that finds nothing keeps it armed', () => {
+  let armed = true;
+  const consume = () => { const was = armed; armed = false; return was; };
+  assert.equal(pausedForPoll({ type: 'none' }, consume), false);
+  assert.equal(armed, true, 'nothing new: the pause is still armed');
+  assert.equal(pausedForPoll({ type: 'image' }, consume), true);
+  assert.equal(armed, false);
+  assert.equal(pausedForPoll({ type: 'files' }, consume), false, 'it lets one change go by');
 });

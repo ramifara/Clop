@@ -1,3 +1,5 @@
+import { copyFile, mkdir, stat } from 'node:fs/promises';
+import path from 'node:path';
 import { audioMetadata } from '../core/media/audio';
 import { loadPDF } from '../core/media/pdf';
 import type { CompareSide, CompareSources } from '../src/types';
@@ -14,13 +16,30 @@ export function parseCompareView(value: unknown): { page: number } {
 }
 
 /**
+ * The file the window shows as the result: a pipeline's file when one replaced the optimised one. A file outside the session
+ * (the user's folder) is served from a copy named for the revision, since only session files get a URL and the same path can hold a new file.
+ * The copy is made once per revision: one that is still there, as new as the file and the same size, is served again (every page change asks).
+ */
+async function currentResult(entry: ViewEntry): Promise<string> {
+  const file = entry.placedPath ?? entry.outputPath, inside = path.relative(entry.directory, file);
+  if (!entry.placedPath || (inside && !inside.startsWith('..') && !path.isAbsolute(inside))) return file;
+  const copy = viewFile(entry.directory, file, `compare-r${entry.revision ?? 0}${path.extname(file)}`);
+  const [source, kept] = await Promise.all([stat(file), stat(copy).catch(() => undefined)]);
+  if (kept && kept.size === source.size && kept.mtimeMs >= source.mtimeMs) return copy;
+  await mkdir(path.dirname(copy), { recursive: true });
+  await copyFile(file, copy);
+  return copy;
+}
+
+/**
  * The original and the current result, for the compare window. Images the window cannot show as they are (HEIC, JPEG XL, BMP,
  * TIFF) are shown as full-size PNGs, PDFs as a rendered page each (the whole page, not its crop box), and videos and audio files play as they are.
  */
 export async function compareSources(entry: ViewEntry, view: { page: number }, files: MediaFiles, signal?: AbortSignal): Promise<CompareSources> {
   const { result: item } = entry;
   if (item.status !== 'ready') throw new Error('Wait for this result to finish first.');
-  const pages = item.kind === 'pdf' ? (await loadPDF(entry.outputPath, { allowEncrypted: true })).getPageCount() : undefined;
+  const current = await currentResult(entry);
+  const pages = item.kind === 'pdf' ? (await loadPDF(current, { allowEncrypted: true })).getPageCount() : undefined;
   const page = Math.min(view.page, pages ?? 1);
   async function side(file: string, format: string, facts: Omit<CompareSide, 'url' | 'kind' | 'format'>): Promise<CompareSide> {
     let shown = file;
@@ -36,6 +55,6 @@ export async function compareSources(entry: ViewEntry, view: { page: number }, f
   }
   const sized = item.kind === 'image' || item.kind === 'video';
   const original = await side(entry.originalPath, entry.inputFormat, { bytes: item.originalBytes, ...(sized ? { width: item.originalWidth, height: item.originalHeight } : {}), durationMs: item.durationMs });
-  const result = await side(entry.outputPath, item.format, { bytes: item.outputBytes, ...(sized ? { width: item.width, height: item.height } : {}), durationMs: item.durationMs });
+  const result = await side(current, item.format, { bytes: item.outputBytes, ...(sized ? { width: item.width, height: item.height } : {}), durationMs: item.durationMs });
   return { item, original, result, ...(pages ? { page, pages } : {}) };
 }

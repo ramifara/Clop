@@ -48,12 +48,15 @@ export const describeAccelerator = (accelerator: string) => accelerator.split('+
 /**
  * What the trigger keys must be on Windows. Shift alone would type capital letters (`allowShiftAlone: false` in the macOS pane), and
  * Control alone or Alt alone would take Copy, Paste, Undo and the window menu from every app, since a global shortcut is taken
- * from all of them (on macOS the Command key is the one apps use). Two modifiers, or the Windows key alone, leave typing alone.
- * Returns why not, or undefined when they are fine.
+ * from all of them (on macOS the Command key is the one apps use). The Windows key alone is the shell's own (Win+C, Win+A, Win+Space and
+ * Win+- are all taken), and Ctrl+Alt is AltGr on many layouts (Polish, German…), so Ctrl+Alt+C types a character there. Two modifiers
+ * other than Ctrl+Alt, or three, leave typing and the shell alone. Returns why not, or undefined when they are fine.
  */
 export function triggerProblem(modifiers: readonly Modifier[]): string | undefined {
   if (!modifiers.length) return 'Choose at least one trigger key.';
-  if (modifiers.length > 1 || modifiers[0] === 'Super') return undefined;
+  if (modifiers.length === 2 && modifiers.includes('Control') && modifiers.includes('Alt')) return 'Ctrl+Alt is AltGr on many keyboards and would take the characters it types. Add Shift or Win.';
+  if (modifiers.length > 1) return undefined;
+  if (modifiers[0] === 'Super') return 'The Windows key alone starts many of the shell\'s own shortcuts (Win+C, Win+A, Win+Space…). Add Ctrl, Shift or Alt.';
   if (modifiers[0] === 'Shift') return 'Shift alone types capital letters. Add Ctrl, Alt or Win.';
   if (modifiers[0] === 'Control') return 'Ctrl alone would take Copy, Paste, Undo and more from every app. Add Shift, Alt or Win.';
   return 'Alt alone would take Alt+Space and the window keys from every app. Add Ctrl, Shift or Win.';

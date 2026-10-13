@@ -40,6 +40,8 @@ export interface OptimisationRequest {
   /** A saved pipeline's name or id, or inline pipeline text. */
   pipeline?: string;
   prepareInBatch?: boolean;
+  /** A person's `--delete-folders`: without the app, which asks first, a pipeline's `delete` may move a folder to the Recycle Bin. Never for an agent. */
+  deleteFolders?: boolean;
   placement?: PlacementOverride;
   /** `mcp` when the request came through the MCP server; the app applies the MCP gate to it. */
   origin?: string;
@@ -182,7 +184,7 @@ export function parseOptimisationRequest(value: unknown): OptimisationRequest {
     source: str(v.source, 'source', 256), output: optional(v.output, x => str(x, 'output')), removeAudio: optional(v.removeAudio, x => bool(x, 'removeAudio')),
     pdfDPI: optional(v.pdfDPI, x => { const dpi = int(x, 'pdfDPI'); return dpi >= 0 && dpi <= 1200 ? dpi : fail('pdfDPI must be 0 (adaptive) or a DPI.'); }),
     compression: optional(v.compression, compression), audioBitrate: optional(v.audioBitrate, x => { const kbps = int(x, 'audioBitrate'); return kbps > 0 ? kbps : fail('audioBitrate must be greater than 0.'); }),
-    pipeline: optional(v.pipeline, x => str(x, 'pipeline')), prepareInBatch: optional(v.prepareInBatch, x => bool(x, 'prepareInBatch')),
+    pipeline: optional(v.pipeline, x => str(x, 'pipeline')), prepareInBatch: optional(v.prepareInBatch, x => bool(x, 'prepareInBatch')), deleteFolders: optional(v.deleteFolders, x => bool(x, 'deleteFolders')),
     placement: optional(v.placement, placement), origin: optional(v.origin, x => str(x, 'origin', 64)), replyPort: optional(v.replyPort, x => str(x, 'replyPort', 512)),
     changePlaybackSpeedFrames: optional(v.changePlaybackSpeedFrames, x => oneOf(['keep', 'drop'] as const, x, 'changePlaybackSpeedFrames')),
   });

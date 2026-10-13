@@ -29,7 +29,7 @@ async function write(ctx: Context, edit: (settings: ClopSettings) => LibraryEdit
     const { settings, stored } = await readStored(ctx);
     let result: LibraryEdit;
     try { result = edit(settings); } catch (error) { if (error instanceof LibraryError || error instanceof PipelineError) throw new ValidationError((error as Error).message); throw error; }
-    const base = Object.fromEntries(Object.keys(result.values).map(key => [key, stored[key]]));
+    const base = Object.fromEntries([...Object.keys(result.values), ...result.read ?? []].map(key => [key, stored[key]]));
     const response = await (await ctx.backend()).settings({ action: 'update', values: result.values, base, origin: ctx.origin, pipeline });
     if (response.ok) return result;
     if (response.error !== SETTINGS_CHANGED || attempt >= WRITE_ATTEMPTS) throw new ValidationError(response.error ?? 'Clop refused the change.');

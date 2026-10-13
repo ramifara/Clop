@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -17,7 +17,7 @@ import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { run } from '../core/run';
 import { needTools } from '../core/testing';
 import { Workdir } from '../core/workdir';
-import { coverArtCard, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, type CardCreation, type CardHost } from './cards';
+import { coverArtCard, eachResult, editorLabel, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, readyIds, runPlan, savePages, thenCopyBack, totalChange, type CardCreation, type CardHost } from './cards';
 import { ItemEngine } from './items';
 import type { PipelineHost } from './pipelines';
 import type { ItemResult } from '../src/types';
@@ -193,6 +193,17 @@ test('menus follow the kind and the card: running cards offer little, audio and 
   assert.ok(!labels(itemMenu(card('image'), { ...facts, native: false })).includes('Open with…'));
   assert.deepEqual(labels(batchMenu([card('image'), card('pdf')])).slice(0, 3), ['Save all to folder…', 'Copy to clipboard', 'Restore all']);
   assert.ok(!labels(batchMenu([card('pdf'), card('audio')])).includes('Strip EXIF metadata'));
+  // Saving and copying take the finished results, so they wait while none is.
+  const enabled = (items: CardItem[]) => batchMenu(items).flatMap(node => 'label' in node && (node.label === 'Save all to folder…' || node.label === 'Copy to clipboard') ? [node.enabled !== false] : []);
+  assert.deepEqual(enabled([{ ...card('image'), status: 'processing' }, { ...card('pdf'), status: 'error' }]), [false, false]);
+  assert.deepEqual(enabled([{ ...card('image'), status: 'processing' }, card('pdf')]), [true, true]);
+});
+
+test('saving or copying a selection takes the finished results and says when there are none', () => {
+  const status: Record<string, string> = { a: 'ready', b: 'processing', c: 'error', d: 'ready' };
+  const engine = { has: (id: string) => id in status, get: (id: string) => ({ result: { status: status[id] } }) } as never;
+  assert.deepEqual(readyIds(engine, ['a', 'b', 'c', 'd', 'gone']), ['a', 'd']);
+  assert.throws(() => readyIds(engine, ['b', 'c']), /Wait for the selected results to finish/);
 });
 
 test('corner buttons come from the configured names, by kind, without the ones Windows lacks', () => {
@@ -228,7 +239,7 @@ test('Open with uses the Windows chooser by its System32 path with the file as o
 
 const clean = async () => false, exists = async () => true;
 test('Edit with fails closed: only the full path of an existing .exe that passes every check is started, and that exact path comes back', async () => {
-  const win = { platform: 'win32' as const, marked: clean, isFile: exists };
+  const win = { platform: 'win32' as const, marked: clean, isFile: exists, canonical: async (file: string) => file };
   assert.equal(await editorProgram('"C:\\Program Files\\GIMP\\gimp.exe"', win), 'C:\\Program Files\\GIMP\\gimp.exe');
   // A name is never looked up: no Start menu, no App Paths, nothing relative.
   for (const name of ['gimp', 'gimp.exe', 'Editor', '..\\editor.exe', '.\\editor.exe', 'C:editor.exe', 'Microsoft.Paint_8wekyb3d8bbwe!App', 'C:\\Apps\\editor', 'C:\\Apps\\editor.bat', 'C:\\Apps\\editor.exe.lnk', 'https://example.com/x.exe']) {
@@ -241,16 +252,34 @@ test('Edit with fails closed: only the full path of an existing .exe that passes
   await assert.rejects(editorProgram('C:\\Users\\me\\Downloads\\editor.exe', { ...win, marked: async () => true }), /downloaded from the internet/);
   await assert.rejects(editorProgram('C:\\Apps\\editor.exe', { ...win, marked: async () => { throw new Error('Clop could not check whether it was downloaded'); } }), /could not check/);
   await assert.rejects(editorProgram('C:\\Users\\me\\Desktop\\editor.exe', { ...win, watched: ['C:\\Users\\me\\Desktop'] }), /inside the watched folder/);
-  assert.equal(await editorProgram('C:\\Users\\me\\Desktopper\\editor.exe', { ...win, watched: ['C:\\Users\\me\\Desktop'] }), 'C:\\Users\\me\\Desktopper\\editor.exe');
+  assert.equal(await editorProgram('C:\\Users\\me\\Desktopper\\editor.exe', { ...win, watched: ['C:\\Users\\me\\Desktop'] }), 'C:\\Users\\me\\Desktopper\\editor.exe');  // Streams, network shares and device paths are not programs on a local drive.
+  for (const odd of ['C:\\Users\\me\\Downloads\\a.txt:evil.exe', '\\\\host\\share\\x.exe', '\\\\?\\C:\\Apps\\x.exe', '\\\\.\\C:\\Apps\\x.exe']) {
+    await assert.rejects(editorProgram(odd, win), /full path of a \.exe/, odd);
+    assert.equal(isEditorPath(odd), false, odd);
+  }
+  // Every check runs on what the path really is, and that is what comes back.
+  const through = (map: Record<string, string>) => ({ ...win, canonical: async (file: string) => map[file] ?? file });
+  await assert.rejects(editorProgram('C:\\Apps\\J\\editor.exe', { ...through({ 'C:\\Apps\\J\\editor.exe': 'C:\\Users\\me\\Desktop\\editor.exe', 'C:\\Users\\me\\Desktop': 'C:\\Users\\me\\Desktop' }), watched: ['C:\\Users\\me\\Desktop'] }), /inside the watched folder/, 'a junction into a watched folder');
+  await assert.rejects(editorProgram('C:\\Users\\RAMI~1\\Desktop\\x.exe', { ...through({ 'C:\\Users\\RAMI~1\\Desktop\\x.exe': 'C:\\Users\\Rami\\Desktop\\x.exe' }), watched: ['C:\\Users\\Rami\\Desktop'] }), /inside the watched folder/, 'a short name');
+  await assert.rejects(editorProgram('C:\\Apps\\alias.exe', through({ 'C:\\Apps\\alias.exe': 'C:\\Windows\\System32\\cmd.exe' })), /runs other programs/, 'a link to a launcher');
+  await assert.rejects(editorProgram('C:\\Apps\\remote.exe', through({ 'C:\\Apps\\remote.exe': '\\\\host\\share\\remote.exe' })), /local drive/, 'a link to a network share');
+  await assert.rejects(editorProgram('C:\\Apps\\gone.exe', { ...win, canonical: async () => { throw new Error('ENOENT'); } }), /local drive/);
+  assert.equal(await editorProgram('C:\\Apps\\link.exe', through({ 'C:\\Apps\\link.exe': 'C:\\Program Files\\Real\\real.exe' })), 'C:\\Program Files\\Real\\real.exe');
 });
 
 test('a window that asks for Edit with when the menu hides it is refused the same way', async () => {
-  const win = { platform: 'win32' as const, marked: clean };
+  const win = { platform: 'win32' as const, marked: clean, canonical: async (file: string) => file };
   // The menu shows the entry only for an existing .exe path (`cardFacts`); the main process runs `editorProgram` on the same setting.
+  const image = { kind: 'image' as const, status: 'ready' as const, format: 'png', animated: false, options: balanced };
+  const shows = async (setting: string, exists_: boolean) => itemMenu(image, { native: true, editor: await editorLabel(setting, async () => exists_) }).some(node => 'label' in node && node.label.startsWith('Edit with'));
   for (const [setting, exists_, reason] of [['', true, /No editor app/], ['gimp', true, /full path/], ['C:\\Apps\\gone.exe', false, /was not found/], ['C:\\Windows\\System32\\cmd.exe', true, /runs other programs/]] as const) {
     await assert.rejects(editorProgram(setting, { ...win, isFile: async () => exists_ }), reason, setting);
-    assert.equal(itemMenu({ kind: 'image', status: 'ready', format: 'png', animated: false, options: balanced }, { native: true }).some(node => 'label' in node && node.label.startsWith('Edit with')), false);
+    // The entry is hidden exactly when the main process would refuse for lack of a program (not for the later safety checks, which it also applies).
+    assert.equal(await shows(setting, exists_), reason.source === 'runs other programs', setting);
   }
+  assert.equal(await shows('"C:\\Program Files\\GIMP\\gimp.exe"', true), true);
+  assert.equal(await editorProgram('"C:\\Program Files\\GIMP\\gimp.exe"', { ...win, isFile: async () => true }), 'C:\\Program Files\\GIMP\\gimp.exe');
+  assert.equal(await shows('\\\\host\\share\\x.exe', true), false);
 });
 
 test('the table refuses what the menu disables, and values the menu never offers', () => {
@@ -320,4 +349,88 @@ test('cover art and PDF pages become cards of their own, and facts come from the
   assert.deepEqual(await mediaFacts(f.engine.output(song), 'audio').then(x => [x.hasCoverArt, x.bitrates!.includes(128)]), [true, true]);
   assert.deepEqual(await mediaFacts(f.engine.output(await f.add(mp4)), 'video').then(x => [x.hasAudio, x.hdr]), [true, false]);
   assert.deepEqual(await mediaFacts(pdf, 'pdf'), {});
+});
+
+test('a batch action skips the results it does not fit without a word, reports the ones that failed, and says which finished', async () => {
+  const ran: string[] = [];
+  const outcome = await eachResult(['sdr', 'hdr', 'broken', 'hdr2'], {
+    name: id => id.toUpperCase(),
+    skip: async id => id === 'sdr',
+    run: async id => { if (id === 'broken') throw new Error('The encoder failed.'); ran.push(id); },
+  });
+  assert.deepEqual(ran, ['hdr', 'hdr2']);
+  assert.deepEqual(outcome.done, ['hdr', 'hdr2'], 'a skipped or failed result is not copied back');
+  assert.deepEqual(outcome.failures, ['BROKEN: The encoder failed.'], 'a skip is not a failure');
+  const refused = await eachResult(['a'], { name: id => id, skip: async () => { throw new Error('facts unreadable'); }, run: async () => {} });
+  assert.deepEqual(refused, { done: [], failures: ['a: facts unreadable'] });
+});
+
+test('a video\'s downscale and speed are totals: 50% then 80% is 80%, and 1x undoes 2x', async t => {
+  const f = await setup(t); if (!f) return;
+  const mp4 = f.file('long.mp4'); await clip(mp4, { width: 640, height: 360, seconds: 2 });
+  const id = await f.add(mp4), video = async () => await probe(f.engine.output(id)) as VideoInfo;
+  assert.equal((await video()).width, 640);
+  await f.act(id, { action: 'downscale', arg: 0.5 });
+  assert.equal((await video()).width, 320);
+  assert.equal(f.engine.get(id).result.options.scale, 0.5);
+  // Bigger than it is now: from the original, not 80% of 50%.
+  await f.act(id, { action: 'downscale', arg: 0.8 });
+  assert.ok(Math.abs((await video()).width - 512) <= 2, `${(await video()).width}`);
+  await f.act(id, { action: 'speed', arg: 2 });
+  const fast = await video();
+  assert.ok(Math.abs(fast.width - 512) <= 2 && fast.durationMs! < 1300, `${fast.width} ${fast.durationMs}`);
+  assert.equal(f.engine.get(id).result.options.speed, 2);
+  // 1x applies the opposite of the 2x it had, and the size stays.
+  await f.act(id, { action: 'speed', arg: 1 });
+  const slow = await video();
+  assert.ok(Math.abs(slow.width - 512) <= 2 && slow.durationMs! > 1700, `${slow.width} ${slow.durationMs}`);
+  // A size bigger than the current one with a speed in place starts again from the original and keeps the speed.
+  await f.act(id, { action: 'speed', arg: 2 });
+  await f.act(id, { action: 'downscale', arg: 1 });
+  const back = await video();
+  assert.ok(back.width === 640 && back.durationMs! < 1300, `${back.width} ${back.durationMs}`);
+  assert.deepEqual([f.engine.get(id).result.options.scale, f.engine.get(id).result.options.speed], [1, 2]);
+});
+
+test('the steps for a total are the change from what the result has had, and none when it is there already', () => {
+  const down = (factor: number) => [{ downscale: { factor } }] as never, speed = (factor: number) => [{ changeSpeed: { factor } }] as never;
+  assert.deepEqual(totalChange(down(0.5), { scale: 1 }), { steps: down(0.5), tracked: { scale: 0.5 } });
+  assert.deepEqual(totalChange(down(0.4), { scale: 0.8 }), { steps: down(0.5), tracked: { scale: 0.4 } });
+  assert.deepEqual(totalChange(down(0.5), { scale: 0.5 }), { steps: [] });
+  assert.deepEqual(totalChange(down(0.8), { scale: 0.5 }), { steps: down(0.8), tracked: { scale: 0.8, speed: 1 }, restoreFirst: true });
+  assert.deepEqual(totalChange(down(1), { scale: 0.5, speed: 2 }), { steps: speed(2), tracked: { scale: 1, speed: 2 }, restoreFirst: true });
+  assert.deepEqual(totalChange(speed(1.5), { scale: 1, speed: 1.25 })?.steps, speed(1.5 / 1.25));
+  assert.deepEqual(totalChange(speed(1), { scale: 1, speed: 2 }), { steps: speed(0.5), tracked: { speed: 1 } });
+  assert.deepEqual(totalChange(speed(1), { scale: 1 }), { steps: [] });
+  assert.equal(totalChange([{ removeAudio: {} }] as never, { scale: 1 }), undefined);
+});
+
+test('saving PDF pages keeps what the folder holds and writes the pages that could not be made smaller', async t => {
+  const f = await setup(t); if (!f) return;
+  const pdf = f.file('doc.pdf'), folder = path.join(f.root, 'pages');
+  await writeFile(pdf, await photoPDF({ pages: 2 }));
+  await mkdir(folder);
+  // A file of the user's under the name page 1 would take.
+  const first = (await savePages(f.creation, await f.add(pdf), 'jpeg', path.join(f.root, 'probe')))[0], name = path.basename(first);
+  await writeFile(path.join(folder, name), 'mine');
+  const written = await savePages(f.creation, await f.add(pdf), 'jpeg', folder);
+  assert.equal(await readFile(path.join(folder, name), 'utf8'), 'mine', 'an existing file is not replaced');
+  assert.equal(written.length, 2);
+  assert.equal(new Set(written).size, 2);
+  for (const file of written) assert.ok((await stat(file)).size > 100 && path.dirname(file) === folder, file);
+  // A lossless setting leaves a page as it was rendered, which is in the scratch folder: it is copied to the folder.
+  f.state.settings = { ...f.state.settings, imageCompression: { tier: 'lossless', factor: 5 } };
+  const again = await savePages(f.creation, await f.add(pdf), 'png', path.join(f.root, 'lossless'));
+  for (const file of again) assert.ok((await stat(file)).size > 100 && path.dirname(file) === path.join(f.root, 'lossless'), file);
+});
+
+test('a result goes back on the clipboard with the sequence read before the work began', async () => {
+  let clipboard = 5;
+  const given: (number | undefined)[] = [];
+  const result = await thenCopyBack(async () => clipboard, async () => { clipboard = 6; return 'done'; }, async sequence => { given.push(sequence); });
+  assert.deepEqual([result, given], ['done', [5]], 'a copy made during the work is newer than the sequence the write expects');
+  await assert.rejects(thenCopyBack(async () => clipboard, async () => { throw new Error('encoder failed'); }, async sequence => { given.push(sequence); }), /encoder failed/);
+  assert.equal(given.length, 1, 'a failed action puts nothing back');
+  assert.deepEqual(await thenCopyBack(async () => { throw new Error('no helper'); }, async () => 1, async sequence => { given.push(sequence); }), 1);
+  assert.deepEqual(given, [5, undefined], 'without a helper the write has no sequence to check');
 });

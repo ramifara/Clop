@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, readdirSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { PDFDocument } from '@cantoo/pdf-lib';
@@ -112,6 +113,24 @@ test('aborting stops every Ghostscript chunk and cleans up', async t => {
   const controller = new AbortController();
   const job = optimisePDF(input, w.out, { signal: controller.signal, onProgress: () => controller.abort() });
   await assert.rejects(job, { name: 'AbortError' });
+  assert.deepEqual(await leftovers(w.out), []);
+});
+
+test('aborting after the Ghostscript chunks finish stops the merge', async t => {
+  const w = await workspace(t, 'gs'); if (!w) return;
+  const input = await w.file('long.pdf', await textPDF(160));
+  const controller = new AbortController();
+  // Aborts right after the check that follows the last chunk, which is where the merge starts.
+  const signal = new Proxy(controller.signal, { get(target, key) {
+    if (key === 'throwIfAborted') return () => {
+      target.throwIfAborted();
+      const chunks = (existsSync(w.out) ? readdirSync(w.out) : []).flatMap(name => name.startsWith('.clop-') ? readdirSync(path.join(w.out, name)) : []).filter(name => /^chunk-\d+\.pdf$/.test(name));
+      if (chunks.length === 2) controller.abort();
+    };
+    const value = Reflect.get(target, key, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  await assert.rejects(optimisePDF(input, w.out, { signal, allowLarger: true }), { name: 'AbortError' });
   assert.deepEqual(await leftovers(w.out), []);
 });
 

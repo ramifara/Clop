@@ -59,6 +59,43 @@
   ; END explorer-verbs-uninstall
 !macroend
 
+!macro clopRuntimeEntriesRemove
+  ; The app adds the clop:// handler and, with launchAtLogin, a Run entry itself. Both start this exe, so both go with it;
+  ; ones that start another program (a portable copy) stay.
+  Push $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  StrCpy $R1 '"$INSTDIR\Clop for Windows.exe"'
+  StrLen $R2 $R1
+  ReadRegStr $R0 HKCU "Software\Classes\clop\shell\open\command" ""
+  StrCpy $R3 $R0 $R2
+  ${if} $R3 == $R1
+    DeleteRegKey HKCU "Software\Classes\clop"
+  ${endif}
+  StrCpy $R4 0
+  clopRunEntriesLoop:
+    ClearErrors
+    EnumRegValue $R0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" $R4
+    IfErrors clopRunEntriesDone
+    StrCmp $R0 "" clopRunEntriesDone
+    ReadRegStr $R3 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" $R0
+    StrCpy $R3 $R3 $R2
+    ${if} $R3 == $R1
+      DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" $R0
+    ${else}
+      IntOp $R4 $R4 + 1
+    ${endif}
+    Goto clopRunEntriesLoop
+  clopRunEntriesDone:
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
+!macroend
+
 !macro customInstall
   !insertmacro clopPath add
   !insertmacro clopVerbsAdd
@@ -69,5 +106,6 @@
   ${ifNot} ${isUpdated}
     !insertmacro clopPath remove
     !insertmacro clopVerbsRemove
+    !insertmacro clopRuntimeEntriesRemove
   ${endif}
 !macroend

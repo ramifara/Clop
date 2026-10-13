@@ -18,6 +18,7 @@ import { imageThumbnail, mediaThumbnail } from './thumbnails';
 import type { PipelinesOutcome } from '../core/pipeline/triggers';
 import { imageCompression, parseOptions } from './settings';
 import { mediaKind } from './clipboard';
+import { exists, samePath } from '../core/fileops';
 
 sharp.concurrency(2);
 sharp.cache({ memory: 32, files: 0, items: 32 });
@@ -30,10 +31,15 @@ const PIXELS = 60_000_000;
 const LOCAL_ERRORS = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY', 'EISDIR']);
 /** Where a result goes besides the shelf: a watched file's result goes back in its folder. */
 export interface ItemPlacement {
-  /** Places a finished result; resolves with where it now is. */
-  place(output: MediaOutput): Promise<string>;
-  /** Puts the original back; resolves with where it now is, or undefined when the shelf's own copy is the original. */
-  restore(): Promise<string | undefined>;
+  /** Places a finished result; resolves with where it now is. `staged` is the shelf's copy of the original, to tell whether the file changed meanwhile. `manual` is a format the user chose on the result's card, for the settings of manual conversions. */
+  place(output: MediaOutput, staged?: string, manual?: boolean): Promise<string>;
+  /**
+   * Puts the original back; resolves with where it now is, or undefined when the shelf's own copy is the original. `resume` is a restore
+   * that a pipeline run on that file follows straight away: the placement goes on knowing the file as its result.
+   */
+  restore(resume?: boolean): Promise<string | undefined>;
+  /** A pipeline rewrote the placed file, or replaced it with another in its folder (a conversion): restoring undoes that file as it is now. */
+  follow?(file: string): void | Promise<void>;
 }
 /**
  * What the attached pipelines did to a file (`runPipelines` in core/pipeline/triggers.ts). `started` is the file they started
@@ -70,7 +76,13 @@ interface Entry {
   changedOutside?: string;
 }
 /** `placement` puts each result back where the file came from; `staged` hears the result's id as soon as it is in the shelf; `automation` runs attached pipelines. */
-export interface ImportExtra { placement?: ItemPlacement; staged?: (id: string) => void; automation?: ItemAutomation }
+export interface ImportExtra {
+  placement?: ItemPlacement; staged?: (id: string) => void; automation?: ItemAutomation;
+  /** Stops the import while it stages and the optimisation after it, as Stop does. */
+  signal?: AbortSignal;
+  /** More of the above for what the file turns out to be, once its content has been read: a dropped file's name can lie about its kind. */
+  late?: (kind: MediaKind) => Pick<ImportExtra, 'staged' | 'automation'> | undefined;
+}
 /** A change to a result's current file, writing into `outputDir` under `name`. */
 type Edit = (input: string, outputDir: string, name: string, signal: AbortSignal) => Promise<MediaOutput>;
 /** Dismissed results kept for `bringBack`. */
@@ -86,8 +98,14 @@ export class ItemEngine extends EventEmitter {
   private queues = new Map<MediaKind, Promise<unknown>>();
   private controller = new AbortController();
   private removed: Entry[] = [];
+  /** Imports still copying and probing their file, before they have a result to stop. */
+  private staging = new Set<AbortController>();
   /** `settings` is read for every job, so a changed compression setting applies to the next one. */
-  constructor(private root: string, private settings: () => ItemSettings = defaultSettings) { super(); }
+  /**
+   * `mark` records a finished result as optimised (the app's `OptimisedMarker`: on Windows a stream on the file, which Explorer copies
+   * and drags carry), so a result pasted or dragged into a watched folder is not optimised a second time.
+   */
+  constructor(private root: string, private settings: () => ItemSettings = defaultSettings, private readonly mark: (file: string) => Promise<void> = async () => {}) { super(); }
   list() { return [...this.entries.values()].map(e => structuredClone(e.result)).reverse(); }
   get(id: string) { const entry = this.entries.get(id); if (!entry) throw new Error('This result is no longer in the shelf.'); return entry; }
   has(id: string) { return this.entries.has(id); }
@@ -120,32 +138,37 @@ export class ItemEngine extends EventEmitter {
   }
   private async add(name: string, source: ItemResult['source'], options: ImageOptions, write: (staged: string) => Promise<unknown>, extra: ImportExtra = {}) {
     options = parseOptions(options);
-    const signal = this.controller.signal;
+    const importing = new AbortController(), signal = AbortSignal.any([this.controller.signal, importing.signal, ...extra.signal ? [extra.signal] : []]);
     signal.throwIfAborted();
+    this.staging.add(importing);
     // A long name loses the end of its stem, never its extension, which says what the file is.
     const base = path.basename(name), { name: stemPart, ext: extPart } = path.parse(base);
     const id = randomUUID(), directory = path.join(this.root, id), display = (base.length > 160 ? stemPart.slice(0, 160 - extPart.slice(0, 12).length) + extPart.slice(0, 12) : base) || 'Clipboard';
-    await mkdir(path.join(directory, 'original'), { recursive: true });
     let entry: Entry;
     try {
+      await mkdir(path.join(directory, 'original'), { recursive: true });
       // A short name keeps the session's paths well under Windows' 260 characters, which some bundled tools need.
       const { name: stem, ext } = path.parse(safeFileName(display)), staged = path.join(directory, 'original', `${stem.slice(0, 64) || 'file'}${ext.slice(0, 12)}`);
       await write(staged);
+      signal.throwIfAborted();
       const kind = await detectKind(staged, { signal });
       if (!kind) throw new Error('Use an image, a video, a PDF or an audio file.');
       const result = { id, kind, name: display, source, status: 'processing', options, animated: false, createdAt: Date.now() } as const;
-      entry = kind === 'image' ? await this.stageImage(staged, directory, result) : await this.stageMedia(staged, directory, { ...result, kind });
-      entry.placement = extra.placement; entry.automation = extra.automation;
+      entry = kind === 'image' ? await this.stageImage(staged, directory, result, signal) : await this.stageMedia(staged, directory, { ...result, kind }, signal);
+      signal.throwIfAborted();
+      const late = extra.late?.(kind);
+      entry.placement = extra.placement; entry.automation = extra.automation ?? late?.automation;
       this.entries.set(id, entry);
-      this.emit('add', id); extra.staged?.(id);
+      this.emit('add', id); extra.staged?.(id); late?.staged?.(id);
       this.changed();
     } catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
+    finally { this.staging.delete(importing); }
     const job = this.job(entry);
+    if (extra.signal?.aborted) job.abort(); else extra.signal?.addEventListener('abort', () => job.abort(), { once: true });
     await this.schedule(entry.result.kind, () => this.process(id, options, job));
     return id;
   }
-  private async stageImage(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'kind' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'>): Promise<Entry> {
-    const signal = this.controller.signal;
+  private async stageImage(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'kind' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'>, signal = this.controller.signal): Promise<Entry> {
     const info = await probeImage(staged, signal).catch(error => { if (signal.aborted) throw error; return undefined; });
     if (!info || !INPUT.has(info.format) || !info.width || !info.height) throw new Error('Use PNG, JPEG, WebP, GIF, AVIF, HEIC, JPEG XL, TIFF, BMP or SVG.');
     const { format, width, height, pages } = info;
@@ -157,8 +180,7 @@ export class ItemEngine extends EventEmitter {
     const result: ItemResult = { ...base, originalBytes: bytes, outputBytes: bytes, originalWidth: width, originalHeight: height, width, height, format, originalPreview: preview, preview, animated: pages > 1 };
     return { result, originalPath, outputPath: originalPath, directory, inputFormat: format, revision: 0, cancel: new AbortController(), jobs: new Set() };
   }
-  private async stageMedia(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'> & { kind: Exclude<MediaKind, 'image'> }): Promise<Entry> {
-    const signal = this.controller.signal;
+  private async stageMedia(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'> & { kind: Exclude<MediaKind, 'image'> }, signal = this.controller.signal): Promise<Entry> {
     const info = base.kind === 'pdf' ? undefined : await probe(staged, { signal }) as VideoInfo | AudioInfo;
     // A download may have no extension, or the wrong one; the tools and the pasted file need one that matches the content.
     if (mediaKind(staged) !== base.kind) {
@@ -169,7 +191,7 @@ export class ItemEngine extends EventEmitter {
     const preview = await mediaThumbnail(base.kind, staged, { durationMs: info?.durationMs, signal }), bytes = (await stat(staged)).size;
     const result: ItemResult = {
       ...base, originalBytes: bytes, outputBytes: bytes, originalWidth: video?.width ?? 0, originalHeight: video?.height ?? 0, width: video?.width ?? 0, height: video?.height ?? 0,
-      format, originalPreview: preview, preview, durationMs: info?.durationMs,
+      format, originalPreview: preview, preview, durationMs: info?.durationMs, ...(info?.kind === 'audio' ? { coverArt: info.hasCoverArt } : {}),
     };
     return { result, originalPath: staged, outputPath: staged, directory, inputFormat: format, revision: 0, cancel: new AbortController(), jobs: new Set() };
   }
@@ -219,7 +241,8 @@ export class ItemEngine extends EventEmitter {
         r.notes = outcome.warnings.length ? outcome.warnings : undefined;
       }
       let output: MediaOutput, width = r.originalWidth, height = r.originalHeight;
-      if (edit) output = await edit(e.outputPath, outputDir, name, signal);
+      // An edit starts from the current result, which a pipeline may have replaced with a file of its own.
+      if (edit) output = await edit(e.placedPath ?? e.outputPath, outputDir, name, signal);
       else if (r.kind === 'image') {
         // A crop comes first, and the scale and longest edge then apply to what it keeps.
         const geometry = options.crop && cropGeometry(options.crop, r.originalWidth, r.originalHeight);
@@ -243,9 +266,9 @@ export class ItemEngine extends EventEmitter {
       if (e.placement) {
         // Once placing starts it finishes, even if the item is dismissed meanwhile, and the item stays restorable.
         e.placing = true;
-        try { e.placedPath = await e.placement.place(output); e.shown = true; } finally { e.placing = false; }
+        try { e.placedPath = await e.placement.place(output, e.originalPath, options.format !== 'auto'); e.shown = true; } finally { e.placing = false; }
       }
-      if (!output.unchanged) e.revision++;
+      if (!output.unchanged) { e.revision++; await this.mark(output.path).catch(() => {}); }
       // Keep earlier results until the session ends: other apps may still be pasting or dragging them.
       e.outputPath = output.path;
       for (const warning of output.warnings ?? []) console.warn(warning);
@@ -254,7 +277,9 @@ export class ItemEngine extends EventEmitter {
         : (r.kind === 'video' && options.crop) || (r.kind === 'pdf' && edit) ? await mediaThumbnail(r.kind, output.path, { durationMs: output.durationMs ?? r.durationMs, signal }) : r.originalPreview;
       // With pipelines still to run, the result is not ready yet: copying or dragging it now would hand out the file before them.
       const following = automation && !automation.skipOptimisation;
-      Object.assign(r, { status: following ? 'processing' : 'ready', options, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes, preview,
+      // Optimising can drop the cover art (the `audioCoverArt` setting).
+      if (r.kind === 'audio') r.coverArt = await probe(output.path, { signal }).then(info => info.kind === 'audio' ? info.hasCoverArt : undefined, () => r.coverArt);
+      Object.assign(r, { status: following ? 'processing' : 'ready', options, revision: e.revision, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes, preview,
         durationMs: output.durationMs ?? r.durationMs, pages: output.pages ?? r.pages, progress: undefined, unchanged: !!output.unchanged, restored: false });
       if (following) {
         const outcome = await automation.run(this.pipelineRun(e, e.placedPath ?? (output.unchanged ? undefined : output.path), signal));
@@ -301,12 +326,17 @@ export class ItemEngine extends EventEmitter {
     const r = e.result;
     signal.throwIfAborted();
     // Pipelines that replaced optimisation work on the user's file where it is, with no placement to undo them: its original is in the backups.
-    if (fresh && outcome.anyRan && outcome.started && !within(e.directory, outcome.started)) e.changedOutside ??= outcome.started;
+    // So do pipelines that ran after an optimisation that left the file as it was: nothing was backed up for them either.
+    if ((fresh || r.unchanged) && outcome.anyRan && outcome.started && !within(e.directory, outcome.started)) e.changedOutside ??= outcome.started;
     const info = outcome.anyRan ? await stat(outcome.file).catch(() => undefined) : undefined;
     if (info?.isFile()) {
       const kind = await detectKind(outcome.file, { signal }).catch(() => undefined) ?? r.kind;
+      // A conversion in place leaves the file under another name, and other steps rewrite it where it is; the placement follows either, so
+      // restoring still finds the result and knows it as Clop's.
+      if (e.placedPath && e.placement?.follow && samePath(path.dirname(e.placedPath), path.dirname(outcome.file)) && (samePath(e.placedPath, outcome.file) || !await exists(e.placedPath))) await e.placement.follow(outcome.file);
       e.placedPath = outcome.file;
       e.revision++;
+      r.revision = e.revision;
       if (kind !== r.kind) await this.rebase(e, outcome.file, kind, signal);
       Object.assign(r, { format: path.extname(outcome.file).slice(1).toLowerCase() || r.format, outputBytes: info.size, unchanged: false, restored: false });
       if (kind === 'image') {
@@ -321,7 +351,13 @@ export class ItemEngine extends EventEmitter {
         const media = await probe(outcome.file, { signal }).catch(() => undefined) as VideoInfo | AudioInfo | undefined;
         if (media?.kind === 'video') Object.assign(r, { width: media.width, height: media.height });
         if (media?.durationMs) r.durationMs = media.durationMs;
+        if (media?.kind === 'audio') r.coverArt = media.hasCoverArt;
       }
+    } else if (outcome.anyRan) {
+      // The pipelines ended on a file that is gone (a final `delete`): there is no result to copy, drag or reveal.
+      Object.assign(r, { status: 'error', error: 'A pipeline deleted this file, so there is no result to show.', progress: undefined, notes: outcome.warnings.length ? outcome.warnings : undefined });
+      e.shown = true; this.changed();
+      return;
     } else if (fresh) {
       // Nothing ran and nothing was optimised: the card shows the original as it is.
       Object.assign(r, { format: e.inputFormat, outputBytes: r.originalBytes, unchanged: true });
@@ -368,15 +404,16 @@ export class ItemEngine extends EventEmitter {
   private progress(r: ItemResult) {
     return (fraction: number) => { const value = Math.floor(fraction * 50) / 50; if (value > (r.progress ?? 0)) { r.progress = value; this.changed(); } };
   }
-  restore(id: string) { return this.schedule(this.kindOf(id), async () => {
+  restore(id: string, resume = false) { return this.schedule(this.kindOf(id), async () => {
     const e = this.get(id);
     if (e.changedOutside) throw new Error(`A pipeline changed ${path.basename(e.changedOutside)}, so Clop leaves it as it is. Its original is in the backups.`);
     // A pipeline's file outside the shelf is no longer the result once the original is back.
-    e.placedPath = e.placement ? await e.placement.restore() : undefined;
+    e.placedPath = e.placement ? await e.placement.restore(resume) : undefined;
     e.outputPath = e.originalPath;
+    if (e.result.kind === 'audio') e.result.coverArt = await probe(e.originalPath).then(info => info.kind === 'audio' ? info.hasCoverArt : undefined, () => e.result.coverArt);
     Object.assign(e.result, { status: 'ready', width: e.result.originalWidth, height: e.result.originalHeight, outputBytes: e.result.originalBytes,
-      format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, maxEdge: undefined, format: 'auto', crop: undefined, compression: undefined }, restored: true, unchanged: true, error: undefined, notes: undefined });
-    e.shown = true; this.changed(); this.emit('ready', id);
+      format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, speed: undefined, maxEdge: undefined, format: 'auto', crop: undefined, compression: undefined }, restored: true, unchanged: true, error: undefined, notes: undefined });
+    e.shown = true; this.changed(); this.emit('restored', id); this.emit('ready', id);
   }); }
   /**
    * Removes an item at once, without waiting behind other jobs of its kind, and stops its job if one is running.
@@ -402,10 +439,15 @@ export class ItemEngine extends EventEmitter {
     this.entries.set(e.result.id, e); this.changed();
     return e.result.id;
   }
+  /** Notes the downscale and playback speed a result has had, which the next card action goes on from. */
+  track(id: string, tracked: Pick<Partial<ImageOptions>, 'scale' | 'speed'>) { const e = this.get(id); e.result.options = { ...e.result.options, ...tracked }; this.changed(); }
   /** Whether any result is still being optimised; cheaper than listing them (which copies each). */
   processing() { for (const e of this.entries.values()) if (e.result.status === 'processing') return true; return false; }
-  /** Stops the running and queued jobs of `ids` (every result by default). Each ends with a "Stopped." error; sources stay as they are. */
-  stop(ids?: readonly string[]) { for (const [id, e] of this.entries) if (!ids || ids.includes(id)) for (const job of e.jobs) job.abort(); }
+  /** Stops the running and queued jobs of `ids` (every result by default, and the imports still being read). Each ends with a "Stopped." error; sources stay as they are. */
+  stop(ids?: readonly string[]) {
+    if (!ids) for (const importing of this.staging) importing.abort();
+    for (const [id, e] of this.entries) if (!ids || ids.includes(id)) for (const job of e.jobs) job.abort();
+  }
   async idle() { await Promise.all(this.queues.values()); }
   /** Stops every running and queued job, for quitting. Later imports are refused. */
   abort() { this.controller.abort(); }

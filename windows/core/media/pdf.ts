@@ -254,9 +254,11 @@ async function optimiseInChunks(pages: number, tmp: string, result: string, args
   // Like PDFKit's page-by-page merge on macOS, this keeps the pages and drops document-level outlines and links into other chunks.
   const merged = await PDFDocument.create({ updateMetadata: false });
   for (const chunk of chunks) {
+    signal?.throwIfAborted();
     const part = await loadPDF(chunk.file);
     for (const page of await merged.copyPages(part, part.getPageIndices())) merged.addPage(page);
   }
+  signal?.throwIfAborted();
   await writeFile(result, await merged.save());
 }
 

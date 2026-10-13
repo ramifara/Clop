@@ -55,3 +55,13 @@ test('invalid crop and extend options reject instead of throwing', async () => {
   await assert.rejects(crop, /positive aspect ratio/);
   await assert.rejects(extend, /positive aspect ratio/);
 });
+
+test('a forced orientation is the displayed page\'s, also on a page turned a quarter', async t => {
+  const w = await workspace(t); if (!w) return;
+  const turned = await w.file('turned.pdf', await textPDF(1, { rotate: 90 }));
+  // Displayed as landscape (792 × 612): portrait output is a landscape box in the unrotated page, and the other way round.
+  const portrait = await cropPDF(turned, w.out, { aspectRatio: A4_RATIO, alwaysPortrait: true, name: 'portrait' });
+  assert.deepEqual(round((await boxes(portrait.path))[0].crop), { x: 0, y: 179.64, width: 612, height: 432.73 });
+  const landscape = await cropPDF(turned, w.out, { aspectRatio: A4_RATIO, alwaysLandscape: true, name: 'landscape' });
+  assert.deepEqual(round((await boxes(landscape.path))[0].crop), { x: 26, y: 0, width: 560, height: 792 });
+});

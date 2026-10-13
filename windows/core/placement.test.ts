@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { exists, samePath } from './fileops';
 import { OptimisedMarker } from './marker';
-import { effectiveBehaviour, executePlacement, isTemplatedCopy, placeOutput, planPlacement, type FileBehaviour, type PlacementEnv, type PlacementOverride } from './placement';
+import { destinationPath, effectiveBehaviour, executePlacement, isTemplatedCopy, placementsSettled, placeOutput, placing, planPlacement, type FileBehaviour, type PlacementEnv, type PlacementOverride } from './placement';
 import { defaultSettings, type ClopSettings } from './settings/schema';
 import { Workdir } from './workdir';
 
@@ -89,6 +89,37 @@ test('inPlace when the optimiser already rewrote the original reports the backup
   assert.equal(await readFile(original, 'utf8'), 'rewritten in place');
 });
 
+test('a placement that moves the original aside leaves a note while it runs, which the next start uses to put the original back', async t => {
+  const { env, original, bytes, source, workdir } = await setup(t, behaviour('inPlace'));
+  const notes: string[] = [];
+  // As if the process died before the placement finished: the note is never removed.
+  const dying = Object.assign(Object.create(workdir) as Workdir, { journal: async (file: string, backup: string) => { notes.push(file); await workdir.journal(file, backup); return async () => {}; } });
+  const webp = path.join(workdir.temp, 'result.webp');
+  await writeFile(webp, 'webp bytes');
+  const placed = await placeOutput({ ...env, workdir: dying }, { produced: webp, original, type: 'image' });
+  assert.deepEqual(notes, [original]);
+  // The converted file never made it.
+  await rm(placed.path);
+  assert.deepEqual(await readdir(source), []);
+  assert.deepEqual(await workdir.repair(), [original]);
+  assert.deepEqual(await readFile(original), bytes);
+  assert.deepEqual(await workdir.repair(), [], 'the note is gone');
+});
+
+test('a placement that finishes leaves no note, and quitting can wait for the placements under way', async t => {
+  const { env, original, workdir } = await setup(t, behaviour('inPlace'));
+  const webp = path.join(workdir.temp, 'result.webp');
+  await writeFile(webp, 'webp bytes');
+  const running = executePlacement(env, await planPlacement(env, { produced: webp, original, type: 'image' }), webp, original);
+  assert.equal(placing(), true);
+  let settled = false;
+  const waiting = placementsSettled().then(() => { settled = true; });
+  await running; await waiting;
+  assert.equal(settled, true);
+  assert.equal(placing(), false);
+  assert.deepEqual(await readdir(path.join(workdir.root, 'placing')), []);
+});
+
 test('inPlace undoes the backup move when the copy fails', async t => {
   const { env, original, bytes, workdir, source } = await setup(t, behaviour('inPlace'));
   const missing = path.join(workdir.temp, 'never-written.png');
@@ -148,6 +179,34 @@ test('sameFolder is idempotent: a file already named by the template keeps its n
   assert.equal(plan.dest, already);
   const fresh = await planPlacement(env, { produced, original: path.join(source, 'img.png'), type: 'image' });
   assert.equal(fresh.dest, path.join(source, 'img-optimised.png'));
+});
+
+test('an original replaced under its own name is never missing, and stays as it was when the placement fails', async t => {
+  const { env, original, bytes, produced, workdir } = await setup(t, behaviour('inPlace'));
+  // The backup is a copy while the original is still in place; the result then takes its place in one rename.
+  const present: boolean[] = [], backup = workdir.backup.bind(workdir);
+  workdir.backup = async (file, options) => { const made = await backup(file, options); present.push(await exists(original)); return made; };
+  const placed = await placeOutput(env, { produced, original, type: 'image' });
+  assert.deepEqual(present, [true], 'the original was still there when the backup was done');
+  assert.deepEqual(await readFile(placed.backup!), bytes);
+  assert.equal(placed.originalRemoved, true);
+  // A produced file that is gone fails the placement; the original is untouched, with no restore step to get wrong.
+  const failed = await setup(t, behaviour('inPlace'));
+  await assert.rejects(placeOutput(failed.env, { produced: path.join(failed.dir, 'gone.png'), original: failed.original, type: 'image' }));
+  assert.deepEqual(await readFile(failed.original), failed.bytes);
+});
+
+test('a sameFolder template that already matches the file replaces it only after keeping a backup that restores it', async t => {
+  const { env, produced, source, workdir, result } = await setup(t, { ...behaviour('sameFolder'), sameFolderNameTemplateImage: '%f-%n' });
+  const family = path.join(source, 'family-photo.png'), bytes = Buffer.from('the only copy of the family photo');
+  await writeFile(family, bytes);
+  const plan = await planPlacement(env, { produced, original: family, type: 'image' });
+  assert.equal(plan.dest, family, 'the hyphenated name is taken for a templated one');
+  const placed = await executePlacement(env, plan, produced, family);
+  assert.deepEqual(await readFile(family), result);
+  assert.ok(placed.backup && placed.originalRemoved);
+  assert.deepEqual(await readFile(placed.backup!), bytes);
+  assert.deepEqual(await readdir(workdir.backups), [path.basename(placed.backup!)]);
 });
 
 test('sameFolder counts up with %i and an empty template falls back to the default name', async t => {
@@ -288,4 +347,45 @@ test('samePath ignores case on Windows only and resolves relative segments', () 
   assert.equal(samePath(upper, lower, 'win32'), true);
   assert.equal(samePath(upper, lower, 'linux'), false);
   assert.equal(samePath(path.resolve('a', 'b', '..', 'b', 'shot.png'), lower, 'linux'), true);
+});
+
+test('a chosen folder holds a nested original only at the templated place, never by %f spanning folders', async t => {
+  const { env, source } = await setup(t, behaviour('specificFolder'));
+  const nested = path.join(source, 'trip', 'photo.png'), overrides = { specificFolderRoot: source, specificFolderTemplate: '%f' };
+  assert.equal(await destinationPath(env, 'image', 'optimised', nested, overrides), path.join(source, 'photo.png'), 'a nested original goes to the folder\'s top');
+  const top = path.join(source, 'photo.png');
+  assert.equal(await destinationPath(env, 'image', 'optimised', top, overrides), top, 'one already there stays');
+  const inSub = { ...overrides, specificFolderTemplate: 'sub/%f' };
+  assert.equal(await destinationPath(env, 'image', 'optimised', path.join(source, 'sub', 'photo.png'), inSub), path.join(source, 'sub', 'photo.png'));
+});
+
+test('outside a chosen folder, %f matches any text as on macOS, so a nested file under a specific-folder template counts as placed', async t => {
+  const { env, source } = await setup(t, { ...behaviour('specificFolder'), specificFolderNameTemplateImage: '%P/optimised/%f' });
+  const nested = path.join(source, 'optimised', 'trip', 'photo.png');
+  assert.equal(await destinationPath(env, 'image', 'optimised', nested), nested, 'already under the templated folder');
+  assert.equal(isTemplatedCopy(env, 'image', nested), true);
+});
+
+test('an agent\'s name template that expands to a network or device path is refused before a folder is made', async t => {
+  const { env, produced } = await setup(t);
+  const original = 'C:\\Users\\me\\photo';
+  const agent: PlacementEnv = { ...env, platform: 'win32', agent: true };
+  const refused = /is on a network share or a device/;
+  for (const template of ['%e\\\\host\\share\\%f', '%e//host/share/%f', '\\\\host\\share\\%f', '%e\\\\?\\UNC\\host\\share\\%f']) {
+    await assert.rejects(planPlacement(agent, { produced, original, type: 'image', overrides: { optimised: 'specificFolder', specificFolderTemplate: template } }), refused, template);
+    await assert.rejects(planPlacement(agent, { produced, original, type: 'image', overrides: { optimised: 'specificFolder', specificFolderTemplate: template, specificFolderRoot: 'C:\\Pictures' } }), /outside the chosen folder|network share/, template);
+  }
+  await assert.rejects(executePlacement(agent, { behaviour: 'specificFolder', dest: '\\\\host\\share\\photo' }, produced, original), refused, 'the placement itself checks its destination');
+});
+
+test('an agent\'s result is not placed in the folders where Clop keeps what puts originals back', async t => {
+  const { env, produced, workdir } = await setup(t);
+  const original = path.join(path.dirname(produced), 'photo.png');
+  const agent: PlacementEnv = { ...env, agent: true };
+  for (const dest of [path.join(workdir.backups, 'payload.png'), path.join(workdir.root, 'placing', 'forged.json'), path.join(workdir.batchBackups, 'batch-x', 'manifest.json')]) {
+    await assert.rejects(executePlacement(agent, { behaviour: 'specificFolder', dest }, produced, original), /where Clop keeps the originals it is replacing/, dest);
+    assert.equal(await exists(dest), false, dest);
+  }
+  const mine = path.join(workdir.backups, 'mine.png');
+  assert.equal((await executePlacement(env, { behaviour: 'specificFolder', dest: mine }, produced, original)).path, mine, 'only an agent is kept out');
 });

@@ -61,25 +61,30 @@ export async function applyLocation(run: RunState, location: string, result: str
   }
   const resolved = run.resolve(location);
   if (!resolved) return result;
+  run.expanded(resolved);
   const ext = ownExtension.slice(1);
   let dest: string;
   if (!SEPARATOR.test(resolved)) dest = path.join(path.dirname(original), hasFileExtension(resolved, [ext]) ? resolved : `${resolved}.${ext}`);
   else {
     const absolute = path.resolve(path.dirname(original), resolved);
+    run.local(absolute);
     dest = endsInSeparator(resolved) || await isDirectory(absolute) ? path.join(absolute, name) : absolute;
   }
   if (!hasFileExtension(path.basename(dest), [extension(result), extension(original)]) && ext) dest = `${dest}.${ext}`;
+  run.local(dest);
   if (samePath(dest, result)) return result;
-  if (run.opts.refuseExisting && !fromSettings && location !== run.opts.refuseExisting.settingsLocation && ![original, run.original].some(file => samePath(dest, file)) && await exists(dest)) {
-    throw new Error(`${dest} already exists. Agents can't replace a file that is already there: ask for an output path that doesn't exist yet.`);
+  if (run.opts.refuseExisting && !fromSettings && ![original, run.original].some(file => samePath(dest, file)) && await exists(dest)) {
+    throw new Error(`${dest} already exists, and this request may not replace a file that is already there: ask for an output path that doesn't exist yet.`);
   }
   await mkdir(path.dirname(dest), { recursive: true });
   return place(run, samePath(dest, original) ? 'inPlace' : 'specificFolder', result, original, dest);
 }
 
-/** Keeps a different file that already sits at `dest` in the backups before something replaces it. */
+/** Keeps a different file that already sits at `dest` in the backups before something replaces it; an agent's run is refused instead. */
 async function keepCollision(run: RunState, dest: string) {
-  if (!samePath(dest, run.current) && await exists(dest)) await run.opts.env.workdir.backup(dest, { force: true });
+  if (samePath(dest, run.current) || !await exists(dest)) return;
+  if (run.opts.refuseExisting && !samePath(dest, run.original)) throw new Error(`${dest} already exists, and this request may not replace a file that is already there: ask for an output path that doesn't exist yet.`);
+  await run.opts.env.workdir.backup(dest, { force: true });
 }
 
 /**
@@ -88,6 +93,8 @@ async function keepCollision(run: RunState, dest: string) {
  */
 async function fileDestination(run: RunState, to: string): Promise<string> {
   const named = run.resolve(to), resolved = path.resolve(path.dirname(run.current), named);
+  run.expanded(named);
+  run.local(resolved);
   if (endsInSeparator(to) || endsInSeparator(named) || await isDirectory(resolved)) {
     await mkdir(resolved, { recursive: true });
     return path.join(resolved, path.basename(run.current));
@@ -102,12 +109,16 @@ export async function copyStep(run: RunState, to: string) {
   const dest = await fileDestination(run, to);
   await keepCollision(run, dest);
   run.current = await copyTo(run.current, dest);
+  // Marked, so a watcher over the folder it lands in does not take the copy for a new file and copy it again.
+  await run.mark(run.current);
 }
 
+/** `move(to:)`: marked like a copy, so a watcher over the folder it lands in does not take it for a new file. */
 export async function moveStep(run: RunState, to: string) {
   const dest = await fileDestination(run, to);
   await keepCollision(run, dest);
   run.current = await moveTo(run.current, dest);
+  await run.mark(run.current);
 }
 
 /** `rename(to:)`: a new name in the same folder, with the file's extension when the template gives none. */
@@ -116,6 +127,8 @@ export async function renameStep(run: RunState, to: string) {
   const last = name.split(SEPARATOR).at(-1) ?? name, ext = extension(run.current);
   if (!hasFileExtension(last, [ext]) && ext) name += `.${ext}`;
   const dest = path.join(path.dirname(run.current), name);
+  run.expanded(name);
+  run.local(dest);
   await keepCollision(run, dest);
   run.current = await moveTo(run.current, dest);
 }
@@ -125,6 +138,8 @@ export async function deleteStep(run: RunState, target: string) {
   const named = target === 'sourceFile' ? run.original : run.resolve(target).trim();
   if (!named) return;
   const resolved = path.resolve(path.dirname(run.current), named);
+  run.expanded(named);
+  run.local(resolved);
   const info = await stat(resolved).catch(() => undefined);
   if (info) await run.opts.effects.trash(resolved, info.isDirectory() ? 'folder' : 'file');
 }

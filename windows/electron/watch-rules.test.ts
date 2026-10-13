@@ -7,7 +7,7 @@ import sharp from 'sharp';
 import { defaultSettings } from '../core/settings/schema';
 import { needTools } from '../core/testing';
 import { clip } from '../core/media/video.fixtures';
-import { clopIgnored, hidesResult, ignoredBy, matchingWatchedDir, placeholderReply, qualifies, recentFiles, watchSettings, writable } from './watch-rules';
+import { clopIgnored, hidesResult, ignoredBy, localFile, matchingWatchedDir, placeholderReply, qualifies, recentFiles, watchSettings, writable } from './watch-rules';
 
 async function folder(t: TestContext) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-rules-'));
@@ -114,4 +114,12 @@ test('the rescan counts links to files as files and does not follow links to fol
   await symlink(path.join(outside, 'target.png'), path.join(dir, 'link.png'));
   await symlink(path.join(outside, 'tree'), path.join(dir, 'linked-tree'));
   assert.deepEqual((await recentFiles(dir, Date.now() - 60_000)).map(file => path.basename(file)), ['link.png']);
+});
+
+test('without the helper\'s answer a file is as local as the caller says, and with it the helper decides', async () => {
+  assert.equal(await localFile('C:\\a.png', undefined, false), false);
+  assert.equal(await localFile('C:\\a.png', undefined, true), true);
+  assert.equal(await localFile('C:\\a.png', async paths => ({ cloud: paths.map(() => true) }), true), false);
+  assert.equal(await localFile('C:\\a.png', async paths => ({ cloud: paths.map(() => false) }), false), true);
+  await assert.rejects(localFile('C:\\a.png', async () => ({}), true), /unreadable/);
 });

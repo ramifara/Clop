@@ -10,11 +10,8 @@ test('ICU patterns from macOS are read as JavaScript ones', () => {
   const cases: [string, string, boolean][] = [
     ['(?i)SCREEN', 'screenshot.png', true],
     ['(?is)^a.b', 'A\nB', true],
-    ['^a++b$', 'aaab', true],
-    ['^\\d{2}+x', '12x', true],
     ['^[+*]+$', '+*+', true],
     ['^\\++$', '+++', true],
-    ['^(?:ab)?+c', 'abc', true],
     ['\\Qa.b(\\E$', 'xa.b(', true],
     ['\\Qa.b\\E', 'axb', false],
     ['\\Ashot', 'shot.png', true],
@@ -23,7 +20,8 @@ test('ICU patterns from macOS are read as JavaScript ones', () => {
     ['^\\p{Lu}', 'Écran.png', true],
   ];
   for (const [pattern, text, expected] of cases) assert.equal(icuRegex(pattern).test(text), expected, pattern);
-  for (const pattern of ['(?>a)b', '(?x) a', '\\h+', 'a(?i)b', '[unclosed', '[[:alpha:]]', '[a-z&&[^aeiou]]', '\\x{41}']) assert.throws(() => icuRegex(pattern), /cannot read/, pattern);
+  // A possessive quantifier would turn greedy and match what ICU does not (`^a++a$` rejects `aa`).
+  for (const pattern of ['^a++b$', '^\\d{2}+x', '^(?:ab)?+c', '^a++a$', '(?>a)b', '(?x) a', '\\h+', 'a(?i)b', '[unclosed', '[[:alpha:]]', '[a-z&&[^aeiou]]', '\\x{41}']) assert.throws(() => icuRegex(pattern), /cannot read/, pattern);
 });
 
 test('regex is smart case', () => {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { defaultSettings, type ClopSettings, type SettingKey } from './schema';
@@ -151,4 +151,84 @@ test('an update is refused while the settings file could not be read', async t =
   let ran = false;
   await assert.rejects(store.update(() => { ran = true; return { patch: { keepDropZoneVisible: true }, result: 0 }; }), /will not save changes/);
   assert.equal(ran, false);
+});
+
+test('a store on a file other processes write starts each change from the file as it is, so it keeps what they saved', async t => {
+  const dir = await folder(t), file = path.join(dir, 'settings.json');
+  await writeFile(file, JSON.stringify({ stripMetadata: true }));
+  const first = new SettingsStore(file, paths, true), other = new SettingsStore(file, paths, true);
+  await first.load(); await other.load();
+  // Another process saves a setting after this one loaded the file.
+  await other.set({ preserveDates: false });
+  // This one then saves only a counter (as a headless `%i` run does), or edits through `update`.
+  await first.set({ lastAutoIncrementingNumber: 7 });
+  assert.deepEqual([(await readJson(file)).preserveDates, (await readJson(file)).lastAutoIncrementingNumber], [false, 7]);
+  await other.set({ stripMetadata: false });
+  await first.update(current => ({ patch: { autoCopyToClipboard: !current.autoCopyToClipboard }, result: undefined }));
+  const stored = await readJson(file);
+  assert.deepEqual([stored.stripMetadata, stored.preserveDates, stored.lastAutoIncrementingNumber], [false, false, 7]);
+  assert.equal(first.get('stripMetadata'), false);
+  // A store that owns the file (the app) keeps its own copy, as before.
+  const owner = new SettingsStore(file, paths);
+  await owner.load();
+  await other.set({ stripMetadata: true });
+  await owner.set({ lastAutoIncrementingNumber: 8 });
+  assert.equal((await readJson(file)).stripMetadata, false, 'the owner writes what it holds');
+});
+
+test('the app\'s store on the shared file keeps what a command saved before the app was reachable, and announces it', async t => {
+  const dir = await folder(t), file = path.join(dir, 'settings.json');
+  await writeFile(file, JSON.stringify({ stripMetadata: true }));
+  const app = new SettingsStore(file, paths, true), command = new SettingsStore(file, paths, true);
+  await app.load(); await command.load();
+  const heard: SettingKey[][] = [];
+  app.on('change', (_settings, changed) => heard.push(changed));
+  // A command that found no pipe saved a setting under the lock; the app then saves another one.
+  await command.set({ preserveDates: false });
+  await app.set({ lastAutoIncrementingNumber: 7 });
+  const stored = await readJson(file);
+  assert.deepEqual([stored.preserveDates, stored.lastAutoIncrementingNumber], [false, 7], 'the command\'s change is not written over');
+  assert.equal(app.get('preserveDates'), false);
+  assert.deepEqual(heard, [['preserveDates'], ['lastAutoIncrementingNumber']], 'the command\'s change reaches the app\'s listeners');
+  assert.deepEqual((await readdir(dir)).sort(), ['settings.json']);
+});
+
+test('stores in different processes that edit one list at the same time keep every entry, and a dead process\'s lock does not block them', async t => {
+  const dir = await folder(t), file = path.join(dir, 'settings.json');
+  await writeFile(file, JSON.stringify({ imageDirs: [] }));
+  const stores = [new SettingsStore(file, paths, true), new SettingsStore(file, paths, true), new SettingsStore(file, paths, true)];
+  await Promise.all(stores.map(store => store.load()));
+  // Each store adds its own entries to the list with a read-modify-write; the three run side by side, as three commands would.
+  await Promise.all(stores.flatMap((store, n) => [0, 1, 2, 3].map(i => store.update(current => ({ patch: { imageDirs: [...current.imageDirs, `${n}-${i}`] }, result: 0 })))));
+  assert.deepEqual([...(await readJson(file)).imageDirs].sort(), stores.flatMap((_, n) => [0, 1, 2, 3].map(i => `${n}-${i}`)).sort());
+  assert.equal(await readFile(`${file}.lock`, 'utf8').catch(() => 'gone'), 'gone', 'the lock is released');
+  // A lock a killed process left behind is taken over once it is old.
+  await writeFile(`${file}.lock`, '1');
+  const old = new Date(Date.now() - 60_000);
+  await utimes(`${file}.lock`, old, old);
+  await stores[0].set({ lastAutoIncrementingNumber: 9 });
+  assert.equal((await readJson(file)).lastAutoIncrementingNumber, 9);
+});
+
+test('a shared store starts over from the defaults when the file is deleted, and refuses a change while it cannot be read', async t => {
+  const dir = await folder(t), file = path.join(dir, 'settings.json');
+  await writeFile(file, JSON.stringify({ stripMetadata: false, preserveDates: false }));
+  const store = new SettingsStore(file, paths, true);
+  await store.load();
+  // Deleted while a command runs: its next change builds on the defaults, not on the settings it read at startup.
+  await rm(file);
+  await store.set({ lastAutoIncrementingNumber: 3 });
+  const stored = await readJson(file);
+  assert.deepEqual([stored.stripMetadata, stored.preserveDates, stored.lastAutoIncrementingNumber], [true, true, 3]);
+  // Damaged while a command runs (or being repaired): nothing is written over it.
+  for (const content of ['{"stripMetadata": fal', '[1, 2]']) {
+    await writeFile(file, content);
+    await assert.rejects(store.set({ lastAutoIncrementingNumber: 4 }), /could not read its settings file/);
+    await assert.rejects(store.update(() => ({ patch: { preserveDates: true }, result: 0 })), /could not read its settings file/);
+    assert.equal(await readFile(file, 'utf8'), content);
+  }
+  // Once it can be read again, changes go through.
+  await writeFile(file, JSON.stringify({ preserveDates: false }));
+  await store.set({ lastAutoIncrementingNumber: 5 });
+  assert.equal((await readJson(file)).lastAutoIncrementingNumber, 5);
 });

@@ -12,7 +12,7 @@ import { needTools } from '../core/testing';
 import { DECLINED_PREFIX, INSTRUCTIONS, SMALLER_OPTIONS_TEXT } from './mcp-copy';
 import { connect, folder, removeFolder } from './mcp.fixtures';
 import { TOOLS } from './mcp-table';
-import { annotate, speedSteps, withFrames } from './mcp-tools';
+import { annotate, controlLauncher, inTurn, speedSteps, withFrames, writesSettings } from './mcp-tools';
 
 // A hung server must fail one test, not run out the CI job.
 const TIMEOUT = 120_000;
@@ -114,6 +114,83 @@ test('questions: "make it smaller" asks the user, and without a way to ask retur
   assert.deepEqual(result.newWidthHeight, [200, 150], 'both: downscaled by half and compressed');
 });
 
+test('questions: an agent that may not make changes is refused before the file it names is looked up', { timeout: TIMEOUT }, async t => {
+  const f = await folder(t);
+  const declining = await connect(t, f, { answer: () => ({ action: 'decline' }) });
+  const refused = await declining.call('clop_optimise', { paths: ['nope.png'] });
+  assert.equal(refused.error, true);
+  assert.match(refused.text, /^Clop is not accepting changes from agents/);
+  assert.match((await declining.call('clop_optimise', { paths: ['nope.mp4'], playbackSpeedFactor: 2 })).text, /^Clop is not accepting changes from agents/);
+});
+
+test('questions: no tool that takes files looks one up before the gate has answered', { timeout: TIMEOUT }, async t => {
+  const f = await folder(t);
+  const seen: string[] = [];
+  const { call } = await connect(t, f, { extra: { lookedUp: file => { seen.push(file); } } });
+  const files = [f.file('a.mp4')];
+  for (const [tool, args] of [['clop_optimise', { paths: files }], ['clop_pipeline_run', { pipeline: 'optimise()', paths: files }], ['clop_pipeline_run', { pipeline: 'changeSpeed(factor: 2)', paths: files }]] as const) {
+    const refused = await call(tool, args);
+    assert.match(refused.text, /^Clop is not accepting changes from agents/, tool);
+  }
+  assert.deepEqual(seen, [], 'nothing was looked up');
+  // The same call is looked at once the switch is on.
+  await f.settle({ mcpEnabled: true });
+  await call('clop_pipeline_run', { pipeline: 'optimise()', paths: files });
+  assert.ok(seen.length > 0);
+});
+
+test('network shares and device paths an agent names are refused before anything looks them up, even with the switch on', { timeout: TIMEOUT }, async t => {
+  const f = await folder(t, { mcpEnabled: true });
+  const seen: string[] = [];
+  const { call } = await connect(t, f, { extra: { lookedUp: file => { seen.push(file); } } });
+  for (const file of ['\\\\server\\share\\a.mp4', '//server/share/a.mp4', '\\\\?\\UNC\\server\\share\\a.mp4', '\\\\.\\C:\\a.mp4', 'file://server/share/a.mp4']) {
+    for (const [tool, args] of [['clop_optimise', { paths: [file] }], ['clop_pipeline_run', { pipeline: 'changeSpeed(factor: 2)', paths: [file] }], ['clop_strip_exif', { paths: [file] }]] as const) {
+      const refused = await call(tool, args);
+      assert.equal(refused.error, true, `${tool} ${file}`);
+      assert.match(refused.text, /is on a network share or a device\. Agents may only use files and folders on this PC's own drives/, `${tool} ${file}`);
+    }
+  }
+  assert.deepEqual(seen, [], 'a network path would have been contacted');
+});
+
+test('only the commands that write settings take turns: a slow pipeline run does not hold up a settings read', async () => {
+  assert.deepEqual(['settings set', 'pipeline add', 'pipeline delete', 'pipeline attach', 'pipeline detach', 'pipeline preset', 'logs persist'].map(text => writesSettings(text.split(' '))), Array(7).fill(true));
+  assert.deepEqual(['settings get', 'settings schema', 'pipeline run', 'pipeline list', 'pipeline show', 'pipeline prompt', 'optimise', 'logs status', 'mcp status'].map(text => writesSettings(text.split(' '))), Array(9).fill(false));
+  let release!: () => void;
+  const slow = inTurn(['pipeline', 'run'], () => new Promise<string>(resolve => { release = () => resolve('ran'); }));
+  assert.equal(await inTurn(['settings', 'get'], async () => 'read'), 'read', 'the read did not wait for the run');
+  assert.equal(await inTurn(['pipeline', 'run'], async () => 'second run'), 'second run', 'nor did a second run');
+  // Writes still take turns.
+  const order: string[] = [];
+  let free!: () => void;
+  const first = inTurn(['settings', 'set'], async () => { await new Promise<void>(resolve => { free = resolve; }); order.push('first'); });
+  const second = inTurn(['settings', 'set'], async () => { order.push('second'); });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(order, []);
+  free(); await Promise.all([first, second]);
+  assert.deepEqual(order, ['first', 'second']);
+  release(); assert.equal(await slow, 'ran');
+});
+
+test('settings changes made at the same time are all kept when the app is not running', { timeout: TIMEOUT }, async t => {
+  const f = await folder(t, { mcpEnabled: true });
+  const { call } = await connect(t, f);
+  const keys = ['stripMetadata', 'preserveDates', 'copyConsecutiveClipboardImages', 'enableDragAndDrop', 'autoCopyToClipboard'];
+  const results = await Promise.all(keys.map(key => call('clop_settings_set', { key, value: 'off' })));
+  for (const result of results) assert.equal(result.error, false, result.text);
+  const stored = await f.settings();
+  assert.deepEqual(keys.filter(key => stored[key] !== false), []);
+});
+
+test('questions: a client that says elicitation: {} is asked, as the macOS server does', { timeout: TIMEOUT }, async t => {
+  const f = await folder(t, { mcpEnabled: true });
+  await graphic(40, 30).png().toFile(f.file('a.png'));
+  const asked: string[] = [];
+  const legacy = await connect(t, f, { legacyElicitation: true, answer: () => { asked.push('smaller'); return { action: 'decline' }; } });
+  assert.equal((await legacy.call('clop_optimise', { paths: ['a.png'] })).text, DECLINED_PREFIX + SMALLER_OPTIONS_TEXT);
+  assert.deepEqual(asked, ['smaller']);
+});
+
 test('arguments: required ones are named, unknown tools are refused, start and stop open clop:// links', { timeout: TIMEOUT }, async t => {
   const f = await folder(t);
   const opened: string[] = [];
@@ -156,6 +233,8 @@ test('video speed-ups get frames: keep or drop written into each changeSpeed ste
   assert.equal(withFrames('changeSpeed( factor: 2 ) -> changeSpeed(factor: 0.5) -> changeSpeed()', 'keep'), 'changeSpeed( factor: 2, frames: keep ) -> changeSpeed(factor: 0.5) -> changeSpeed(frames: keep)');
   assert.equal(withFrames('changeSpeed(factor: 3, frames: keep)', 'drop'), 'changeSpeed(factor: 3, frames: keep)');
   assert.equal(speedSteps('runScript(code: "changeSpeed(factor: 2)")').length, 0, 'quoted text is never rewritten');
+  assert.equal(speedSteps(`if(regex: 'changeSpeed(factor: 2)') -> optimise()`).length, 0, 'single-quoted text is never rewritten either');
+  assert.equal(withFrames(`runScript(code: 'echo "x" # changeSpeed(factor: 2)') -> changeSpeed(factor: 2, note: 'a)b')`, 'drop'), `runScript(code: 'echo "x" # changeSpeed(factor: 2)') -> changeSpeed(factor: 2, note: 'a)b', frames: drop)`);
 });
 
 test('start and stop open only the app Clop itself runs, never a program a card names', { timeout: TIMEOUT }, async t => {
@@ -179,4 +258,11 @@ test('start and stop open only the app Clop itself runs, never a program a card 
   assert.equal(await ran('real'), 'clop://mcp/stop');
   assert.equal(await ran('evil'), undefined, 'the card cannot make Clop start a program');
   assert.equal(await ran('tool'), undefined);
+});
+
+test('without the app the server card names, a clop:// link opens through cmd.exe by its System32 path, never ComSpec', () => {
+  const [command, args, verbatim] = controlLauncher(undefined, 'clop://mcp/start', 'win32', { SystemRoot: 'C:\\Windows', ComSpec: 'C:\\Users\\me\\Downloads\\cmd.exe' });
+  assert.equal(command, 'C:\\Windows\\System32\\cmd.exe');
+  assert.deepEqual([args, verbatim], [['/d', '/s', '/c', 'start "" "clop://mcp/start"'], true]);
+  assert.deepEqual(controlLauncher('C:\\Program Files\\Clop\\Clop.exe', 'clop://mcp/stop', 'win32'), ['C:\\Program Files\\Clop\\Clop.exe', ['clop://mcp/stop'], false]);
 });

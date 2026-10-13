@@ -150,6 +150,14 @@ export const kindForTextName = (name: string): StepKind | undefined => name === 
 export const stepKind = (step: PipelineStep) => Object.keys(step)[0] as StepKind;
 export const stepEntry = (step: PipelineStep) => { const kind = stepKind(step); return [kind, (step as Record<string, unknown>)[kind]] as StepEntry; };
 
+/** Parameters that name a file, a folder or a program: where a step reads from, writes to or starts something. */
+const PATH_PARAMS = ['location', 'to', 'path', 'image', 'app', 'relativeTo'];
+/** The paths, templates and folder words a step names (`location`, `to`, `path`, `image`, `app`, `relativeTo`). */
+export const stepPaths = (step: PipelineStep): string[] => {
+  const params = stepEntry(step)[1] as Record<string, unknown> | undefined;
+  return PATH_PARAMS.flatMap(key => typeof params?.[key] === 'string' ? [params[key] as string] : []);
+};
+
 /** `known` keys in their order, then any other defined keys: values a newer macOS added are kept so they sync back. */
 export function ordered(value: Record<string, unknown>, known: readonly string[], map: (key: string, item: unknown) => unknown = (_, item) => item) {
   const out: Record<string, unknown> = {};
@@ -207,6 +215,11 @@ export const stepProblems = (step: PipelineStep): StepProblem[] => checkStep(ste
  */
 export const blockingProblems = (step: PipelineStep): StepProblem[] => checkStep(step).filter(({ blocking }) => blocking).map(({ problem }) => problem);
 
+/** Whether the tolerant decoder changes a compression value it is given. A field left out takes its default, which is not a problem. */
+const changedByDecoder = (given: CompressionQuality) => {
+  const effective = effectiveCompression(given);
+  return (given.tier !== undefined && given.tier !== effective.tier) || (given.factor !== undefined && given.factor !== effective.factor);
+};
 function checkStep(step: PipelineStep): { problem: StepProblem; blocking: boolean }[] {
   const found: { problem: StepProblem; blocking: boolean }[] = [];
   const problems = { push: (problem: StepProblem, blocking = true) => found.push({ problem, blocking }) };
@@ -219,7 +232,7 @@ function checkStep(step: PipelineStep): { problem: StepProblem; blocking: boolea
     case 'optimise':
       // A stored dpi of 0 means adaptive to the PDF engine, so it runs.
       number('dpi', p.dpi, POSITIVE_INT, p.dpi !== 0);
-      if (p.compression && JSON.stringify(effectiveCompression(p.compression)) !== JSON.stringify({ tier: p.compression.tier, factor: p.compression.factor })) problems.push({ param: 'compression', message: `compression ${JSON.stringify(p.compression)} is not a tier Clop knows with a factor from 0 to 100` }, false);
+      if (p.compression && changedByDecoder(p.compression)) problems.push({ param: 'compression', message: `compression ${JSON.stringify(p.compression)} is not a tier Clop knows with a factor from 0 to 100` }, false);
       break;
     case 'downscale': number('factor', p.factor, { above: 0, max: 1 }); break;
     case 'lowerBitrate': number('kbps', p.kbps, POSITIVE_INT); break;

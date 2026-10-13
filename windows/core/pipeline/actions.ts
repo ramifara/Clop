@@ -33,7 +33,7 @@ function forkNeedsCopy(following: PipelineStep[]) {
 
 /**
  * `handleFork`: hands back the result so far as a second result, leaving the file the pipeline carries on with alone. With a
- * location it is saved there; otherwise it is the current file itself, or a temporary copy when a later step would change it.
+ * location it is saved there; otherwise it is the current file itself, or a temporary copy when a later step, or a later pipeline, would change it.
  */
 export async function fork(run: RunState, location: string | undefined, following: PipelineStep[]) {
   const source = run.current;
@@ -42,6 +42,6 @@ export async function fork(run: RunState, location: string | undefined, followin
   const copy = async () => copyTo(source, path.join(await run.scratch(), path.basename(source)));
   let file = source;
   if (location && location !== 'temporaryFolder' && location !== 'inPlace') file = await applyLocation(run, location, await copy(), run.original);
-  else if (forkNeedsCopy(following)) file = await copy();
+  else if (run.opts.laterPipelines || forkNeedsCopy(following)) file = await copy();
   run.forks.push(file);
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CompactMode, cardsThatFit, type CompactRow, type Timers } from './compact';
+import { CompactMode, cardsThatFit, extraHeight, type CompactRow, type Timers } from './compact';
 
 /** A clock the test moves by hand. */
 function clock() {
@@ -35,6 +35,14 @@ test('the number of cards that fit follows the screen and the drop target', () =
   assert.equal(cardsThatFit(200, true), 1, 'always at least one');
   const { mode } = setup({ fit: cardsThatFit(700) });
   assert.equal(mode.update(rows(4)), true, 'four do not fit a short screen');
+});
+
+test('the cards that fit leave room for the preset tiles, a notice and the welcome card', () => {
+  const room = (extra: Parameters<typeof extraHeight>[0]) => cardsThatFit(1080, false, 170, 60 + extraHeight(extra));
+  assert.equal(room({ tiles: 0, notice: false, welcome: false }), 5);
+  assert.ok(room({ tiles: 250, notice: false, welcome: false }) < 5, 'a grid of tiles pushes one card out');
+  assert.equal(room({ tiles: 0, notice: true, welcome: true }), 4);
+  assert.equal(extraHeight({ tiles: 100, notice: true, welcome: true }), 405);
 });
 
 test('alwaysShowCompactResults keeps the compact list, even with nothing to show', () => {

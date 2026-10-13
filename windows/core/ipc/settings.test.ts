@@ -31,6 +31,9 @@ test('every value reads back as a string that writes back unchanged', () => {
 test('values are parsed by type, with the words macOS accepts', () => {
   const s = defaultSettings();
   assert.deepEqual(parseSettingValue('stripMetadata', 'off', s), { value: false });
+  assert.deepEqual(parseSettingValue('targetVideoFPS', '-2', s), { value: -2 }, 'half the source rate');
+  assert.deepEqual(parseSettingValue('targetVideoFPS', '-4', s), { value: -4 });
+  assert.match((parseSettingValue('targetVideoFPS', '-3', s) as { error: string }).error, /-2 or -4/);
   assert.match((parseSettingValue('stripMetadata', 'maybe', s) as { error: string }).error, /takes true or false/);
   assert.deepEqual(parseSettingValue('imageCompression', 'aggressive', s), { error: "imageCompression takes one of: adaptive, lossless, fast, smaller, custom, optionally followed by :factor. Got 'aggressive'" });
   assert.deepEqual(parseSettingValue('imageCompression', 'lossless', s), { value: { tier: 'lossless', factor: 30 } });
@@ -45,6 +48,15 @@ test('values are parsed by type, with the words macOS accepts', () => {
   assert.match((parseSettingValue('batchModeFileCountThreshold', '-3', s) as { error: string }).error, /whole number from 0/);
   assert.equal(settingsSchema.savedCropSizes.type, 'object');
   assert.match((parseSettingValue('savedCropSizes', '{', s) as { error: string }).error, /takes JSON/);
+});
+
+test('a list with a comma in an item reads back as a JSON array that writes back unchanged', () => {
+  const s = defaultSettings(), dirs = ['C:\\Photos, 2026', 'D:\\Shots'];
+  const text = formatSettingValue('imageDirs', dirs);
+  assert.equal(text, JSON.stringify(dirs));
+  assert.deepEqual(parseSettingValue('imageDirs', text, s), { value: dirs });
+  assert.equal(formatSettingValue('imageDirs', ['~/Desktop', '~/Downloads']), '~/Desktop, ~/Downloads', 'plain lists print as before');
+  assert.deepEqual(parseSettingValue('imageDirs', '[not json, ~/a', s), { value: ['[not json', '~/a'] });
 });
 
 test('the schema narrows to the words asked for, best matches first', () => {
@@ -120,6 +132,10 @@ test('agents write only the keys the macOS bridge lists, and never plant script 
   assert.match((await mcp({ action: 'set', key: 'editorAppImage', value: 'C:\\evil.exe' })).error!, /names a program/);
   assert.equal((await mcp({ action: 'set', key: 'imageCompression', value: '70' })).ok, true);
   assert.equal(MCP_WRITABLE.has('mcpAllowScriptSteps'), false);
+  for (const key of ['showMenubarIcon', 'launchAtLogin']) {
+    assert.match((await mcp({ action: 'set', key, value: 'false' })).error!, new RegExp(`${key} can only be changed by the user, in Clop Settings\\.`), key);
+    assert.match((await mcp({ action: 'update', values: { [key]: true } })).error!, /can only be changed by the user/, key);
+  }
 
   const pipeline = (id: string, text: string) => ({ id, name: id, steps: parseSteps(text), skipOptimisation: true, hideResult: false });
   const userScript = pipeline('USER', 'runScript(code: "echo mine")');
@@ -137,6 +153,33 @@ test('agents write only the keys the macOS bridge lists, and never plant script 
   store.current.mcpAllowScriptSteps = true;
   assert.equal((await mcp({ action: 'update', values: { savedPipelines: [userScript, pipeline('NEW', 'runScript(code: "calc")')] } })).ok, true);
   assert.equal((await mcp({ action: 'set', key: 'editorAppImage', value: 'C:\\editor.exe' })).ok, true);
+});
+
+test('agents may not point the working directory, a name template, a watched folder, an attachment or a pipeline step at a network share or a device', async () => {
+  const store = memoryStore({ mcpEnabled: true, mcpAllowScriptSteps: true });
+  const mcp = (req: Omit<SettingsRequest, 'origin'>) => handleSettingsRequest({ ...req, origin: 'mcp' }, store);
+  const refused = /is on a network share or a device\. Agents may only use files and folders on this PC's own drives/;
+  for (const [key, value] of [['workdir', '\\\\server\\share\\work'], ['specificFolderNameTemplateImage', '\\\\server\\share\\%f'], ['convertedSameFolderNameTemplateVideo', '//server/share/%f'], ['customNameTemplateForClipboardImages', '\\\\?\\UNC\\server\\share\\%f'], ['sameFolderNameTemplateImage', '%e\\\\host\\share\\%f'], ['specificFolderNameTemplateVideo', '$1//host/share/%f']]) {
+    assert.match((await mcp({ action: 'set', key, value })).error!, refused, key);
+    assert.match((await mcp({ action: 'update', values: { [key]: value } })).error!, refused, key);
+  }
+  const step = (text: string) => ({ id: 'P', name: 'P', steps: parseSteps(text), skipOptimisation: true, hideResult: false });
+  for (const values of [
+    { imageDirs: [...store.current.imageDirs, '\\\\server\\share'] },
+    { pipelinesToRunOnImage: { '\\\\server\\share': [step('optimise()')] } },
+    { pipelinesToRunOnImage: { clipboard: [step('copy(to: "\\\\\\\\server\\\\share\\\\")')] } },
+    { savedPipelines: [step('watermark(image: "//server/share/logo.png")')] },
+    { pipelinesToRunOnImage: { clipboard: [step('if(regex: "^(z*)") -> copy(to: "$1//host/share/")')] } },
+    { savedPipelines: [step('rename(to: "%e//host/share/x")')] },
+    { presetZones: [{ id: 'z-all', icon: 'x', name: 'z', pipeline: step('delete(path: "\\\\\\\\.\\\\C:\\\\x")') }] },
+  ]) assert.match((await mcp({ action: 'update', values })).error!, refused, JSON.stringify(values));
+  assert.equal((await mcp({ action: 'set', key: 'workdir', value: 'D:\\Clop work' })).ok, true, 'a drive path is fine');
+  // A share the user set up stays: an agent's change to something else is not refused for it.
+  store.current.imageDirs = ['\\\\nas\\photos'];
+  store.current.savedPipelines = [step('copy(to: "\\\\\\\\nas\\\\backup\\\\")')];
+  assert.equal((await mcp({ action: 'update', values: { imageDirs: ['\\\\nas\\photos', 'D:\\Pictures'], savedPipelines: [...store.current.savedPipelines, { ...step('convert(to: webp)'), id: 'Q', name: 'Q' }] } })).ok, true);
+  // The user may use shares anywhere.
+  assert.equal((await handleSettingsRequest({ action: 'set', key: 'workdir', value: '\\\\server\\share\\work' }, store)).ok, true);
 });
 
 /** An MCP-enabled store holding the user's own script pipeline, and an agent's `update`. */
@@ -235,4 +278,17 @@ test('the MCP gate refuses pipeline text that opens a program by path, whether o
   for (const text of ['openWith(app: "Paint")', 'openWith(app: Paint) -> convert(to: webp)', 'optimise', 'my saved pipeline', 'shelveWith(app: yoink)']) assert.equal(mcpRefusal('mcp', text, settings), undefined, text);
   assert.equal(mcpRefusal('mcp', 'openWith(app: "C:\\\\evil.exe")', { ...settings, mcpAllowScriptSteps: true }), undefined, 'allowed script steps allow it');
   assert.equal(mcpRefusal(undefined, 'openWith(app: "C:\\\\evil.exe")', settings), undefined, 'a person using the CLI needs no permission');
+});
+
+test('an agent edit built on a stale read is refused as stale, never as a planted script step', async () => {
+  const { store, userScript } = agentLibrary();
+  const stale = [userScript];
+  // The user edits their own script pipeline between the agent's read and its write.
+  const edited = { ...userScript, name: 'Mine, renamed' };
+  store.current.savedPipelines = [edited];
+  const added = { id: 'X', name: 'X', steps: parseSteps('convert(to: webp)'), skipOptimisation: false, hideResult: false };
+  const reply = await handleSettingsRequest({ action: 'update', values: { savedPipelines: [...stale, added] }, base: { savedPipelines: stale }, origin: 'mcp' }, store);
+  assert.deepEqual(reply, { ok: false, error: SETTINGS_CHANGED });
+  // Built again on the current settings, the same edit goes through.
+  assert.equal((await handleSettingsRequest({ action: 'update', values: { savedPipelines: [edited, added] }, base: { savedPipelines: [edited] }, origin: 'mcp' }, store)).ok, true);
 });

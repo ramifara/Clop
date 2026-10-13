@@ -35,6 +35,26 @@ test('after the user chooses to wait, the same window is logged but not offered 
   assert.deepEqual(kinds(dog.unresponsive('other', 20_000)), ['log', 'offer-reload']);
 });
 
+test('a window that hangs again within the cooldown and stays hung is offered a reload when the cooldown ends', () => {
+  const dog = new Watchdog({ cooldownMs: 60_000, intervalMs: 500 });
+  dog.unresponsive('floating', 0);
+  dog.declined('floating', 5000);
+  dog.responsive('floating', 9000);
+  assert.deepEqual(kinds(dog.unresponsive('floating', 20_000)), ['log'], 'inside the cooldown: not offered');
+  // The ticks are on time, so only offers show.
+  const tick = (at: number) => { for (let t = (tick.at ?? 20_000) + 500; t < at; t += 500) dog.sample(t); tick.at = at; return dog.sample(at); };
+  tick.at = undefined as number | undefined;
+  assert.deepEqual(tick(30_000), [], 'still inside it');
+  assert.deepEqual(tick(64_500), [], 'a window waited on at 5 s is offered again from 65 s');
+  assert.deepEqual(tick(65_000), [{ kind: 'offer-reload', window: 'floating' }]);
+  assert.deepEqual(tick(65_500), [], 'once');
+  // Recovering withdraws that offer.
+  assert.deepEqual(kinds(dog.responsive('floating', 66_000)), ['log', 'withdraw-offer']);
+  // A window that was offered and is still waiting for an answer is not offered twice.
+  dog.unresponsive('crop', 0);
+  assert.deepEqual(dog.sample(200_000).filter(action => action.kind === 'offer-reload'), [], 'the first offer is the one that was already made');
+});
+
 test('a window that was reloaded or closed starts fresh', () => {
   const dog = new Watchdog();
   dog.unresponsive('crop', 0);

@@ -358,3 +358,32 @@ test('an unreadable entry can be fixed with JSON that has comments and trailing 
   assert.equal(run(start, { type: 'pipeline-fix', key: entry.key, base: entry.revision, json: big }).result.issues, undefined);
   assert.throws(() => applyCommand(start, { type: 'pipeline-fix', key: entry.key, base: entry.revision, json: ' '.repeat(LIMITS.fix + 1) }, windows), /invalid pipeline JSON/);
 });
+
+test('readable pipelines and zones that share an id each get a key of their own, so either can be opened, changed and deleted', () => {
+  const twins = decodePipelines([
+    { id: 'DUP', name: 'First', steps: [{ optimise: {} }] },
+    { id: 'DUP', name: 'Second', steps: [{ optimise: {} }, { downscale: { factor: 0.5 } }] },
+  ])!;
+  const base = fixture(), zones = decodePresetZones([
+    { id: 'ZDUP', name: 'Zone one', icon: 'photo', pipeline: { libraryID: 'DUP' } },
+    { id: 'ZDUP', name: 'Zone two', icon: 'photo', pipeline: { libraryID: 'DUP' } },
+  ])!;
+  const settings = fixture({ savedPipelines: [...twins, ...base.savedPipelines], presetZones: zones });
+  const view = editorState(settings, windows);
+  const [first, second] = view.library;
+  assert.deepEqual([first.key, second.key], ['DUP', 'DUP~2']);
+  assert.deepEqual(view.zones.map(zone => zone.key), ['ZDUP', 'ZDUP~2']);
+  assert.equal(entryKeys(settings.savedPipelines).length, new Set(entryKeys(settings.savedPipelines)).size);
+  // The later twin can be edited on its own.
+  const renamed = run(settings, save({ id: second.key, base: second.revision, name: 'Second renamed', text: 'optimise', fileType: undefined }));
+  assert.deepEqual(renamed.settings.savedPipelines.filter(isReadable).slice(0, 2).map(entry => entry.name), ['First', 'Second renamed']);
+  assert.equal(renamed.result.saved, 'DUP~2');
+  // Deleting it leaves the first, and what refers to the id (still held by the first) stays.
+  const deleted = run(settings, { type: 'pipeline-delete', key: second.key, base: second.revision });
+  assert.deepEqual(deleted.settings.savedPipelines.filter(isReadable).slice(0, 1).map(entry => entry.name), ['First']);
+  assert.equal(deleted.settings.presetZones.length, 2);
+  // The later zone can be deleted on its own.
+  const [, zoneTwo] = view.zones;
+  const zoneGone = run(settings, { type: 'zone-delete', key: zoneTwo.key, base: zoneTwo.revision });
+  assert.deepEqual(zoneGone.settings.presetZones.filter(isReadable).map(zone => zone.name), ['Zone one']);
+});

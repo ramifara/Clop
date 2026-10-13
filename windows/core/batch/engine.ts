@@ -137,6 +137,12 @@ export class Batch extends EventEmitter {
   }
   private limit(kind: MediaKind) { let limit = this.limits.get(kind); if (!limit) this.limits.set(kind, limit = limiter(CONCURRENCY[kind])); return limit; }
 
+  /** Resolves once the run and any revert under way have settled, or undefined when there is neither (a batch that is over). */
+  settling(): Promise<void> | undefined {
+    if (this.phase !== 'running' && !this.reverting) return undefined;
+    return (async () => { await this.running?.catch(() => {}); await this.reverting?.catch(() => {}); })();
+  }
+
   /** Stops the run: running files stop and queued ones are skipped. Finished files keep their results. */
   cancel() {
     if (this.controller.signal.aborted) return;
@@ -195,7 +201,7 @@ export class Batch extends EventEmitter {
         const factor = ip.crop ? 1 : ip.maxLongEdge ? Math.min(1, ip.maxLongEdge / long) : ip.downscale ?? 1;
         const size = factor < 1 ? { width: Math.max(1, Math.round(info.width * factor)), height: Math.max(1, Math.round(info.height * factor)) } : {};
         const output = await optimiseImage(file, outputDir, {
-          ...job, ...size, aggressive, compression: { tier: ip.adaptive ? 'adaptive' : 'custom', factor: ip.compression }, format: ip.convert, cropSize: ip.crop,
+          ...job, ...size, aggressive, compression: { tier: ip.lossless ? 'lossless' : ip.adaptive ? 'adaptive' : 'custom', factor: ip.compression }, format: ip.convert, cropSize: ip.crop,
           stripMetadata: s.stripMetadata, preserveColorMetadata: s.preserveColorMetadata, gifFrameDropBehaviour: s.gifFrameDropBehaviour,
         });
         // The engine names a JPEG result `.jpeg`; a file that kept its format keeps its own extension (`.jpg`, `.tif`).
@@ -213,7 +219,7 @@ export class Batch extends EventEmitter {
         const convert = vp.convert === 'mp4' ? undefined : vp.convert;
         const output = await optimiseVideo(file, outputDir, {
           ...job, ...size, aggressive, crop, compression: { tier: vp.encoder, factor: vp.compression }, encoder: s.videoEncoder,
-          ...(vp.convert === 'mp4' ? { format: 'mp4' } : {}), ...(convert ? { convert: { codec: convert } } : {}),
+          ...(vp.convert === 'mp4' ? { format: 'mp4' } : {}), ...(convert ? { convert: { codec: convert, compression: { tier: vp.encoder, factor: vp.compression } } } : {}),
           ...(vp.fps ? { fps: vp.fps } : { capVideoFPS: s.capVideoFPS, targetVideoFPS: s.targetVideoFPS, minVideoFPS: s.minVideoFPS }),
           removeAudio: vp.removeAudio, convertAudioToAAC: s.convertAudioToAAC, adaptiveVideoSize: s.adaptiveVideoSize, stripMetadata: s.stripMetadata,
         });
@@ -267,6 +273,8 @@ export class Batch extends EventEmitter {
     const removes = over || this.params.output.location === 'inPlace';
     // Whatever was taken aside or created goes back if anything below fails, the manifest write included, so a failed file is exactly as it was.
     const undo: (() => Promise<void>)[] = [];
+    /** The note that an original is away from its path until its result is in (`Workdir.journal`): a start after a crash puts it back from the batch backup. */
+    let note: (() => Promise<void>) | undefined;
     try {
       if (!over) {
         // A file of the user's at the destination is copied, not moved, so the result replaces it atomically.
@@ -275,7 +283,8 @@ export class Batch extends EventEmitter {
       }
       if (removes) {
         // An original the result replaces in its own path is copied, so the path is never empty; one that goes under another name is moved.
-        const kept = await this.backup.keep(original, { copy: over, before });
+        // The note exists before the original moves, so a crash at any point after that finds it.
+        const kept = await this.backup.keep(original, { copy: over, before, beforeMove: over ? undefined : async backup => { note = await env.workdir.journal(original, backup); } });
         // A copy leaves the original where it is, so it is only given back if the result had already replaced it.
         undo.push(async () => { if (!over || !await isAsKept(original, kept)) await copyTo(kept.backup, original); await this.backup.discard(original); });
       }
@@ -283,8 +292,11 @@ export class Batch extends EventEmitter {
       await env.marker.markOptimised(dest).catch(() => {});
       const info = await stat(dest);
       await this.backup.recordResult({ original, path: dest, size: info.size, mtimeMs: info.mtimeMs, originalRemoved: removes && !over });
+      await note?.().catch(() => {});
     } catch (error) {
       for (const step of undo.reverse()) await step().catch(() => {});
+      // The note goes once the original is back; if it could not be put back, the note stays for the next start.
+      if (note && await exists(original)) await note().catch(() => {});
       throw error;
     }
     return dest;

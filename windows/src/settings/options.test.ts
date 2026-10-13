@@ -75,7 +75,10 @@ test('trigger keys need more than Shift', () => {
   assert.match(triggerProblem(['Shift'])!, /Shift alone/);
   assert.match(triggerProblem(['Control'])!, /Ctrl alone/);
   assert.match(triggerProblem(['Alt'])!, /Alt alone/);
-  assert.equal(triggerProblem(['Super']), undefined);
+  assert.match(triggerProblem(['Super'])!, /Windows key alone/);
+  assert.match(triggerProblem(['Alt', 'Control'])!, /AltGr/);
+  assert.equal(triggerProblem(['Super', 'Shift']), undefined);
+  assert.equal(triggerProblem(['Control', 'Alt', 'Shift']), undefined);
   assert.equal(triggerProblem(['Control', 'Shift']), undefined);
   assert.equal(triggerProblem(['Shift', 'Alt']), undefined);
 });

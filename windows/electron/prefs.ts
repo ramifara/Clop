@@ -1,11 +1,13 @@
 import { access, constants, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { MediaName } from '../core/settings/entries';
+import { emptyTemplate } from '../core/placement';
 import { settingsMeta } from '../core/settings/meta';
 import { expandHome, portablePath } from '../core/settings/paths';
 import type { ClopSettings, SettingKey } from '../core/settings/schema';
 import { expandPathTemplate, expandTemplate } from '../core/template';
 import type { AppEntry, PrefsReply, PrefsRequest } from '../src/types';
+import { DEFAULT_NAME_TEMPLATE } from './clipboard';
 
 // The Settings window's actions that need the main process (the policy in `electron/settings.ts`): the folder and program pickers,
 // the lists whose entries must be real, and the template preview. Each action is checked here, whatever the window sent.
@@ -14,6 +16,11 @@ export interface PrefsHost {
   settings(): ClopSettings;
   defaults(): ClopSettings;
   set(partial: Partial<ClopSettings>): Promise<unknown>;
+  /**
+   * A change that depends on the stored value (one entry of a list): `change` gets the settings as they are when its turn comes,
+   * after every change before it, and returns the values to replace. It throws to refuse. Two clicks in a row never undo each other.
+   */
+  update(change: (current: ClopSettings) => Partial<ClopSettings>): Promise<unknown>;
   /** Shows the picker and gives the chosen path, or undefined when it was cancelled. */
   chooseFolder(title: string, defaultPath?: string): Promise<string | undefined>;
   chooseProgram(title: string): Promise<string | undefined>;
@@ -39,7 +46,14 @@ const MAX_FOLDERS = 100, MAX_IGNORED = 500, MAX_TEMPLATE = 1024, MAX_PATH = 32_7
 /** The example file each template previews, and what a conversion makes of it. */
 const SAMPLES = { image: ['Screenshot.png', 'jpeg'], video: ['Recording.mov', 'mp4'], audio: ['Voice memo.wav', 'm4a'], pdf: ['Invoice.pdf', 'pdf'] } as const;
 const TEMPLATE_KEY = /^(converted)?[Ss](ame|pecific)FolderNameTemplate(Image|Video|Audio|PDF)$/;
-export const TEMPLATE_KEYS = ['customNameTemplateForClipboardImages', ...(['Image', 'Video', 'Audio', 'PDF'] as const).flatMap(kind => [`sameFolderNameTemplate${kind}`, `specificFolderNameTemplate${kind}`, `convertedSameFolderNameTemplate${kind}`, `convertedSpecificFolderNameTemplate${kind}`])] as SettingKey[];
+/** Only images, videos and audio have converted-file templates; a PDF is never converted to another type. */
+export const TEMPLATE_KEYS = ['customNameTemplateForClipboardImages', ...(['Image', 'Video', 'Audio', 'PDF'] as const).flatMap(kind => [`sameFolderNameTemplate${kind}`, `specificFolderNameTemplate${kind}`, ...(kind === 'PDF' ? [] : [`convertedSameFolderNameTemplate${kind}`, `convertedSpecificFolderNameTemplate${kind}`])])] as SettingKey[];
+
+/** The format lists the Settings window toggles one extension of, each with the list that loses an extension the first gains (`SettingsView.swift` removes it from the other when a chip goes on). */
+const FORMAT_LISTS = {
+  imageFormatsToSkip: undefined, videoFormatsToSkip: undefined, audioFormatsToSkip: undefined, formatsToConvertToMP4: undefined, formatsToConvertToOutputAudio: undefined,
+  formatsToConvertToJPEG: 'formatsToConvertToPNG', formatsToConvertToPNG: 'formatsToConvertToJPEG', formatsToConvertToAAC: 'formatsToConvertToMP3', formatsToConvertToMP3: 'formatsToConvertToAAC',
+} as const satisfies Partial<Record<SettingKey, SettingKey | undefined>>;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const text = (value: unknown, what: string, max = MAX_PATH) => {
@@ -84,31 +98,40 @@ export function createPrefs(host: PrefsHost) {
   }
 
   async function folder(kind: MediaName, op: unknown, given: unknown): Promise<PrefsReply> {
-    const key = DIRS[oneOf(kind, KINDS, 'a file type')], current = host.settings()[key];
+    const key = DIRS[oneOf(kind, KINDS, 'a file type')];
+    const tooMany = (current: readonly string[]) => { if (current.length >= MAX_FOLDERS) throw new Error(`Clop watches up to ${MAX_FOLDERS} folders for each file type.`); };
     if (oneOf(op, ['add', 'remove'], 'what to do with the folder') === 'add') {
-      if (current.length >= MAX_FOLDERS) throw new Error(`Clop watches up to ${MAX_FOLDERS} folders for each file type.`);
+      tooMany(host.settings()[key]);
       const chosen = await directory(await host.chooseFolder(`Choose a folder to watch for new ${kind === 'pdf' ? 'PDFs' : `${kind} files`}`), 'A watched folder');
       if (!chosen) return {};
-      if (current.some(dir => same(resolve(dir), resolve(chosen)))) throw new Error(`${chosen} is already watched.`);
-      await host.set({ [key]: [...current, portable(chosen)] });
+      await host.update(settings => {
+        const current = settings[key];
+        tooMany(current);
+        if (current.some(dir => same(resolve(dir), resolve(chosen)))) throw new Error(`${chosen} is already watched.`);
+        return { [key]: [...current, portable(chosen)] };
+      });
       return {};
     }
     const target = resolve(text(given, 'a folder to stop watching'));
-    if (!current.some(dir => same(resolve(dir), target))) throw new Error('That folder is not in the list.');
-    const remaining = current.filter(dir => !same(resolve(dir), target));
-    // A folder left in no list takes its quiet setting with it.
-    const stillWatched = KINDS.some(other => other !== kind && host.settings()[DIRS[other]].some(dir => same(resolve(dir), target)));
-    await host.set({ [key]: remaining, ...(stillWatched ? {} : { dirsHideFloatingResult: host.settings().dirsHideFloatingResult.filter(dir => !same(resolve(dir), target)) }) });
+    await host.update(settings => {
+      const current = settings[key];
+      if (!current.some(dir => same(resolve(dir), target))) throw new Error('That folder is not in the list.');
+      // A folder left in no list takes its quiet setting with it.
+      const stillWatched = KINDS.some(other => other !== kind && settings[DIRS[other]].some(dir => same(resolve(dir), target)));
+      return { [key]: current.filter(dir => !same(resolve(dir), target)), ...(stillWatched ? {} : { dirsHideFloatingResult: settings.dirsHideFloatingResult.filter(dir => !same(resolve(dir), target)) }) };
+    });
     return {};
   }
 
   async function quiet(given: unknown, hide: unknown): Promise<PrefsReply> {
     if (typeof hide !== 'boolean') throw new Error('Choose whether results from this folder show.');
-    const target = resolve(text(given, 'a watched folder')), s = host.settings();
-    const stored = KINDS.flatMap(kind => s[DIRS[kind]]).find(dir => same(resolve(dir), target));
-    if (!stored) throw new Error('That folder is not watched.');
-    const others = s.dirsHideFloatingResult.filter(dir => !same(resolve(dir), target));
-    await host.set({ dirsHideFloatingResult: hide ? [...others, stored] : others });
+    const target = resolve(text(given, 'a watched folder'));
+    await host.update(s => {
+      const stored = KINDS.flatMap(kind => s[DIRS[kind]]).find(dir => same(resolve(dir), target));
+      if (!stored) throw new Error('That folder is not watched.');
+      const others = s.dirsHideFloatingResult.filter(dir => !same(resolve(dir), target));
+      return { dirsHideFloatingResult: hide ? [...others, stored] : others };
+    });
     return {};
   }
 
@@ -121,20 +144,43 @@ export function createPrefs(host: PrefsHost) {
   }
 
   async function ignore(op: unknown, given: unknown): Promise<PrefsReply> {
-    const current = host.settings().clipboardIgnoredAppBundleIds, has = (list: readonly string[], entry: string) => list.some(other => other.toLowerCase() === entry.toLowerCase());
+    const has = (list: readonly string[], entry: string) => list.some(other => other.toLowerCase() === entry.toLowerCase());
     const action = oneOf(op, ['add', 'remove', 'choose'], 'what to do with the ignored apps');
     if (action === 'remove') {
       const entry = text(given, 'an app to stop ignoring');
-      if (!has(current, entry)) throw new Error('That app is not in the list.');
-      await host.set({ clipboardIgnoredAppBundleIds: current.filter(other => other.toLowerCase() !== entry.toLowerCase()) });
+      await host.update(settings => {
+        if (!has(settings.clipboardIgnoredAppBundleIds, entry)) throw new Error('That app is not in the list.');
+        return { clipboardIgnoredAppBundleIds: settings.clipboardIgnoredAppBundleIds.filter(other => other.toLowerCase() !== entry.toLowerCase()) };
+      });
       return {};
     }
-    if (current.length >= MAX_IGNORED) throw new Error(`Clop ignores up to ${MAX_IGNORED} apps.`);
+    const tooMany = (current: readonly string[]) => { if (current.length >= MAX_IGNORED) throw new Error(`Clop ignores up to ${MAX_IGNORED} apps.`); };
+    tooMany(host.settings().clipboardIgnoredAppBundleIds);
     // From the list the Windows helper made, or a program the user picked: nothing the window typed is stored.
     const entry = action === 'choose' ? await program(await host.chooseProgram('Choose a program to ignore')) : (await host.apps()).find(app => app.path.toLowerCase() === text(given, 'an app to ignore').toLowerCase())?.path;
     if (action === 'add' && !entry) throw new Error('Clop does not know that app. Pick it from the list, or choose its program.');
-    if (!entry || has(current, entry)) return {};
-    await host.set({ clipboardIgnoredAppBundleIds: [...current, entry] });
+    if (!entry) return {};
+    await host.update(settings => {
+      const current = settings.clipboardIgnoredAppBundleIds;
+      if (has(current, entry)) return {};
+      tooMany(current);
+      return { clipboardIgnoredAppBundleIds: [...current, entry] };
+    });
+    return {};
+  }
+
+  /** One chip of a format list, switched on or off against the list as it is when its turn comes; going on takes the extension out of the list it excludes. */
+  async function format(key: unknown, given: unknown, on: unknown): Promise<PrefsReply> {
+    if (typeof key !== 'string' || !Object.hasOwn(FORMAT_LISTS, key)) throw new Error('Choose a format list.');
+    if (typeof given !== 'string' || !/^[a-z0-9]{1,10}$/.test(given) || typeof on !== 'boolean') throw new Error('Choose a file extension to turn on or off.');
+    const list = key as keyof typeof FORMAT_LISTS, other = FORMAT_LISTS[list];
+    await host.update(settings => {
+      const current = settings[list] as string[];
+      return {
+        [list]: on ? (current.includes(given) ? current : [...current, given]) : current.filter(item => item !== given),
+        ...(on && other && (settings[other] as string[]).includes(given) ? { [other]: (settings[other] as string[]).filter(item => item !== given) } : {}),
+      };
+    });
     return {};
   }
 
@@ -146,10 +192,11 @@ export function createPrefs(host: PrefsHost) {
     const folderOf = windows ? 'C:\\Users\\You\\Pictures' : '/home/you/Pictures';
     const ext = converted ? target : path.extname(input).slice(1);
     const from = p.join(folderOf, input), made = p.join(folderOf, `${p.parse(input).name}.${ext}`);
-    const defaults = host.defaults()[key as keyof ClopSettings] as string, effective = value.trim() ? value : defaults;
+    // An empty template names files as the naming code does when it finds one: the clipboard image default, or the placement fallback for the setting.
+    const effective = value.trim() ? value : match ? emptyTemplate(specific ? 'specific' : 'same', converted) : DEFAULT_NAME_TEMPLATE;
     const counter = { value: host.settings().lastAutoIncrementingNumber };
     const ctx = { path: made, counter, platform, home: host.home };
-    const output = specific ? expandPathTemplate(effective, ctx) : expandTemplate(effective || '%f', ctx);
+    const output = specific ? expandPathTemplate(effective, ctx) : expandTemplate(effective, ctx);
     return { preview: { input: p.basename(from), output: specific ? output : p.basename(output) } };
   }
 
@@ -163,6 +210,7 @@ export function createPrefs(host: PrefsHost) {
       case 'folder': return folder(request.kind as MediaName, request.op, request.folder);
       case 'quiet': return quiet(request.folder, request.quiet);
       case 'editor': return editor(request.kind as MediaName, request.op);
+      case 'format': return format(request.key, request.format, request.on);
       case 'ignore': return ignore(request.op, request.entry);
       case 'pipeline-editor': await host.openEditor(request.tab === undefined ? undefined : oneOf(request.tab, ['zones'] as const, 'a pipeline editor tab')); return {};
       case 'open': await host.openExternal(LINKS[oneOf(request.target, Object.keys(LINKS) as (keyof typeof LINKS)[], 'a link')]); return {};

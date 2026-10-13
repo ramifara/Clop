@@ -244,3 +244,15 @@ test('text after %P or %F gets the trailing dot and space rule too', () => {
   assert.equal(expandPathTemplate('%P-copy.\\%f', win), 'C:\\Users\\Rami\\Pics-copy_\\shot.png');
   assert.equal(expandPathTemplate('%P-copy \\%f', win), 'C:\\Users\\Rami\\Pics-copy_\\shot.png');
 });
+
+test('a template whose text ends in a dot or space matches the name expansion made of it', () => {
+  const ctx = { ...fixed, path: path.posix.join('/pics', 'shot.png'), platform: 'linux' as const };
+  const name = path.parse(expandTemplate('%f-copy.', ctx)).name;
+  assert.equal(name, 'shot-copy_');
+  assert.equal(nameMatchesTemplate(name, '%f-copy.', { platform: 'linux' }), true);
+  assert.equal(nameMatchesTemplate('shot-copy.', '%f-copy.', { platform: 'linux' }), false);
+  assert.equal(nameMatchesTemplate('shot-copy__', '%f-copy. ', { platform: 'linux' }), true);
+  assert.equal(nameMatchesTemplate('shot.', '%f.', { platform: 'linux' }), false);
+  assert.equal(nameMatchesTemplate('/pics/out_/shot', 'out./%f', { platform: 'linux', allowPathPrefix: true }), true);
+  assert.equal(nameMatchesTemplate('./shot', './%f', { platform: 'linux' }), true);
+});

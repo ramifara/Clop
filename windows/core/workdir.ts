@@ -1,13 +1,16 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { lstat, mkdir, readdir, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
+import { lstat, mkdir, readdir, readFile, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { copyTo, exists, moveTo, samePath } from './fileops';
 import { expandHome } from './settings/paths';
 
 /** Dropped into the working directory so a later start knows the folder was made for Clop. */
 const MARKER = '.clop-workdir';
-const LAYOUT = new Set(['backups', 'batch-backups', 'temp', MARKER]);
+/** Notes of originals that are away from their path while a result takes their place (`journal`). */
+const PLACING = 'placing';
+const LAYOUT = new Set(['backups', 'batch-backups', 'temp', PLACING, MARKER]);
 
 /** The first symlink or junction among `dir` and its ancestors. */
 async function linkAmong(dir: string): Promise<string | undefined> {
@@ -19,11 +22,35 @@ async function linkAmong(dir: string): Promise<string | undefined> {
   }
 }
 
+/** `file` with the links and 8.3 short names in its existing part resolved, as Windows would open it. Looks no further than the deepest folder that exists. */
+function resolvedPath(file: string): string {
+  const rest: string[] = [];
+  for (let current = path.resolve(file.replace(/^\\\\\?\\(?=[A-Za-z]:)/, '')); ;) {
+    try { return path.join(realpathSync.native(current), ...rest.reverse()); } catch { /* Not there yet: look one folder up. */ }
+    const parent = path.dirname(current);
+    if (parent === current) return path.join(current, ...rest.reverse());
+    rest.push(path.basename(current));
+    current = parent;
+  }
+}
+
 /** Whether `child` is `parent` or inside it. */
 const within = (parent: string, child: string, platform: NodeJS.Platform = process.platform) => {
   const relative = path.relative(parent, child);
   return samePath(parent, child, platform) || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 };
+
+/**
+ * Makes sure the cleaner sees `file` as just arrived. A move keeps a file's modification and creation times; NTFS still updates its
+ * change time, which the cleaner reads, but FAT and exFAT do not, so there a just-moved backup of an old file would look old enough to
+ * delete. Then the file is copied afresh under its own name (keeping its modification time), which gives it a new creation time.
+ */
+export async function stampArrival(file: string, now = Date.now(), info: (file: string) => Promise<{ mtimeMs: number; ctimeMs: number; birthtimeMs: number }> = stat) {
+  const times = await info(file);
+  if (now - Math.max(times.mtimeMs, times.ctimeMs, times.birthtimeMs) < 60_000) return;
+  const fresh = path.join(path.dirname(file), `.clop-${randomUUID()}.tmp`);
+  try { await copyTo(file, fresh); await moveTo(fresh, file); } finally { await rm(fresh, { force: true }); }
+}
 
 /** Removes files in `dir` that have not changed for longer than `maxAgeMs` (a negative value removes every file, whatever its timestamps), then the folders that are left empty (never `dir` itself). Anything inside a `keep` folder stays. Links (symlinks, junctions) are removed as links when they age out and never followed, and a `dir` that is itself a link is left alone. Returns the number of files removed. */
 export async function sweep(dir: string, maxAgeMs: number, now: number, keep: ReadonlySet<string> = new Set()): Promise<number> {
@@ -82,6 +109,24 @@ export class Workdir {
   }
 
   /**
+   * Whether `file` is in a folder Clop keeps its recovery files in: the backups, the batch backups and the placement notes.
+   * Judged on what the path opens on disk, so a short name or a link into these folders counts.
+   */
+  holdsRecovery(file: string): boolean {
+    const target = resolvedPath(file);
+    return [this.backups, this.batchBackups, path.join(this.root, PLACING)].some(dir => within(resolvedPath(dir), target) || within(dir, path.resolve(file)));
+  }
+
+  /**
+   * Refuses an agent a path in the recovery folders. `repair` puts back whatever its notes name, so an agent that could write a
+   * note there (a file copied into `placing`, and a payload into `backups`) would have Clop copy that payload to any path on the next start.
+   * This keeps the notes to the ones Clop's own placements write, which is why they need no signature.
+   */
+  keepAgentOut(agent: boolean | undefined, file: string): void {
+    if (agent && this.holdsRecovery(file)) throw new Error(`${file} is in the folders where Clop keeps the originals it is replacing. Agents may not use them: choose another path.`);
+  }
+
+  /**
    * Creates the layout. Refuses a folder that holds other files (unless Clop made it), because the cleaner
    * deletes inside `backups` and `temp`, and refuses links anywhere on the path, because a link could point
    * the cleaner at someone else's files.
@@ -124,8 +169,49 @@ export class Workdir {
     await mkdir(this.backups, { recursive: true });
     const target = await this.backupPath(original);
     await (move ? moveTo : copyTo)(original, target, { force });
+    if (move) await stampArrival(target).catch(() => {});
     this.latest.set(path.resolve(original), target);
     return target;
+  }
+
+  /**
+   * Notes that `original` is about to be away from its path, kept at `backup`, until the returned function removes the note.
+   * A start after a crash or a forced shutdown finds the note and puts the original back (`repair`).
+   */
+  async journal(original: string, backup: string): Promise<() => Promise<void>> {
+    const dir = path.join(this.root, PLACING), note = path.join(dir, `${randomUUID()}.json`);
+    await mkdir(dir, { recursive: true });
+    await writeFile(note, JSON.stringify({ original: path.resolve(original), backup: path.resolve(backup) }));
+    return () => rm(note, { force: true });
+  }
+
+  /**
+   * Finishes what a placement that never ended left: an original that is not at its path is copied back from its backup (which
+   * stays in the backups or the batch backups), and the note is removed. A note stays when the copy back failed (a drive that is not there yet, a file
+   * in use), so the backup stays protected and the next start tries again. Returns the files put back.
+   */
+  async repair(): Promise<string[]> {
+    const dir = path.join(this.root, PLACING), restored: string[] = [];
+    for (const name of await readdir(dir).catch(() => [] as string[])) {
+      const note = path.join(dir, name);
+      let original: unknown, backup: unknown;
+      // A note that cannot be read or acted on is dropped; its backup stays in the backups.
+      try { ({ original, backup } = JSON.parse(await readFile(note, 'utf8')) as { original?: unknown; backup?: unknown }); } catch { await rm(note, { force: true }); continue; }
+      if (typeof original === 'string' && typeof backup === 'string' && path.isAbsolute(original) && (within(this.backups, backup) || within(this.batchBackups, backup)) && !await exists(original) && await exists(backup)) {
+        try { await copyTo(backup, original); restored.push(original); } catch { continue; }
+      }
+      await rm(note, { force: true });
+    }
+    return restored;
+  }
+
+  /** The backups the notes in the working directory name: the originals that are away from their path right now. */
+  private async journalled(): Promise<string[]> {
+    const dir = path.join(this.root, PLACING), backups: string[] = [];
+    for (const name of await readdir(dir).catch(() => [] as string[])) {
+      try { const { backup } = JSON.parse(await readFile(path.join(dir, name), 'utf8')) as { backup?: unknown }; if (typeof backup === 'string') backups.push(path.resolve(backup)); } catch { /* A note that cannot be read names nothing. */ }
+    }
+    return backups;
   }
 
   /** Puts `backup` back at `original`, byte for byte, then deletes it. */
@@ -149,9 +235,11 @@ export class Workdir {
 
   private async sweepAll(maxAgeMs: number, now: number) {
     let removed = 0;
-    if (!await linkAmong(this.root)) for (const dir of [this.backups, this.temp]) removed += await sweep(dir, maxAgeMs, now, this.protectedDirs);
+    // A backup a note names is the only copy of an original that is away from its path, so it stays however old it is.
+    const keep = new Set([...this.protectedDirs, ...await this.journalled()]);
+    if (!await linkAmong(this.root)) for (const dir of [this.backups, this.temp]) removed += await sweep(dir, maxAgeMs, now, keep);
     for (const dir of this.legacy) {
-      removed += await sweep(dir, maxAgeMs, now, this.protectedDirs);
+      removed += await sweep(dir, maxAgeMs, now, keep);
       await rmdir(dir).catch(() => {});
     }
     return removed;

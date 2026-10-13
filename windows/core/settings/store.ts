@@ -1,12 +1,14 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { retryBusy } from '../run';
 import type { DefaultPaths } from './paths';
 import { SETTING_KEYS, defaultSettings, isLegacySettings, migrateLegacy, parseSettings, type ClopSettings, type SettingKey } from './schema';
 
+const LOCK_STALE_MS = 30_000, LOCK_WAIT_MS = 15_000;
 const reason = (error: unknown) => (error as NodeJS.ErrnoException).code ?? (error as Error).message;
 
 /** Settings persisted as JSON. Every value is replaced, never mutated, so `get()` snapshots stay stable. */
@@ -15,7 +17,13 @@ export class SettingsStore extends EventEmitter<{ change: [settings: ClopSetting
   private queue: Promise<unknown> = Promise.resolve();
   /** Set when the file exists but could not be read or moved aside; saving would destroy it. */
   private unreadable?: Error;
-  constructor(readonly file: string, private readonly paths: Partial<DefaultPaths> = {}) {
+  /**
+   * `shared`: other processes write this file too (the headless CLI and MCP server, next to a terminal command or another server, and
+   * the app itself while a command falls back to the headless store before the app's pipe is up).
+   * Each change then starts from the file as it is when its turn comes, not from what was read at startup, so it keeps what they saved;
+   * keys that differ from what this store held are announced as a change.
+   */
+  constructor(readonly file: string, private readonly paths: Partial<DefaultPaths> = {}, private readonly shared = false) {
     super();
     this.current = defaultSettings(paths);
   }
@@ -69,13 +77,37 @@ export class SettingsStore extends EventEmitter<{ change: [settings: ClopSetting
   update<T>(change: (current: ClopSettings) => { patch?: unknown; result: T }): Promise<{ settings: ClopSettings; result: T }> {
     return this.enqueue(async () => {
       if (this.unreadable) throw this.unreadable;
+      await this.reread();
       const { patch, result } = change(this.current);
       return { settings: patch === undefined ? this.current : await this.apply(patch), result };
     });
   }
 
+  /**
+   * A shared file is read again before a change is built on it. A file that is gone starts over from the defaults; one that cannot be
+   * read, or is not a JSON object, refuses the change, so what was read at startup is never written over a file someone is repairing.
+   */
+  private async reread() {
+    if (!this.shared) return;
+    let text: string;
+    try { text = await readFile(this.file, 'utf8'); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') { this.current = defaultSettings(this.paths); return; }
+      throw new Error(`Clop could not read its settings file ${this.file} (${reason(error)}), so it did not save this change.`);
+    }
+    let value: unknown;
+    try { value = JSON.parse(text); } catch {}
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`Clop could not read its settings file ${this.file} (it is not a JSON object), so it did not save this change.`);
+    if (isLegacySettings(value)) return;
+    // What another process saved since this store last looked is a change here too: whoever listens (the app's windows, its watchers) hears of it.
+    const previous = this.current, next = parseSettings(value, defaultSettings(this.paths));
+    const changed = SETTING_KEYS.filter(key => !isDeepStrictEqual(next[key], previous[key]));
+    this.current = next;
+    if (changed.length) this.emit('change', next, changed);
+  }
+
   private async apply(partial: unknown): Promise<ClopSettings> {
     if (this.unreadable) throw this.unreadable;
+    await this.reread();
     const previous = this.current, next = parseSettings(partial, previous);
     const changed = SETTING_KEYS.filter(key => !isDeepStrictEqual(next[key], previous[key]));
     if (!changed.length) return previous;
@@ -92,9 +124,28 @@ export class SettingsStore extends EventEmitter<{ change: [settings: ClopSetting
   }
 
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
-    const job = this.queue.then(task);
+    const job = this.queue.then(() => this.shared ? this.locked(task) : task());
     this.queue = job.catch(() => {});
     return job;
+  }
+
+  /**
+   * Runs `task` while holding `settings.json.lock`, so a change in this process and one in another (two headless commands, an MCP
+   * server) take turns: each rereads the file only after the other has written it. A lock left by a process that died is taken over after 30 seconds.
+   */
+  private async locked<T>(task: () => Promise<T>): Promise<T> {
+    const lock = `${this.file}.lock`, started = Date.now();
+    await mkdir(path.dirname(this.file), { recursive: true });
+    for (;;) {
+      try { await writeFile(lock, String(process.pid), { flag: 'wx' }); break; } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST' && (error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+        const age = await stat(lock).then(info => Date.now() - info.mtimeMs, () => 0);
+        if (age > LOCK_STALE_MS) { await rm(lock, { force: true }); continue; }
+        if (Date.now() - started > LOCK_WAIT_MS) throw new Error(`Clop could not save this change: another Clop command has been saving settings for more than ${LOCK_WAIT_MS / 1000} seconds (${lock}).`);
+        await delay(20);
+      }
+    }
+    try { return await task(); } finally { await rm(lock, { force: true }); }
   }
 
   /** Replaces the file atomically, so a crash never leaves half a file. */

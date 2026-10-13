@@ -11,7 +11,11 @@ import { PIPELINE_SOURCE_KEYS } from './triggers';
 // current settings and returns the stored values to write plus what to tell the user, so the CLI can apply them through the
 // running app (which owns the settings file) or straight to the file when the app is not running.
 
-export interface LibraryEdit { values: Partial<ClopSettings>; message: string; notes?: string[] }
+export interface LibraryEdit {
+  values: Partial<ClopSettings>; message: string; notes?: string[];
+  /** Settings the edit looked at without writing; the save names them too, so it is refused if one changed in between. */
+  read?: (keyof ClopSettings)[];
+}
 /** How names and sources are highlighted in messages; the CLI colours them as macOS does. */
 export interface Paint { name(text: string): string; source(text: string): string }
 const PLAIN: Paint = { name: text => text, source: text => text };
@@ -113,7 +117,7 @@ export function attachPipeline(settings: ClopSettings, { pipeline: arg, source, 
     if (!dirs.some(dir => portablePath(path.resolve(resolveHome(dir, home)), home) === folder)) { values[DIRS_KEYS[fileType]] = [...dirs, folder]; notes.push('now watching this folder'); }
     if (!settings[ENABLED_KEYS[fileType]]) { values[ENABLED_KEYS[fileType]] = true; notes.push(`enabled automatic ${fileType} processing`); }
   }
-  return { values, message: `Attached to ${paint.source(stored)} (${paint.name(fileType)}): ${label}`, notes };
+  return { values, message: `Attached to ${paint.source(stored)} (${paint.name(fileType)}): ${label}`, notes, read: ['savedPipelines', ...(folder ? [DIRS_KEYS[fileType], ENABLED_KEYS[fileType]] : [])] };
 }
 
 /** `pipeline detach`: removing a folder's last pipeline also stops watching it for that type. */
@@ -139,7 +143,7 @@ export function detachPipeline(settings: ClopSettings, { source, type, index, al
     values[DIRS_KEYS[fileType]] = dirs.filter(dir => dir !== folder && dir !== stored);
     notes.push(`Stopped watching this folder for ${fileType}`);
   }
-  return { values, message, notes };
+  return { values, message, notes, ...(folder ? { read: [DIRS_KEYS[fileType]] } : {}) };
 }
 
 const zoneId = (zone: Stored<PresetZone>) => isReadable(zone) ? zone.id : (typeof zone.raw === 'string' ? (() => { try { return JSON.parse(zone.raw).id; } catch { return undefined; } })() : (zone.raw as { id?: unknown })?.id);
@@ -152,7 +156,7 @@ export function addPresetZone(settings: ClopSettings, { name, pipeline: arg, typ
   const zones = [...settings.presetZones], index = zones.findIndex(z => zoneId(z) === id);
   if (index >= 0 && !force) throw new LibraryError(`A preset zone with id '${id}' already exists. Use --force to replace it.`);
   if (index >= 0) zones[index] = zone; else zones.push(zone);
-  return { values: { presetZones: zones }, message: `${index >= 0 ? 'Replaced' : 'Added'} preset zone ${paint.name(name)} (type: ${fileType ?? 'all'})` };
+  return { values: { presetZones: zones }, message: `${index >= 0 ? 'Replaced' : 'Added'} preset zone ${paint.name(name)} (type: ${fileType ?? 'all'})`, read: ['savedPipelines'] };
 }
 
 /** `pipeline preset remove`. */

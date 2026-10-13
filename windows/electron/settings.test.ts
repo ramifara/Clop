@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { HIDDEN_KEYS } from '../core/settings/entries';
 import { SETTING_KEYS, defaultSettings, migrateLegacy, settingsSchema, type ClopSettings, type SettingSpec } from '../core/settings/schema';
 import { MCP_WRITABLE } from '../core/ipc/settings';
+import { FPS_CAPS } from '../src/settings/options';
 import { ACTION_ONLY_SETTINGS, RENDERER_SETTINGS, imageCompression, imageDefaults, imageMode, parseOptions, rendererSettings } from './settings';
 test('new images use the compression and format settings', () => {
   assert.deepEqual(imageDefaults(defaultSettings()), { mode: 'balanced', format: 'auto', scale: 1 });
@@ -27,6 +28,10 @@ test('rejects invalid dimensions, formats and non-finite scales', () => {
   assert.throws(() => parseOptions({ mode: 'balanced', format: 'png', scale: 1, maxEdge: 1.5 }));
   assert.throws(() => parseOptions({ mode: 'balanced', format: 'png', scale: 1, maxEdge: 20000 }));
 });
+test('every frame-rate cap the settings window offers is a value the setting accepts, and nothing between them', () => {
+  for (const cap of FPS_CAPS) assert.deepEqual(rendererSettings({ targetVideoFPS: cap.value }), { targetVideoFPS: cap.value }, cap.label);
+  for (const bad of [-1, -3, -60, NaN]) assert.throws(() => rendererSettings({ targetVideoFPS: bad }), /not a valid value/, String(bad));
+});
 test('the renderer may change the settings its window has rows for, and not those that change only through an action', () => {
   assert.deepEqual(rendererSettings({ floatingResultsCorner: 'topLeft', keepDropZoneVisible: true }), { floatingResultsCorner: 'topLeft', keepDropZoneVisible: true });
   const schema = settingsSchema as Record<string, SettingSpec>;
@@ -49,7 +54,9 @@ test('a value the setting cannot hold is refused instead of silently ignored', (
   assert.throws(() => rendererSettings({ batchModeFileCountThreshold: -1, stripMetadata: 'yes' }), /batchModeFileCountThreshold, stripMetadata are not valid values/);
   assert.throws(() => rendererSettings({ enabledKeys: ['Not a key'] }), /enabledKeys/);
   assert.throws(() => rendererSettings({ videoEncoder: 'rm -rf' }), /videoEncoder/);
-  assert.deepEqual(rendererSettings({ keyComboModifiers: ['Control', 'Alt'], enabledKeys: ['C', 'Space'] }), { keyComboModifiers: ['Control', 'Alt'], enabledKeys: ['C', 'Space'] });
+  assert.deepEqual(rendererSettings({ keyComboModifiers: ['Shift', 'Alt'], enabledKeys: ['C', 'Space'] }), { keyComboModifiers: ['Shift', 'Alt'], enabledKeys: ['C', 'Space'] });
+  assert.throws(() => rendererSettings({ keyComboModifiers: ['Super'] }), /Windows key alone/);
+  assert.throws(() => rendererSettings({ keyComboModifiers: ['Control', 'Alt'] }), /AltGr/);
   assert.throws(() => rendererSettings({ keyComboModifiers: ['Shift'] }), /Shift alone/);
   assert.throws(() => rendererSettings({ keyComboModifiers: [] }), /at least one/i);
   assert.throws(() => rendererSettings({ quickResizeKeys: ['1', 'F5'] }), /F5 cannot downscale/);
@@ -60,8 +67,8 @@ test('a value the setting cannot hold is refused instead of silently ignored', (
 });
 test('the window can write only what agents may write, plus these Windows-side keys, so a new row cannot widen the IPC surface unnoticed', () => {
   const beyondAgents = RENDERER_SETTINGS.filter(key => !MCP_WRITABLE.has(key)).sort();
-  // None of these chooses a program, script or folder. Add a key here only after deciding that of it.
-  assert.deepEqual(beyondAgents, ['adaptiveVideoSize', 'audioFormat', 'audioFormatsToSkip', 'betaUpdates', 'checkForUpdates', 'defaultLinkExpiration', 'enabledKeys', 'formatsToConvertToOutputAudio', 'keyComboModifiers', 'quickResizeKeys', 'videoEncoder', 'workdirCleanupInterval']);
+  // None of these chooses a program, script or folder. Add a key here only after deciding that of it. The tray icon and the login item are the user's alone.
+  assert.deepEqual(beyondAgents, ['adaptiveVideoSize', 'audioFormat', 'audioFormatsToSkip', 'betaUpdates', 'checkForUpdates', 'defaultLinkExpiration', 'enabledKeys', 'formatsToConvertToOutputAudio', 'keyComboModifiers', 'launchAtLogin', 'quickResizeKeys', 'showMenubarIcon', 'videoEncoder', 'workdirCleanupInterval']);
 });
 test('card options accept an extra compression and the HEIC and JPEG XL formats, and nothing else', () => {
   assert.deepEqual(parseOptions({ mode: 'balanced', format: 'heic', scale: 1, compression: { tier: 'custom', factor: 40, extra: 1 } }), { mode: 'balanced', format: 'heic', scale: 1, compression: { tier: 'custom', factor: 40 } });

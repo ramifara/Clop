@@ -83,6 +83,11 @@ export function placeholderReply(reply: unknown, count: number): boolean[] {
   return cloud;
 }
 
+/** Whether `file`'s content is on this computer, by the helper's `ask` for its attributes. Without the helper there is no answer, and `unknown` stands for it. */
+export async function localFile(file: string, ask: ((paths: string[]) => Promise<unknown>) | undefined, unknown: boolean): Promise<boolean> {
+  return ask ? !placeholderReply(await ask([file]), 1)[0] : unknown;
+}
+
 /**
  * Whether `file` can be opened for writing, so it can be replaced in place: a writer still holding it (EBUSY, or EPERM and
  * EACCES on Windows while it is open) is waited for, `tries` times `delayMs` apart, as macOS checks a settled file is valid.

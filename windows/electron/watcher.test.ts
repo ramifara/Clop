@@ -18,7 +18,7 @@ let shade = 0;
 /** A small PNG, different each time so no two files are alike. */
 const image = (file: string) => sharp({ create: { width: 64, height: 48, channels: 3, background: { r: shade++ % 255, g: 90, b: 140 } } }).png().toFile(file);
 
-async function setup(t: TestContext, overrides: Partial<ClopSettings> = {}, host: Partial<WatcherHost> = {}) {
+async function setup(t: TestContext, overrides: Partial<ClopSettings> = {}, host: Partial<WatcherHost> = {}, times: Partial<typeof timing> = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'clop-watch-')), dir = path.join(root, 'Shots');
   await mkdir(dir);
   const state = {
@@ -29,7 +29,7 @@ async function setup(t: TestContext, overrides: Partial<ClopSettings> = {}, host
     settings: () => state.settings, owns: file => file.includes(`${path.sep}work${path.sep}`), isOptimised: async file => state.optimised.has(file),
     handle: async (file, folder) => { state.handled.push([path.basename(file), folder]); return undefined; }, cancel: files => state.cancelled.push(...files.map(file => path.basename(file))),
     notice: text => state.notices.push(text), disable: () => { state.disabled++; }, ...host,
-  }, timing);
+  }, { ...timing, ...times });
   t.after(async () => { await watcher.close(); await rm(root, { recursive: true, force: true }); });
   return { root, dir, state, watcher, names: () => state.handled.map(([name]) => name).sort() };
 }
@@ -235,4 +235,127 @@ test('a copy that replaces a file and keeps the source\'s old modification time 
   // Explorer writes the copy over the file, then gives it the source's modification time.
   await sharp({ create: { width: 90, height: 40, channels: 3, background: '#335577' } }).png().toFile(old); await utimes(old, hour, hour);
   await until(() => state.handled.length === 1, 'the replaced file was not optimised');
+});
+
+test('a file named in .clopignore does not count towards the batch limit', async t => {
+  const { dir, state, watcher, names } = await setup(t, { maxImageFileCount: 1 });
+  await watcher.update();
+  await writeFile(path.join(dir, '.clopignore-image'), 'ignored-*\n');
+  await image(path.join(dir, 'ignored-1.png')); await pause(150);
+  await image(path.join(dir, 'real.png'));
+  await until(() => state.handled.length === 1, 'the real image was not optimised');
+  await pause(300);
+  assert.deepEqual([names(), state.cancelled, state.notices], [['real.png'], [], []]);
+});
+test('a file named in .clopignore is not optimised with the files held at first launch', async t => {
+  const { dir, state, watcher, names } = await setup(t, {}, { firstLaunch: true });
+  await watcher.update();
+  await writeFile(path.join(dir, '.clopignore-image'), 'ignored-*\n');
+  await image(path.join(dir, 'ignored-1.png')); await image(path.join(dir, 'real.png'));
+  await until(() => state.handled.length > 0, 'the held image was not optimised');
+  await pause(300);
+  assert.deepEqual(names(), ['real.png']);
+});
+test('pausing while a file settles stops it from being optimised', async t => {
+  const { dir, state, watcher } = await setup(t, {}, {}, { settleMs: 400 });
+  await watcher.update();
+  await image(path.join(dir, 'late.png'));
+  await pause(300);
+  state.settings = { ...state.settings, pauseAutomaticOptimisations: true };
+  await watcher.update();
+  await pause(600);
+  assert.deepEqual(state.handled, []);
+});
+test('a file saved again while it is being optimised is optimised again afterwards', async t => {
+  let first = true;
+  const { dir, state, watcher } = await setup(t, {}, { handle: async file => { state.handled.push([path.basename(file), dir]); if (first) { first = false; await pause(400); } return undefined; } });
+  await watcher.update();
+  const shot = path.join(dir, 'shot.png');
+  await image(shot);
+  await until(() => state.handled.length === 1, 'the image was not optimised');
+  await pause(100); await image(shot);
+  await until(() => state.handled.length === 2, 'the second save was dropped');
+});
+
+test('files that change while the Windows helper starts are looked at once it is ready', async t => {
+  let helper: 'ready' | 'starting' | 'stopped' = 'starting';
+  const { dir, state, watcher, names } = await setup(t, {}, { helper: () => helper });
+  await watcher.update();
+  await image(path.join(dir, 'early.png'));
+  await pause(500);
+  assert.deepEqual(state.handled, [], 'nothing is optimised before the helper can say whether the file is local');
+  helper = 'ready'; watcher.resume();
+  await until(() => state.handled.length === 1, 'the early file was dropped');
+  assert.deepEqual(names(), ['early.png']);
+  await image(path.join(dir, 'later.png'));
+  await until(() => state.handled.length === 2, 'a file after the helper was ready was not optimised');
+});
+test('with the Windows helper stopped, watched files are left alone with one notice, and optimised again once it is back', async t => {
+  let helper: 'ready' | 'starting' | 'stopped' = 'stopped';
+  const { dir, state, watcher } = await setup(t, {}, { helper: () => helper });
+  await watcher.update();
+  await image(path.join(dir, 'a.png')); await pause(300); await image(path.join(dir, 'b.png'));
+  await pause(500);
+  assert.deepEqual([state.handled, state.notices.length], [[], 1]);
+  assert.match(state.notices[0], /helper is not running/);
+  assert.match(state.notices[0], /Restart Clop to have watched folders optimise new files again\./, 'a restart does not optimise files that are already there');
+  helper = 'ready'; watcher.resume();
+  await image(path.join(dir, 'c.png'));
+  await until(() => state.handled.length === 1, 'a file after the helper came back was not optimised');
+});
+
+test('a file named in .clopignore does not keep the files of a burst cancelled', async t => {
+  const { dir, state, watcher } = await setup(t, { maxImageFileCount: 2 }, {}, { windowMs: 1500 });
+  await watcher.update();
+  await writeFile(path.join(dir, '.clopignore-image'), 'ignored-*\n');
+  // One after another, so only the last file starts the cleanup.
+  for (const name of ['a', 'b', 'c']) { await image(path.join(dir, `${name}.png`)); await pause(250); }
+  await until(() => state.notices.length > 0, 'no notice for too many files');
+  await pause(200);
+  await image(path.join(dir, 'ignored-1.png'));
+  await pause(2500);
+  const before = state.handled.length;
+  await image(path.join(dir, 'a.png'));
+  await until(() => state.handled.length === before + 1, 'a file of the burst was still left alone after the burst ended');
+  assert.equal(state.handled.at(-1)![0], 'a.png');
+});
+
+test('files held while the helper started are told about when it stops instead', async t => {
+  let helper: 'ready' | 'starting' | 'stopped' = 'starting';
+  const { dir, state, watcher } = await setup(t, {}, { helper: () => helper });
+  await watcher.update();
+  await image(path.join(dir, 'early.png'));
+  await pause(300);
+  assert.deepEqual(state.notices, []);
+  helper = 'stopped'; watcher.resume();
+  await until(() => state.notices.length === 1, 'the held file was dropped without a word');
+  assert.match(state.notices[0], /helper is not running/);
+  assert.deepEqual(state.handled, []);
+});
+
+test('a late file that is not ignored still lets the burst\'s files go once the window has passed', async t => {
+  const { dir, state, watcher } = await setup(t, { maxImageFileCount: 2 }, {}, { windowMs: 1500 });
+  await watcher.update();
+  for (const name of ['a', 'b', 'c']) { await image(path.join(dir, `${name}.png`)); await pause(250); }
+  await until(() => state.notices.length > 0, 'no notice for too many files');
+  // After the first two have left the window, one more file is no burst; it is optimised, and the burst is forgotten after its own window.
+  await pause(1000);
+  await image(path.join(dir, 'd.png'));
+  await until(() => state.handled.some(([name]) => name === 'd.png'), 'the late file was not optimised');
+  await pause(2600);
+  const before = state.handled.length;
+  await image(path.join(dir, 'a.png'));
+  await until(() => state.handled.length === before + 1, 'a file of the burst was still left alone after the burst ended');
+  assert.equal(state.handled.at(-1)![0], 'a.png');
+});
+
+test('files that changed seconds apart while the helper started do not count as one burst', async t => {
+  let helper: 'ready' | 'starting' | 'stopped' = 'starting';
+  const { dir, state, watcher, names } = await setup(t, { maxImageFileCount: 1 }, { helper: () => helper });
+  await watcher.update();
+  await image(path.join(dir, 'first.png')); await pause(700); await image(path.join(dir, 'second.png'));
+  await pause(200);
+  helper = 'ready'; watcher.resume();
+  await until(() => state.handled.length === 2, 'the held files were counted as one burst');
+  assert.deepEqual([names(), state.notices, state.cancelled], [['first.png', 'second.png'], [], []]);
 });

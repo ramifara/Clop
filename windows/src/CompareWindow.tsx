@@ -11,7 +11,7 @@ const clock = (seconds: number) => { const s = Math.max(0, Math.floor(seconds));
 const dimensions = (side: CompareSide) => side.width && side.height ? `${side.width}×${side.height}` : '';
 const clamp = (value: number) => Math.min(Math.max(value, 0), 1);
 /** What decides whether the result the window shows is still the item's current one. */
-const outputKey = (item: ItemResult) => JSON.stringify([item.format, item.outputBytes, item.width, item.height, item.pages, item.restored, item.options]);
+const outputKey = (item: ItemResult) => JSON.stringify([item.format, item.outputBytes, item.width, item.height, item.pages, item.restored, item.revision, item.options]);
 
 /**
  * The compare window (CompareView.swift): the original and the current result side by side or split by a draggable divider, with

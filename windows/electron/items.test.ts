@@ -30,9 +30,22 @@ test('optimises an image, resizes from the original and restores exact source by
   assert.deepEqual([engine.get(id).result.width, engine.get(id).result.height], [600, 400]);
   await engine.apply(id, { ...balanced, scale: .75 });
   assert.deepEqual([engine.get(id).result.width, engine.get(id).result.height], [1800, 1200]);
+  const restored: string[] = [];
+  engine.on('restored', (restoredId: string) => restored.push(restoredId));
   await engine.restore(id);
+  assert.deepEqual(restored, [id], 'every restore says so, for what keeps a result\'s state');
   assert.deepEqual(await readFile(engine.output(id)), original);
   assert.equal(engine.get(id).result.restored, true);
+});
+test('every finished result is marked as optimised, so pasting or dragging it into a watched folder does not optimise it again', async t => {
+  if (!needTools(t, 'jpegoptim', 'pngquant')) return;
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-engine-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const marked: string[] = [], engine = new ItemEngine(dir, undefined, async file => { marked.push(file); });
+  const id = await engine.importBuffer(await sampleImage(), 'shot.png', 'clipboard', balanced);
+  assert.deepEqual(marked, [engine.output(id)]);
+  await engine.apply(id, { ...balanced, scale: .5 });
+  assert.deepEqual(marked.slice(1), [engine.output(id)], 'a card action\'s result too');
 });
 test('respects maximum edge, aspect ratio and never enlarges', async t => {
   const f = await fixture(t); if (!f) return;
@@ -202,11 +215,13 @@ test('optimises audio, previewing its cover art or a drawn placeholder', async t
   assert.ok(Math.abs(result.durationMs! - 2000) < 100, `${result.durationMs}`);
   assert.ok(result.outputBytes < result.originalBytes);
   assert.deepEqual(await previewSize(result.preview), [300, 200]);
+  assert.equal(result.coverArt, true, 'the card can tell it has cover art');
   // WAV becomes MP3 by the default formatsToConvertToMP3.
   const wav = await engine.importPath(await tone(path.join(dir, 'take.wav')), 'drop', balanced), take = engine.get(wav).result;
   assert.equal(take.status, 'ready', take.error);
   assert.deepEqual([take.format, path.extname(engine.output(wav))], ['mp3', '.mp3']);
   assert.equal(take.preview, await placeholder('audio'));
+  assert.equal(take.coverArt, false, 'and that a file without any has none');
   await engine.restore(wav);
   assert.equal(engine.get(wav).result.format, 'wav');
 });
@@ -227,6 +242,54 @@ test('a long video does not hold up an image, and aborting stops the video', asy
   assert.ok(Date.now() - before < 5000);
   assert.equal(engine.get(id).result.status, 'error');
   await assert.rejects(engine.importBuffer(Buffer.from('x'), 'late.png', 'drop', balanced), { name: 'AbortError' });
+});
+test('stopping everything also stops an import that is still being read', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine } = f;
+  const reading = engine.importBuffer(await sampleImage(), 'big.png', 'drop', balanced);
+  engine.stop();
+  await assert.rejects(reading, { name: 'AbortError' });
+  assert.deepEqual(engine.list(), []);
+  // Only everything is stopped: stopping named results leaves a read in progress alone.
+  const other = engine.importBuffer(await sampleImage(), 'next.png', 'drop', balanced);
+  engine.stop(['nothing']);
+  assert.equal(engine.get(await other).result.status, 'ready');
+});
+test('pipelines are chosen for the kind a file turns out to be, not by its name', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine } = f, kinds: string[] = [], ran: string[] = [], staged: string[] = [];
+  const late = (kind: string) => { kinds.push(kind); return { staged: (id: string) => staged.push(id), automation: { skipOptimisation: false, fallback: false, run: async () => { ran.push(kind); return { file: '', anyRan: false, warnings: [] }; } } }; };
+  const id = await engine.importBuffer(await sampleImage(), 'download.bin', 'drop', balanced, { late: late as never });
+  assert.deepEqual([kinds, ran, staged], [['image'], ['image'], [id]]);
+});
+test('a result that a pipeline deleted is not marked ready', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine, dir } = f, gone = path.join(dir, 'deleted.png');
+  const automation = { skipOptimisation: false, fallback: false, run: async () => ({ file: gone, anyRan: true, warnings: [] }) };
+  const id = await engine.importBuffer(await sampleImage(), 'shot.png', 'clipboard', balanced, { automation });
+  assert.equal(engine.get(id).result.status, 'error');
+  assert.match(engine.get(id).result.error ?? '', /deleted/);
+  assert.throws(() => engine.output(id), /Wait for this result/);
+});
+test('a pipeline that changes a file the optimiser left as it was cannot be restored over', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine, dir } = f, file = path.join(dir, 'watched.jpg');
+  // A small JPEG that jpegoptim cannot shrink comes back unchanged.
+  await writeFile(file, await sharp({ create: { width: 16, height: 16, channels: 3, background: '#a06040' } }).jpeg({ quality: 50, mozjpeg: true }).toBuffer());
+  let unchanged: boolean | undefined;
+  const automation = { skipOptimisation: false, fallback: false, run: async () => { unchanged = engine.list()[0].unchanged; return { file, started: file, anyRan: true, warnings: [] }; } };
+  const id = await engine.importPath(file, 'folder', balanced, undefined, { automation });
+  assert.equal(unchanged, true);
+  assert.equal(engine.get(id).result.status, 'ready');
+  await assert.rejects(engine.restore(id), /A pipeline changed watched\.jpg/);
+});
+test('an import whose folder cannot be made leaves nothing behind that Stop all would wait for', async t => {
+  const f = await fixture(t); if (!f) return;
+  const blocked = path.join(f.dir, 'not-a-folder');
+  await writeFile(blocked, 'x');
+  const engine = new ItemEngine(blocked);
+  await assert.rejects(engine.importBuffer(await sampleImage(), 'a.png', 'drop', balanced));
+  assert.equal((engine as unknown as { staging: Set<unknown> }).staging.size, 0);
 });
 test('names an imported file as asked and reports files it cannot read', async t => {
   const f = await fixture(t); if (!f) return;
@@ -327,6 +390,19 @@ test('stopping ends running and queued jobs, which can then run again', async t 
   assert.equal(engine.get(id).result.status, 'ready');
   engine.stop([id]);
   assert.equal(engine.get(id).result.status, 'ready', 'stopping a finished result changes nothing');
+});
+test('an import given a signal stops with it, while staging and while its job runs', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine, dir } = f;
+  const gone = new AbortController(); gone.abort();
+  await assert.rejects(engine.importBuffer(await sampleImage(), 'early.png', 'file', balanced, { signal: gone.signal }), { name: 'AbortError' });
+  assert.deepEqual(engine.list(), []);
+  const clipPath = await clip(path.join(dir, 'long.mp4'), { width: 640, height: 360, seconds: 4 }), stop = new AbortController();
+  const job = engine.importPath(clipPath, 'file', balanced, undefined, { signal: stop.signal });
+  while (!engine.list().length || engine.list()[0].status !== 'processing') await new Promise(resolve => setTimeout(resolve, 10));
+  stop.abort();
+  const id = await job;
+  assert.deepEqual([engine.get(id).result.status, engine.get(id).result.error], ['error', 'Stopped.']);
 });
 test('a dismissed result can be brought back as the newest', async t => {
   const f = await fixture(t); if (!f) return;

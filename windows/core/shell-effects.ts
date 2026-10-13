@@ -35,13 +35,25 @@ export interface ShellEffectsOptions {
   allowExe?: boolean;
   /** Watched folders, where a program is never run from. */
   watched?: string[];
+  /** `mcp` when an agent's request runs. */
+  origin?: string;
+  /**
+   * A person passed `--delete-folders`: a pipeline's `delete` may move a folder to the Recycle Bin. Without the app nobody is
+   * asked first, so by default a folder is refused, and an agent's request never deletes one.
+   */
+  deleteFolders?: boolean;
 }
+
+/** Why a headless `delete` of a folder does not run. */
+export const folderDeletionRefusal = (origin?: string) => origin === 'mcp'
+  ? 'Agents cannot delete folders while Clop is not running. Open Clop and run the pipeline again: the app asks the user before it moves a folder to the Recycle Bin.'
+  : 'Clop is not running, so nobody can be asked before this folder goes to the Recycle Bin. Open Clop and run the pipeline again, or pass --delete-folders to delete folders without asking.';
 
 /**
  * `openWith` follows the app's rule (`resolveApp`): an app by name that Windows has an App Paths entry for, or a program by
  * path only when `allowExe`. Packaged apps need the running Clop app, which asks Windows for them.
  */
-export const shellEffects = ({ allowExe = false, watched = [] }: ShellEffectsOptions = {}): ShellEffects => ({
+export const shellEffects = ({ allowExe = false, watched = [], origin, deleteFolders = false }: ShellEffectsOptions = {}): ShellEffects => ({
   async copyToClipboard(item) {
     if ('text' in item) { await script('Set-Clipboard -Value $env:CLOP_TEXT', { CLOP_TEXT: item.text }, 'Copying to the clipboard'); return; }
     await script('Add-Type -AssemblyName System.Windows.Forms, System.Drawing\n$image = [System.Drawing.Image]::FromFile($env:CLOP_FILE)\ntry { [System.Windows.Forms.Clipboard]::SetImage($image) } finally { $image.Dispose() }', { CLOP_FILE: item.image }, 'Copying to the clipboard');
@@ -56,6 +68,7 @@ export const shellEffects = ({ allowExe = false, watched = [] }: ShellEffectsOpt
       .catch(error => { throw new Error(`Could not open ${path.basename(file)} with ${app}: ${error instanceof Error ? error.message.split('\n')[0] : error}`); });
   },
   async trash(target, kind) {
+    if (kind === 'folder' && (!deleteFolders || origin === 'mcp')) throw new Error(folderDeletionRefusal(origin));
     const method = kind === 'folder' ? 'DeleteDirectory' : 'DeleteFile';
     await script(`Add-Type -AssemblyName Microsoft.VisualBasic\n[Microsoft.VisualBasic.FileIO.FileSystem]::${method}($env:CLOP_TARGET, 'OnlyErrorDialogs', 'SendToRecycleBin')`, { CLOP_TARGET: target }, 'Moving files to the Recycle Bin');
     return true;

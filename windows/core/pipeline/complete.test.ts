@@ -78,6 +78,9 @@ test('committing a step closes it, its quote, and starts the next one', () => {
   assert.equal(show(commitStep('crop(width: 100, ', 17)!), 'crop(width: 100) -> |');
   assert.equal(show(commitStep('move(to: "~/out', 15)!), 'move(to: "~/out") -> |');
   assert.equal(commitStep('optimise', 8), undefined);
+  // With a step after it, the cursor stays beside the committed step and the later steps are left where they are.
+  assert.equal(show(commitStep('capFps(fps: 3 -> convert(to: webp)', 13)!), 'capFps(fps: 3)| -> convert(to: webp)');
+  assert.equal(show(commitStep('capFps(fps: 3, \nconvert(to: webp)', 14)!), 'capFps(fps: 3)|\nconvert(to: webp)');
   assert.equal(finishText('  crop(width: 100) ->  '), 'crop(width: 100)');
 });
 

@@ -93,6 +93,8 @@ function locate(parent: string, lines: string[]): Found | undefined {
   }
   const index = topLevel.findIndex(entry => entry.key === parent);
   if (index < 0) return undefined;
+  // A key listed twice is read differently by different parsers, so no edit is safe.
+  if (topLevel.some((entry, n) => n !== index && entry.key === parent)) throw new ConfigLayoutError();
   const { line: parentLine, value } = topLevel[index], emptyFlow = ['{}', '~', 'null'].includes(value);
   if (value && !emptyFlow) throw new ConfigLayoutError();
   let end = index + 1 < topLevel.length ? topLevel[index + 1].line : lines.length;
@@ -112,6 +114,7 @@ function locate(parent: string, lines: string[]): Found | undefined {
     if (!pair) throw new ConfigLayoutError();
     starts.push({ name: pair[0], line: n });
   }
+  if (new Set(starts.map(start => start.name)).size < starts.length) throw new ConfigLayoutError();
   const children = starts.map((start, m) => {
     let stop = m + 1 < starts.length ? starts[m + 1].line : end;
     while (stop > start.line + 1 && blankOrComment(lines[stop - 1])) stop--;

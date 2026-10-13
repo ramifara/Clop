@@ -165,6 +165,13 @@ test('the lossless tier keeps 16-bit samples, colour under transparent pixels, a
   if (!deepOut.unchanged) assert.equal((await sharp(deepOut.path).metadata()).depth, 'ushort');
   assert.deepEqual(await sharp(deepOut.path).raw({ depth: 'ushort' }).toBuffer(), await sharp(png16).raw({ depth: 'ushort' }).toBuffer());
 
+  // WebP and AVIF hold 8 bits per sample, so a lossless conversion of 16-bit pixels stays PNG.
+  for (const format of ['webp', 'avif'] as const) {
+    const converted = await optimiseImage(png16, w.out, { compression: lossless, format, name: `deep-${format}` });
+    assert.equal(converted.format, 'png');
+    assert.deepEqual(await sharp(converted.path).raw({ depth: 'ushort' }).toBuffer(), await sharp(png16).raw({ depth: 'ushort' }).toBuffer());
+  }
+
   // Fully transparent pixels whose colour differs from pixel to pixel.
   const rgba = Buffer.alloc(width * height * 4);
   for (let i = 0; i < rgba.length; i += 4) rgba.set([i % 251, i % 241, i % 239, i % 8 ? 0 : 255], i);

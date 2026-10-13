@@ -65,7 +65,7 @@ export async function runPipelines(pipelines: readonly Pipeline[], file: string,
     opts.signal?.throwIfAborted();
     const name = pipeline.name ?? `Pipeline ${index + 1}`;
     try {
-      const result = await runPipeline(pipeline, file, opts);
+      const result = await runPipeline(pipeline, file, index < pipelines.length - 1 ? { ...opts, laterPipelines: true } : opts);
       // Deliberate difference from macOS: the final file moves only for a pipeline that did work, so one that a filter stopped
       // cannot replace the file an earlier pipeline left with the input it reports back, and `anyRan` stays honest.
       if (result.didWork) { outcome.anyRan = true; outcome.file = result.file; outcome.hidden ||= pipeline.hideResult; }

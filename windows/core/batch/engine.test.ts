@@ -46,6 +46,17 @@ async function batchOf(env: BatchEnv, paths: string[], params: BatchParams) {
 }
 const statuses = (batch: Batch) => batch.items.map(item => item.status);
 
+test('a lossless image setting stays lossless in a batch', async t => {
+  if (!needTools(t, 'jpegoptim', 'pngquant', 'exiftool')) return;
+  const { files, env, params } = await setup(t);
+  const source = await write(path.join(files, 'a.png'), await png(96, 64));
+  const before = await sharp(source).raw().toBuffer();
+  const batch = await batchOf(env, [files], { ...params(), image: { ...params().image, lossless: true } });
+  await batch.run();
+  assert.deepEqual(statuses(batch), ['done']);
+  assert.ok((await sharp(source).raw().toBuffer()).equals(before), 'every pixel is as it was');
+});
+
 test('optimises images in place, keeps the originals in the batch backup and reverts them byte for byte', async t => {
   if (!needTools(t, 'jpegoptim', 'pngquant', 'exiftool')) return;
   const { files, env, params } = await setup(t);
@@ -228,6 +239,21 @@ test('optimises videos, PDFs and audio side by side and reverts them', async t =
   assert.equal(await exists(path.join(files, 'tone.mp3')), false);
 });
 
+test('a video conversion uses the batch\'s encoder tier and compression', async t => {
+  if (!needTools(t, 'ffmpeg', 'ffprobe')) return;
+  const { dir, files, env, params } = await setup(t);
+  const video = await clip(path.join(files, 'clip.mp4'), { width: 640, height: 360, seconds: 1 });
+  const converted = async (encoder: 'smaller' | 'lossless') => {
+    const p = params({ output: { location: 'folder', folder: path.join(dir, encoder), template: '%f' } });
+    p.video = { ...p.video, convert: 'hevc', encoder, compression: 70, allowLarger: true };
+    const batch = await batchOf(env, [video], p);
+    await batch.run();
+    assert.deepEqual(statuses(batch), ['done'], batch.items.map(item => item.error).join());
+    return (await stat(batch.items[0].result!)).size;
+  };
+  assert.ok(await converted('lossless') > await converted('smaller'), 'visually lossless keeps more than the smaller-file tier');
+});
+
 test('a file that cannot be optimised fails with its reason while the rest finish', async t => {
   if (!needTools(t, 'jpegoptim', 'exiftool')) return;
   const { files, env, params } = await setup(t);
@@ -279,6 +305,45 @@ test('a failing manifest write gives back a file of the user\'s that sat where a
   assert.deepEqual((await readdir(files)).sort(), ['shot.jpeg', 'shot.png']);
 });
 
+test('an original a converted result is about to replace is noted until the result is in, so a start after a crash gives it back', async t => {
+  if (!needTools(t, 'jpegoptim', 'pngquant', 'exiftool')) return;
+  const { files, env, params, workdir } = await setup(t);
+  const shot = await write(path.join(files, 'shot.png'), await png(400, 300, 3)), before = await digest(shot);
+  const p = params(); p.image = { ...p.image, convert: 'jpeg' };
+  const batch = await batchOf(env, [shot], p);
+  let away = false, repaired: string[] = [];
+  const record = batch.backup.recordResult.bind(batch.backup);
+  // The app is killed here: the original has moved into the batch backup and the result is in place, but nothing is recorded.
+  mock.method(batch.backup, 'recordResult', async (result: Parameters<typeof record>[0]) => { away = !await exists(shot); repaired = await workdir.repair(); await record(result); });
+  await batch.run();
+  assert.equal(away, true);
+  assert.deepEqual(repaired, [shot]);
+  assert.equal(await digest(shot), before, 'the original is back where it was');
+  assert.deepEqual(await readdir(path.join(workdir.root, 'placing')).catch(() => []), []);
+  // A placement that ends normally leaves no note.
+  const second = await write(path.join(files, 'next.png'), await png(300, 200, 5));
+  const again = await batchOf(env, [second], p);
+  await again.run();
+  assert.deepEqual(statuses(again), ['done']);
+  assert.deepEqual(await readdir(path.join(workdir.root, 'placing')).catch(() => []), []);
+});
+
+test('the note of a moved original exists before the original leaves its path, so a crash in between leaves nothing missing', async t => {
+  if (!needTools(t, 'jpegoptim', 'pngquant', 'exiftool')) return;
+  const { files, env, params, workdir } = await setup(t);
+  const shot = await write(path.join(files, 'shot.png'), await png(400, 300, 3));
+  const p = params(); p.image = { ...p.image, convert: 'jpeg' };
+  const batch = await batchOf(env, [shot], p);
+  const seen: { atPath: boolean; backupThere: boolean }[] = [];
+  const journal = workdir.journal.bind(workdir);
+  mock.method(workdir, 'journal', async (original: string, backup: string) => { seen.push({ atPath: await exists(original), backupThere: await exists(backup) }); return journal(original, backup); });
+  await batch.run();
+  assert.deepEqual(statuses(batch), ['done']);
+  // The note was written while the original still stood at its path, and its backup did not exist yet.
+  assert.deepEqual(seen, [{ atPath: true, backupThere: false }]);
+  assert.deepEqual(await readdir(path.join(workdir.root, 'placing')).catch(() => []), []);
+});
+
 test('a failure after the original was taken restores it, and leaves a new result file out', async t => {
   if (!needTools(t, 'jpegoptim', 'exiftool')) return;
   const { dir, files, env, params } = await setup(t);
@@ -292,6 +357,37 @@ test('a failure after the original was taken restores it, and leaves a new resul
     assert.equal(await digest(a), original, `${output.location}: the original is back`);
     assert.deepEqual(await readdir(out).catch(() => []), [], `${output.location}: no result is left behind`);
   }
+});
+
+test('a result whose manifest write failed does not reach the manifest through another file\'s save', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { dir, files, env, params } = await setup(t);
+  const a = await write(path.join(files, 'a.jpg'), await jpeg(320, 240, 1)), b = await write(path.join(files, 'b.jpg'), await jpeg(320, 240, 2));
+  const batch = await batchOf(env, [a], params({ output: { location: 'folder', folder: path.join(dir, 'out'), template: '%f' } }));
+  // The first write fails after a moment; a second file is recorded while it is in flight.
+  const backup = batch.backup as unknown as { save(): Promise<void> }, save = backup.save.bind(backup);
+  let calls = 0;
+  backup.save = () => calls++ === 0 ? new Promise<void>((_, reject) => setTimeout(() => reject(new Error('disk full')), 50)) : save();
+  const entry = (original: string) => ({ original, path: path.join(dir, 'out', path.basename(original)), size: 1, mtimeMs: 1, originalRemoved: false });
+  const [failed] = await Promise.allSettled([batch.backup.recordResult(entry(a)), batch.backup.recordResult(entry(b))]);
+  assert.equal(failed.status, 'rejected');
+  assert.deepEqual(JSON.parse(await readFile(path.join(batch.backup.dir, 'manifest.json'), 'utf8')).results.map((r: { original: string }) => r.original), [b], 'the failed result is not carried along');
+  assert.deepEqual(batch.backup.allResults().map(r => r.original), [b]);
+});
+
+test('forgetting a result takes its turn, so its save cannot carry a result whose own save failed', async t => {
+  if (!needTools(t, 'jpegoptim', 'exiftool')) return;
+  const { dir, files, env, params } = await setup(t);
+  const [a, c, d] = await Promise.all(['a', 'c', 'd'].map((name, n) => jpeg(320, 240, n + 1).then(bytes => write(path.join(files, `${name}.jpg`), bytes))));
+  const batch = await batchOf(env, [a], params({ output: { location: 'folder', folder: path.join(dir, 'out'), template: '%f' } }));
+  const entry = (original: string) => ({ original, path: path.join(dir, 'out', path.basename(original)), size: 1, mtimeMs: 1, originalRemoved: false });
+  await batch.backup.recordResult(entry(c)); await batch.backup.recordResult(entry(d));
+  const backup = batch.backup as unknown as { save(): Promise<void> }, save = backup.save.bind(backup);
+  let calls = 0;
+  backup.save = () => calls++ === 0 ? new Promise<void>((_, reject) => setTimeout(() => reject(new Error('disk full')), 50)) : save();
+  const [failed] = await Promise.allSettled([batch.backup.recordResult(entry(a)), batch.backup.forgetResult(c)]);
+  assert.equal(failed.status, 'rejected');
+  assert.deepEqual(JSON.parse(await readFile(path.join(batch.backup.dir, 'manifest.json'), 'utf8')).results.map((r: { original: string }) => r.original), [d]);
 });
 
 test('a result whose manifest write failed is not remembered, so it never reaches the manifest later', async t => {

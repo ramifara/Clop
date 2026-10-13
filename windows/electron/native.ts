@@ -18,7 +18,7 @@ export class WindowsBridge extends EventEmitter {
     });
     let stderr = '';
     this.process.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-4000); });
-    this.process.on('error', error => this.emit('notice', `Windows helper could not start: ${error.message}`));
+    this.process.on('error', error => { this.emit('notice', `Windows helper could not start: ${error.message}`); this.emit('stopped'); });
     this.process.on('exit', () => {
       for (const waiting of this.pending.values()) { clearTimeout(waiting.timer); waiting.reject(new Error('Windows helper stopped. Restart Clop to reconnect.')); }
       this.pending.clear(); this.process = undefined;

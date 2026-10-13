@@ -59,7 +59,7 @@ export function CompactList({ state, run, selection, onSelection, onMenu, onSele
           <div className="compact-actions">
             {buttons.map(button => <button key={button.name} aria-label={button.label} title={settings.hideFloatingResultTooltips ? undefined : button.label} onClick={event => act([item.id], button, event)}><Icon name={button.icon} size={13}/></button>)}
           </div>
-          <button className="compact-close" aria-label={`Dismiss ${NOUNS[item.kind]}`} title={settings.hideFloatingResultTooltips ? undefined : busy ? 'Stop' : 'Dismiss'} onClick={event => { event.stopPropagation(); void run(() => api.dismiss(item.id)); }}><Icon name="close" size={11}/></button>
+          <button className="compact-close" aria-label={`Dismiss ${NOUNS[item.kind]}`} title={settings.hideFloatingResultTooltips ? undefined : busy ? 'Stop' : 'Dismiss'} onClick={event => { event.stopPropagation(); void run(() => busy && native ? api.cardAction([item.id], { action: 'stop' }) : api.dismiss(item.id)); }}><Icon name="close" size={11}/></button>
         </li>;
       })}
     </ul>

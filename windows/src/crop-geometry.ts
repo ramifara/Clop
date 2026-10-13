@@ -36,6 +36,9 @@ export function marquee(from: { x: number; y: number }, to: { x: number; y: numb
   if (aspect) {
     if (Math.abs(w) / aspect >= Math.abs(h)) h = (Math.abs(w) / aspect) * (h < 0 ? -1 : 1);
     else w = Math.abs(h) * aspect * (w < 0 ? -1 : 1);
+    // Reaching an edge shrinks both sides together, so the locked aspect holds (macOS clips each side alone and loses it).
+    const fit = Math.min(1, (w < 0 ? from.x : view.width - from.x) / Math.abs(w), (h < 0 ? from.y : view.height - from.y) / Math.abs(h));
+    if (fit < 1) { w *= fit; h *= fit; }
   }
   const x0 = Math.max(w < 0 ? from.x + w : from.x, 0), y0 = Math.max(h < 0 ? from.y + h : from.y, 0);
   const x1 = Math.min((w < 0 ? from.x + w : from.x) + Math.abs(w), view.width), y1 = Math.min((h < 0 ? from.y + h : from.y) + Math.abs(h), view.height);
@@ -81,6 +84,15 @@ export function centeredMaxRect(aspect: number, space: Size): CropRect {
 export function oriented(size: Size, orientation: CropOrientation, source: Size): Size {
   const want = orientation === 'adaptive' ? orientationOf(source) : orientation;
   return orientationOf(size) === want || size.width === size.height ? { width: size.width, height: size.height } : { width: size.height, height: size.width };
+}
+
+/**
+ * The locked aspect after the orientation changes to `next`: a forced one turns the current aspect, and adaptive turns the chosen
+ * preset (`adaptive`) back to the source's own orientation. Undefined when adaptive has no preset to go back to.
+ */
+export function reorientedAspect(locked: number, next: CropOrientation, source: Size, adaptive?: Size): number | undefined {
+  if (next === 'adaptive') { if (!adaptive) return undefined; const size = oriented(adaptive, next, source); return size.width / size.height; }
+  return next === 'landscape' ? Math.max(locked, 1 / locked) : Math.min(locked, 1 / locked);
 }
 
 /** `CropRect.computedSize(from:)`: the selection's size in the source's pixels (points for a PDF). */

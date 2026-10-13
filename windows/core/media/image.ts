@@ -141,6 +141,8 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
     // x265 encodes at most 12 bits per sample, so a lossless HEIC of a 16-bit source would lose precision.
     const bits = meta.depth === 'ushort' ? sourceMeta?.bitsPerSample ?? 16 : undefined;
     if (lossless && format === 'heic' && bits && bits > 12) format = 'png';
+    // WebP and AVIF as sharp writes them hold 8 bits per sample.
+    if (lossless && (format === 'webp' || format === 'avif') && meta.depth === 'ushort') format = 'png';
     // GIF's 256-colour palette only keeps the pixels of a GIF that is not edited. Anything else stays in a format that can hold them.
     if (lossless && format === 'gif' && (source !== 'gif' || edited)) format = animated ? 'webp' : 'png';
     const converting = format !== source;

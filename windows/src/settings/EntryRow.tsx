@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import type { SettingKey } from '../../core/settings/schema';
 import { controlFor } from '../../core/settings/controls';
 import { PENDING_NOTE, type Control, type SettingEntry } from '../../core/settings/entries';
 import { McpInstall, McpSwitch } from '../McpSettings';
@@ -26,7 +27,7 @@ function Select({ entry, env }: { entry: SettingEntry; env: SettingsEnv }) {
 }
 
 function body(entry: SettingEntry, control: Control, env: SettingsEnv): ReactNode {
-  const { settings, change, metas } = env, key = entry.keys[0], meta = metas.get(key);
+  const { settings, change, metas, prefs } = env, key = entry.keys[0], meta = metas.get(key);
   const value = settings[key as keyof typeof settings] as never;
   switch (control) {
     case 'toggle': return <Switch label={entry.title} checked={value as boolean} onChange={checked => change({ [key]: checked })}/>;
@@ -35,7 +36,7 @@ function body(entry: SettingEntry, control: Control, env: SettingsEnv): ReactNod
     case 'number': return <NumberField label={entry.title} value={value as number} min={meta?.min ?? 0} max={meta?.max} unit={entry.ui?.unit} decimal={meta?.type === 'number'} onCommit={next => change({ [key]: next })}/>;
     case 'text': return <TextField label={entry.title} value={value as string} onCommit={next => change({ [key]: next })}/>;
     case 'list': return <TextField label={entry.title} value={(value as string[]).join(', ')} onCommit={next => change({ [key]: next.split(',').map(item => item.trim()).filter(Boolean) })}/>;
-    case 'formats': return <FormatSelect label={entry.title} options={FORMAT_OPTIONS[key as keyof typeof FORMAT_OPTIONS] ?? []} value={value as string[]} onChange={next => change({ [key]: next })}/>;
+    case 'formats': return <FormatSelect label={entry.title} options={FORMAT_OPTIONS[key as keyof typeof FORMAT_OPTIONS] ?? []} value={value as string[]} onToggle={(item, on) => void prefs({ action: 'format', key: key as SettingKey, format: item, on })}/>;
     case 'nameTemplate': case 'pathTemplate': return <NameTemplateField settingKey={key} value={value as string} placeholder={String(meta?.default ?? '')} onCommit={next => change({ [key]: next })}/>;
     case 'compression': return <Compression settingKey={key as 'imageCompression'}/>;
     case 'pdfDpi': return <PdfDpi/>;

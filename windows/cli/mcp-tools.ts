@@ -2,8 +2,9 @@ import { spawn } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { ErrorCode, McpError, type ElicitRequestFormParams } from '@modelcontextprotocol/sdk/types.js';
+import { ElicitResultSchema, ErrorCode, McpError, type ElicitRequestFormParams } from '@modelcontextprotocol/sdk/types.js';
 import { samePath } from '../core/fileops';
+import { agentPathRefusal } from '../core/local-path';
 import { VIDEO_EXTENSIONS } from '../core/media/detect';
 import { resolveHome } from '../core/template';
 import { backendOptions, type BackendOptions } from './backend';
@@ -36,6 +37,8 @@ export interface MCPOptions {
   appExecutables?: string[];
   /** How long clop_start_server waits for the user to allow agents. */
   startWaitMs?: number;
+  /** Told of every path an agent named that is looked up on disk (tests watch the order against the gate). */
+  lookedUp?: (file: string) => void;
   /** Where the commands' own stderr goes: the client's log, by default. */
   log?: (text: string) => void;
 }
@@ -50,8 +53,31 @@ const FILE_TIMEOUT = 900;
 
 // MARK: Running a command
 
-/** One `clop` command in this process, its stdout and stderr captured. Its stderr still reaches the client's log. */
-async function runCommand(call: Call, args: string[], timeoutSeconds: number) {
+/**
+ * One `clop` command in this process, its stdout and stderr captured. Its stderr still reaches the client's log. Commands that
+ * change settings run one at a time (see `inTurn`).
+ */
+function runCommand(call: Call, args: string[], timeoutSeconds: number) {
+  return inTurn(args, () => execute(call, args, timeoutSeconds));
+}
+
+/** The subcommands that write settings: `settings set`, the library edits of `pipeline`, and `logs persist`. Reads and file work do not. */
+export function writesSettings(args: readonly string[]) {
+  return (args[0] === 'settings' && args[1] === 'set') || (args[0] === 'pipeline' && ['add', 'delete', 'attach', 'detach', 'preset'].includes(args[1])) || (args[0] === 'logs' && args[1] === 'persist');
+}
+/**
+ * Runs `task` for the command `args`. Commands that write settings take turns, as each loads the file itself and two at once could
+ * keep only the later change; everything else (reads, and file work that takes minutes) starts at once and never waits behind them.
+ */
+let settingsWrites: Promise<unknown> = Promise.resolve();
+export function inTurn<T>(args: readonly string[], task: () => Promise<T>): Promise<T> {
+  if (!writesSettings(args)) return task();
+  const turn = settingsWrites.then(task);
+  settingsWrites = turn.catch(() => {});
+  return turn;
+}
+
+async function execute(call: Call, args: string[], timeoutSeconds: number) {
   const out: string[] = [], err: string[] = [];
   let message = '';
   const controller = new AbortController(), abort = () => controller.abort();
@@ -154,11 +180,16 @@ export const command = (words: string[], options: string[] = [], positionals: st
 const flag = (a: Args, key: string, name: string) => a[key] === true ? [name] : [];
 const isURL = (item: string) => /^(https?|file):\/\//i.test(item);
 
-/** The files a tool works on: `~` expanded, otherwise as the agent wrote them, since results are keyed by the input. */
+/**
+ * The files a tool works on: `~` expanded, otherwise as the agent wrote them, since results are keyed by the input. One on a
+ * network share or a device is refused here, before anything looks it up.
+ */
 export function paths(a: Args, call: Call, key = 'paths'): string[] {
   const raw = Array.isArray(a[key]) ? a[key] as unknown[] : a[key] === undefined ? [] : [a[key]];
   const list = raw.map(argument).filter(item => item.trim()).map(item => isURL(item) ? item : resolveHome(item, call.options.home));
   if (!list.length) throw new ClopMCPError('no files given: pass one or more paths, folders or URLs');
+  const remote = agentPathRefusal(list, call.options.cwd ?? process.cwd());
+  if (remote) throw new ClopMCPError(remote);
   return list;
 }
 
@@ -173,6 +204,8 @@ const commonFlags = (a: Args) => [...flag(a, 'recursive', '--recursive'), ...fla
 const exists = (file: string) => { try { return statSync(file); } catch { return undefined; } };
 /** A path the agent gave, as the command will read it. */
 const local = (call: Call, file: string) => path.resolve(call.options.cwd ?? process.cwd(), file);
+/** Looks up a path the agent gave. */
+const lookUp = (call: Call, file: string) => { call.options.lookedUp?.(file); return exists(local(call, file)); };
 
 // MARK: The switch
 
@@ -194,6 +227,16 @@ function cardApp(call: Call): string | undefined {
   return known.some(file => samePath(app, file)) ? app : undefined;
 }
 
+/**
+ * What opens a `clop://` link: the app the card names, else Windows' `start` through cmd.exe by its System32 path, never
+ * whatever `ComSpec` names.
+ */
+export function controlLauncher(app: string | undefined, url: string, platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): [string | undefined, string[], boolean] {
+  if (app) return [app, [url], false];
+  if (platform !== 'win32') return [undefined, [], false];
+  return [path.win32.join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'cmd.exe'), ['/d', '/s', '/c', `start "" "${url}"`], true];
+}
+
 /** Hands `clop://mcp/<action>` to the app the card names, launching it when it is not running. */
 async function openControlURL(call: Call, action: 'start' | 'stop') {
   const url = `clop://mcp/${action}`;
@@ -202,8 +245,7 @@ async function openControlURL(call: Call, action: 'start' | 'stop') {
   // The CLI runs inside the app's Electron as Node; the app itself must not.
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const [command, args, verbatim] = app ? [app, [url], false]
-    : process.platform === 'win32' ? [process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `start "" "${url}"`], true] : [undefined, [], false];
+  const [command, args, verbatim] = controlLauncher(app, url);
   if (!command) throw new ClopMCPError(`Could not open ${url}: Clop's server card names no app.`);
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { detached: true, stdio: 'ignore', env, windowsHide: true, windowsVerbatimArguments: verbatim });
@@ -251,10 +293,17 @@ export async function status(_: Args, call: Call): Promise<ToolOutput> {
  * how to shrink a file that does not exist, or that Clop will not touch, wastes it.
  */
 async function refuseBeforeAsking(call: Call, files: string[] = []) {
-  const missing = files.filter(file => !isURL(file) && !exists(local(call, file)));
+  await refuseUnlessAllowed(call);
+  const missing = files.filter(file => !isURL(file) && !lookUp(call, file));
   if (missing.length) throw new ClopMCPError(`not found: ${missing.join(', ')}`);
+}
+
+/** Before any path the agent gave is looked up: a lookup of a network path sends the user's credentials, which an agent has no right to ask for. */
+async function refuseUnlessAllowed(call: Call) {
   const mcp = await mcpStatus(call);
-  if (mcp && mcp.enabled !== true) throw new ClopMCPError(annotate('Clop is not accepting changes from agents.'));
+  // An answer that did not come is a refusal too: nothing is looked up on the strength of a status nobody read.
+  if (!mcp) throw new ClopMCPError('Clop did not say whether it accepts changes from agents, so nothing was looked at. Try again.');
+  if (mcp.enabled !== true) throw new ClopMCPError(annotate('Clop is not accepting changes from agents.'));
 }
 
 // MARK: Questions
@@ -263,12 +312,18 @@ type Outcome = { answered: Record<string, unknown> } | 'declined' | 'unanswered'
 
 /** Asks the user one question through the client, when it can show a form. */
 async function ask(call: Call, message: string, schema: object): Promise<Outcome> {
-  if (!call.server.getClientCapabilities()?.elicitation?.form) return 'unsupported';
+  // A client that says `elicitation: {}` predates the form/url split and means form, as the macOS server reads it.
+  const capability = call.server.getClientCapabilities()?.elicitation as { form?: unknown; url?: unknown } | undefined;
+  const legacy = !!capability && !capability.form && !capability.url;
+  if (!capability?.form && !legacy) return 'unsupported';
   const env = call.options.env ?? process.env, seconds = Number(env.CLOP_MCP_ELICIT_TIMEOUT);
   const timeout = call.options.elicitTimeoutMs ?? (seconds > 0 ? seconds * 1000 : 120_000);
   try {
     // A person answers this, so the wait is a person's wait. On timeout the SDK tells the client the question is withdrawn.
-    const result = await call.server.elicitInput({ mode: 'form', message, requestedSchema: schema as ElicitRequestFormParams['requestedSchema'] }, { timeout, signal: call.signal });
+    const params = { mode: 'form' as const, message, requestedSchema: schema as ElicitRequestFormParams['requestedSchema'] };
+    // `elicitInput` itself insists on `form`, so the old shape is sent as the request it stands for.
+    const result = legacy ? await call.server.request({ method: 'elicitation/create', params }, ElicitResultSchema, { timeout, signal: call.signal })
+      : await call.server.elicitInput(params, { timeout, signal: call.signal });
     if (result.action === 'accept') return { answered: result.content ?? {} };
     return result.action === 'decline' ? 'declined' : 'unanswered';
   } catch (error) {
@@ -299,19 +354,19 @@ const needsFrames = (step: SpeedStep) => !/\bframes\s*:/.test(step.args) && (spe
 /** Every `changeSpeed(...)` step. Quoted text is skipped, so a script that mentions changeSpeed is never rewritten. */
 export function speedSteps(dsl: string): SpeedStep[] {
   const name = 'changeSpeed', steps: SpeedStep[] = [];
-  let i = 0, quoted = false;
+  let i = 0, quoted: string | undefined;
   while (i < dsl.length) {
     const c = dsl[i];
-    if (quoted) { if (c === '\\') { i += 2; continue; } if (c === '"') quoted = false; i++; continue; }
-    if (c === '"') { quoted = true; i++; continue; }
+    if (quoted) { if (c === '\\') { i += 2; continue; } if (c === quoted) quoted = undefined; i++; continue; }
+    if (c === '"' || c === "'") { quoted = c; i++; continue; }
     if ((i > 0 && /[\p{L}\p{N}_]/u.test(dsl[i - 1])) || !dsl.startsWith(name, i)) { i++; continue; }
     let open = i + name.length;
     while (open < dsl.length && dsl[open] === ' ') open++;
     if (dsl[open] !== '(') { i = open; continue; }
-    let close = open + 1, inner = false;
+    let close = open + 1, inner: string | undefined;
     while (close < dsl.length && (inner || dsl[close] !== ')')) {
       if (inner && dsl[close] === '\\') { close += 2; continue; }
-      if (dsl[close] === '"') inner = !inner;
+      if (inner ? dsl[close] === inner : dsl[close] === '"' || dsl[close] === "'") inner = inner ? undefined : dsl[close];
       close++;
     }
     if (close >= dsl.length) break;
@@ -336,7 +391,7 @@ export function withFrames(dsl: string, value: string): string {
 
 /** Whether a run over `list` can reach a video: a folder or a URL can, so only files that are all something else skip the question. */
 function mayContainVideo(call: Call, list: string[]) {
-  return list.some(item => isURL(item) || !exists(local(call, item))?.isFile() || VIDEO_EXTENSIONS.includes(path.extname(item).slice(1).toLowerCase()));
+  return list.some(item => isURL(item) || !lookUp(call, item)?.isFile() || VIDEO_EXTENSIONS.includes(path.extname(item).slice(1).toLowerCase()));
 }
 
 /** The playbackSpeedFrameBehaviour setting in the DSL's words; `keep`, its default, when it can't be read. */
@@ -383,7 +438,7 @@ export async function optimise(a: Args, call: Call): Promise<ToolOutput> {
     compression = chosen === undefined ? undefined : String(Math.trunc(chosen));
   }
   let frames = a.playbackSpeedFrames === undefined || a.playbackSpeedFrames === null ? undefined : argument(a.playbackSpeedFrames);
-  if (frames === undefined && (asNumber(a, 'playbackSpeedFactor') ?? 1) > 1 && mayContainVideo(call, files)) {
+  if (frames === undefined && (asNumber(a, 'playbackSpeedFactor') ?? 1) > 1 && (await refuseUnlessAllowed(call), mayContainVideo(call, files))) {
     const answer = await askFrames(call, speedQuestion(subject(files)), 'clop_optimise', false, files);
     if ('askInChat' in answer) return answer.askInChat;
     frames = answer.settled;
@@ -462,6 +517,8 @@ const takesVideo = (type: unknown) => ['', 'video'].includes(argument(type).toLo
 const sourceLabel = (source: string) => source === 'clipboard' ? 'the clipboard' : source === 'dropZone' ? 'the drop zone' : `“${path.basename(source.replace(/[\\/]+$/, ''))}”`;
 
 export async function pipelineRun(a: Args, call: Call): Promise<ToolOutput> {
+  // Before any path is looked up: a network path sends the user's credentials.
+  await refuseUnlessAllowed(call);
   const files = paths(a, call);
   let pipeline = argument(a.pipeline);
   if (mayContainVideo(call, files)) {

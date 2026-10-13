@@ -1,13 +1,29 @@
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pathKey } from '../core/fileops';
 import { fileURL } from '../core/ipc/protocol';
+import { agentPathRefusal } from '../core/local-path';
 import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } from '../core/media/detect';
 import { resolveHome } from '../core/template';
 import { ValidationError } from './args';
+import type { Context } from './context';
 
 // What the file commands take: files, folders and URLs (`validateItems` and `getURLsFromFolder` in ClopCLI/main.swift
 // and Shared.swift), filtered by the `--types` and `--exclude-types` words.
+
+/**
+ * `refuseUnallowedMCPRequest`: an agent's request asks the gate; anyone else needs no permission. Asked before a path the agent
+ * named is looked up, since looking up a network path sends the user's credentials to that server. `paths` are the files,
+ * folders, outputs and templates the agent named: one on a network share or a device is refused before anything else.
+ */
+export async function gate(ctx: Context, pipeline?: string, paths: readonly (string | undefined)[] = []) {
+  if (ctx.origin !== 'mcp') return;
+  const remote = agentPathRefusal(paths.map(item => item === undefined ? undefined : resolveHome(item, ctx.home)), ctx.cwd);
+  if (remote) throw new ValidationError(remote);
+  const response = await (await ctx.backend()).settings({ action: 'gate', origin: ctx.origin, pipeline });
+  if (!response.ok) throw new ValidationError(response.error ?? 'Clop refused the request.');
+}
 
 const SAME: Record<string, string[]> = { jpeg: ['jpg', 'jpeg', 'jpe'], jpg: ['jpg', 'jpeg', 'jpe'], tiff: ['tif', 'tiff'], tif: ['tif', 'tiff'], heic: ['heic', 'heif'], heif: ['heic', 'heif'], aiff: ['aif', 'aiff'], aif: ['aif', 'aiff'], mpeg: ['mpg', 'mpeg'], mpg: ['mpg', 'mpeg'] };
 const GENERIC: Record<string, readonly string[]> = { image: IMAGE_EXTENSIONS, picture: IMAGE_EXTENSIONS, video: VIDEO_EXTENSIONS, movie: VIDEO_EXTENSIONS, audio: AUDIO_EXTENSIONS, pdf: ['pdf'] };
@@ -51,16 +67,18 @@ export async function folderFiles(folder: string, recursive: boolean, types: rea
 
 /** `validateItems`: every file, folder content and URL to send, as URL strings. A missing file is an error unless `skipErrors`. */
 export async function validateItems(items: string[], { recursive, skipErrors, types, cwd, home }: { recursive: boolean; skipErrors: boolean; types: readonly string[]; cwd: string; home?: string }): Promise<string[]> {
-  const urls: string[] = [], folders: string[] = [];
+  const urls: string[] = [], folders: string[] = [], seen = new Set<string>();
+  // A file named twice, or named and inside a folder, is worked on once; on Windows `A.PNG` and `a.png` are one file.
+  const add = (url: string) => { const key = url.startsWith('file:') ? pathKey(fileURLToPath(url)) : url; if (!seen.has(key)) { seen.add(key); urls.push(url); } };
   for (const item of items) {
-    if (isURL(item) && !item.toLowerCase().startsWith('file:')) { urls.push(item); continue; }
+    if (isURL(item) && !item.toLowerCase().startsWith('file:')) { add(item); continue; }
     const file = isURL(item) ? fileURLToPath(item) : localPath(item, cwd, home);
     const info = await stat(file).catch(() => undefined);
     if (!info) { if (skipErrors) continue; throw new ValidationError(`File ${file} does not exist`); }
     if (info.isDirectory()) folders.push(file);
-    else if (types.includes(extension(file))) urls.push(fileURL(file));
+    else if (types.includes(extension(file))) add(fileURL(file));
   }
-  for (const folder of folders) urls.push(...(await folderFiles(folder, recursive, types)).map(fileURL));
+  for (const folder of folders) for (const file of await folderFiles(folder, recursive, types)) add(fileURL(file));
   return urls;
 }
 

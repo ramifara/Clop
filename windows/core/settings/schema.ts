@@ -137,7 +137,7 @@ export const settingsSchema = {
   specificFolderNameTemplatePDF: str('%P/optimised/%f', 'Path template for optimised PDFs saved in a specific folder.'),
   optimisedFileProtectionMs: int(3000, 'Milliseconds during which a just-optimised file is not optimised again.'),
   capVideoFPS: bool(true, 'Cap video frame rate.'),
-  targetVideoFPS: num(60, 'Frame rate cap for videos. macOS: `Float`.'),
+  targetVideoFPS: spec('number', 60, 'Frame rate cap for videos; -2 and -4 cap at a half and a quarter of the video\'s own rate. macOS: `Float`.', v => typeof v === 'number' && Number.isFinite(v) && (v >= 0 || v === -2 || v === -4) ? v : undefined, { min: -4 }),
   minVideoFPS: num(30, 'Never cap videos below this frame rate. macOS: `Float`.'),
   playbackSpeedFrameBehaviour: oneOf(['keepFrames', 'dropFrames'], 'keepFrames', 'Whether a speed change keeps every frame or drops frames. macOS: `PlaybackSpeedFrameBehaviour`.'),
   removeAudioFromVideos: bool(false, 'Remove the audio track from optimised videos.'),

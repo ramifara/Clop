@@ -1,6 +1,7 @@
 import { access, constants, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { copyTo, exists, moveTo, samePath } from './fileops';
+import { requireLocalDrive } from './local-path';
 import { defaultMarker, type OptimisedMarker } from './marker';
 import type { ClopSettings } from './settings/schema';
 import { expandPathTemplate, expandTemplate, isAbsoluteTemplate, nameMatchesTemplate, resolveHome, type Counter } from './template';
@@ -25,6 +26,8 @@ export interface PlacementEnv {
   marker?: OptimisedMarker;
   home?: string;
   platform?: NodeJS.Platform;
+  /** The request comes from an agent: every destination, once its template is expanded, must be on a local drive. */
+  agent?: boolean;
 }
 export interface PlacementPlan {
   behaviour: FileBehaviour;
@@ -36,6 +39,8 @@ export interface PlacedOutput { path: string; backup?: string; originalRemoved: 
 
 // Templates are stored portable (`~/Pictures/%f`), so a specific-folder template is expanded before anything treats it as a real path.
 const DEFAULT_SAME_FOLDER = '%f-optimised', DEFAULT_SPECIFIC_FOLDER = '%P/optimised/%f';
+/** What an empty template falls back to when a file is named, so a preview can say the same (`templateOf`). */
+export const emptyTemplate = (folder: 'same' | 'specific', converted: boolean) => folder === 'same' ? converted ? '%f' : DEFAULT_SAME_FOLDER : DEFAULT_SPECIFIC_FOLDER;
 const SUFFIX: Record<FileType, string> = { image: 'Image', video: 'Video', audio: 'Audio', pdf: 'PDF' };
 // PDFs have no conversion settings, so conversions follow the optimise ones.
 const hasConversionKeys = (type: FileType) => type !== 'pdf';
@@ -57,13 +62,15 @@ function templateOf(env: PlacementEnv, type: FileType, kind: OutputKind, folder:
   const stored = kind === 'optimised' ? s[`${folder === 'same' ? 'sameFolder' : 'specificFolder'}NameTemplate${suffix}`]
     : hasConversionKeys(type) ? s[`converted${word}NameTemplate${suffix}`] : undefined;
   // Audio's templates are empty by default; an empty template names nothing.
-  const template = stored || (folder === 'same' ? kind === 'optimised' ? DEFAULT_SAME_FOLDER : '%f' : DEFAULT_SPECIFIC_FOLDER);
+  const template = stored || emptyTemplate(folder, kind !== 'optimised');
   return folder === 'same' ? template : resolveHome(template, env.home, env.platform);
 }
 
 const platformOf = (env: PlacementEnv) => env.platform ?? process.platform;
 const pathApi = (env: PlacementEnv) => (env.platform ?? process.platform) === 'win32' ? path.win32 : path.posix;
 const context = (env: PlacementEnv, file: string) => ({ path: file, counter: env.counter, home: env.home, platform: env.platform });
+/** Refuses an agent's destination that expansion turned into a network share or a device, or that is in Clop's recovery folders, before anything looks at it. */
+const checkedDestination = (env: PlacementEnv, dest: string) => { requireLocalDrive(env.agent, dest, platformOf(env)); env.workdir.keepAgentOut(env.agent, dest); return dest; };
 const stemOf = (file: string, env: PlacementEnv) => pathApi(env).parse(file).name;
 const withoutExtension = (file: string, env: PlacementEnv) => { const p = pathApi(env), { dir, name } = p.parse(file); return p.join(dir, name); };
 
@@ -75,8 +82,9 @@ async function rootedDestination(env: PlacementEnv, template: string, root: stri
   const p = pathApi(env), platform = platformOf(env), inside = (file: string) => { const relative = p.relative(root, file); return relative !== '' && relative !== '..' && !relative.startsWith(`..${p.sep}`) && !p.isAbsolute(relative) ? relative : undefined; };
   // Already at the templated place under the folder: leave it, so a template is never stacked.
   const held = inside(original);
-  if (held && nameMatchesTemplate(withoutExtension(held, env), template, { platform })) return original;
+  if (held && nameMatchesTemplate(withoutExtension(held, env), template, { platform, singleFileName: true })) return original;
   const dest = expandPathTemplate(template, { ...context(env, original), relativeTo: root });
+  checkedDestination(env, dest);
   if (!inside(dest)) throw new Error(`The name template ${template} puts ${stemOf(original, env)} outside the chosen folder.`);
   await mkdir(p.dirname(dest), { recursive: true });
   return dest;
@@ -95,14 +103,14 @@ export async function destinationPath(env: PlacementEnv, type: FileType, kind: O
     case 'sameFolder': {
       const template = templateOf(env, type, kind, 'same', overrides);
       if (nameMatchesTemplate(stemOf(original, env), template, { platform })) return original;
-      return pathApi(env).join(pathApi(env).dirname(original), expandTemplate(template, context(env, original)));
+      return checkedDestination(env, pathApi(env).join(pathApi(env).dirname(original), expandTemplate(template, context(env, original))));
     }
     case 'specificFolder': {
       const template = templateOf(env, type, kind, 'specific', overrides), root = overrides?.specificFolderRoot;
       if (root !== undefined) return rootedDestination(env, template, root, original);
       const absolute = isAbsoluteTemplate(template, env);
       if (nameMatchesTemplate(withoutExtension(original, env), template, { allowPathPrefix: !absolute, platform })) return original;
-      const dest = expandPathTemplate(template, context(env, original));
+      const dest = checkedDestination(env, expandPathTemplate(template, context(env, original)));
       await mkdir(pathApi(env).dirname(dest), { recursive: true });
       return dest;
     }
@@ -136,40 +144,78 @@ export async function planPlacement(env: PlacementEnv, args: { produced: string;
   if (!dest) return { behaviour };
   const p = pathApi(env), extension = placedExtension(produced, original);
   if (p.extname(dest).toLowerCase() !== extension.toLowerCase()) dest = p.join(p.dirname(dest), p.parse(dest).name + extension);
+  checkedDestination(env, dest);
   // Replacing a file needs write access to the folder holding it, not to the file.
   const folder = p.dirname(dest);
   await access(folder, constants.W_OK).catch(() => { throw new Error(`Clop cannot write to ${folder}. Choose a folder you can write to.`); });
   return { behaviour, dest };
 }
 
+/** Placements under way in this process. Quitting or updating waits for them: one may have moved an original aside. */
+const inFlight = new Set<Promise<unknown>>();
+/** Whether a placement is under way. */
+export const placing = () => inFlight.size > 0;
+/** Resolves once every placement under way now, and any started meanwhile, has finished, whether or not it worked. */
+export async function placementsSettled(): Promise<void> {
+  while (inFlight.size) await Promise.allSettled([...inFlight]);
+}
+
 /**
- * Port of `executePlacement`: the file I/O. For `inPlace` the original moves into `workdir.backups`
- * first (restore it with `workdir.restore`), then `produced` is copied to the destination. The copy is
- * atomic, so an interrupted placement never leaves a half-written file. The placed file is marked optimised.
+ * Port of `executePlacement`: the file I/O. For `inPlace` the original goes into `workdir.backups` first (restore it
+ * with `workdir.restore`), then `produced` is copied to the destination. The copy is atomic, so an interrupted placement never
+ * leaves a half-written file. A result that takes the original's own path is copied into the backups and renamed over the
+ * original, so that path is never empty (and a failed placement leaves the original as it was); a result under another name
+ * moves the original away, as a conversion leaves no file under the old name. The placed file is marked optimised.
  */
-export async function executePlacement(env: PlacementEnv, plan: PlacementPlan, produced: string, original: string): Promise<PlacedOutput> {
+export function executePlacement(env: PlacementEnv, plan: PlacementPlan, produced: string, original: string): Promise<PlacedOutput> {
+  const work = place(env, plan, produced, original);
+  inFlight.add(work);
+  void work.finally(() => inFlight.delete(work)).catch(() => {});
+  return work;
+}
+
+/**
+ * While an original is away from its path, a note in the working directory names it and its backup, so a start after a crash
+ * or a forced shutdown puts it back (`Workdir.repair`).
+ */
+async function place(env: PlacementEnv, plan: PlacementPlan, produced: string, original: string): Promise<PlacedOutput> {
   if (!plan.dest) return { path: produced, originalRemoved: false };
   const { dest } = plan, { workdir } = env;
-  let backup: string | undefined, originalRemoved = false, replaced: string | undefined;
+  checkedDestination(env, dest);
+  let backup: string | undefined, originalRemoved = false, moved = false, replaced: string | undefined, away: (() => Promise<void>) | undefined;
   // A different file already at the destination (a template collision, or `shot.webp` beside `shot.png`) would be lost to the copy, so keep it first.
   const same = (a: string, b: string) => samePath(a, b, platformOf(env));
   if (!same(dest, original) && !same(dest, produced) && await exists(dest)) {
     replaced = await workdir.backup(dest, { force: true }).catch(error => { throw new Error(`Could not back up ${dest} before replacing it: ${error instanceof Error ? error.message : error}`); });
   }
-  if (plan.behaviour === 'inPlace' && await exists(original)) {
+  // A template that names the original itself (`img-optimised.png` already carries it) replaces the file just as `inPlace` does. macOS has
+  // copied the input into its backups before it optimises; here this is the only copy taken, so it is kept in both cases.
+  if ((plan.behaviour === 'inPlace' || same(dest, original)) && await exists(original)) {
     if (same(original, produced)) {
       // The optimiser rewrote the original where it stood, so there is nothing to move. Report the copy taken before it ran.
       backup = await workdir.latestBackup(original);
     } else {
       // Overwriting without a backup would lose the only copy, so a failed backup fails the placement.
-      backup = await workdir.backup(original, { move: true, force: true }).catch(error => { throw new Error(`Could not back up ${original} before replacing it: ${error instanceof Error ? error.message : error}`); });
+      moved = !same(dest, original);
+      if (moved) away = await workdir.journal(original, await workdir.backupPath(original));
+      backup = await workdir.backup(original, { move: moved, force: true }).catch(async error => { await away?.(); throw new Error(`Could not back up ${original} before replacing it: ${error instanceof Error ? error.message : error}`); });
       originalRemoved = backup !== undefined;
     }
   }
-  try { await copyTo(produced, dest); } catch (error) {
-    if (originalRemoved && backup) await moveTo(backup, original).catch(() => {});
+  try {
+    try { await copyTo(produced, dest); } catch (error) {
+      // Windows will not rename over a read-only file or one that is held open; then the original moves out of the way, as it always did.
+      if (moved || !backup || !['EPERM', 'EACCES', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      away = await workdir.journal(original, backup);
+      await moveTo(original, backup);
+      moved = true;
+      await copyTo(produced, dest);
+    }
+  } catch (error) {
+    // A note stays when the original could not be put back, so the next start tries again.
+    if (moved && backup && !await moveTo(backup, original).then(() => true, () => false)) away = undefined;
     throw error;
-  }
+  } finally { await away?.(); }
   await (env.marker ?? defaultMarker()).markOptimised(dest).catch(() => {});
   return { path: dest, backup, originalRemoved, replaced };
 }

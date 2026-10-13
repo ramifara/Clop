@@ -1,9 +1,10 @@
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { requireLocalDrive, requireNotRemote } from '../local-path';
 import { defaultMarker } from '../marker';
 import type { PlacementEnv, PlacementOverride } from '../placement';
 import { expandTemplate, resolveHome } from '../template';
-import type { ClopFileType } from './model';
+import type { ClopFileType, PipelineStep } from './model';
 
 // What one pipeline run carries from step to step: `PipelineExecution` (Clop/PipelineExecution.swift) without the UI.
 
@@ -37,15 +38,17 @@ export interface PipelineRunOptions {
   allowScripts: boolean;
   /**
    * For an agent: a location that names a file that already exists is refused, so a result never lands on a user's file.
-   * `settingsLocation` is the one location the user's own placement settings chose, which may meet an earlier result.
+   * `settingsStep` is the step the user's own placement settings added, whose location may meet an earlier result.
    */
-  refuseExisting?: { settingsLocation?: string };
+  refuseExisting?: { settingsStep?: PipelineStep };
   /** Where `runShortcut(name:)` finds its scripts; `%APPDATA%\Clop for Windows\scripts` by default. */
   scriptsDir?: string;
   /** The app that copied a clipboard item, for `if(copiedBy:)`: its executable path or app ID, and its name. */
   sourceApp?: { id?: string; name?: string };
   /** A per-request placement (CLI `--convert-behaviour`), which a `convert` step's default location follows. */
   placementOverride?: PlacementOverride;
+  /** Another pipeline runs on the same file after this one, so a `fork` keeps a copy even when no later step of this one changes the file. */
+  laterPipelines?: boolean;
   signal?: AbortSignal;
   onProgress?: (progress: PipelineProgress) => void;
 }
@@ -66,6 +69,12 @@ export class RunState {
   constructor(input: string, readonly opts: PipelineRunOptions) { this.original = this.current = path.resolve(input); }
   get settings() { return this.opts.env.settings; }
   get fileType() { return this.opts.fileType; }
+  /** Whether an agent started the run: every path a step uses, once expanded, must be on a local drive. */
+  get agent() { return this.opts.env.agent === true; }
+  /** Refuses an agent's path, as its tokens and captures expanded it, that is on a network share or a device. Call it before the text is resolved. */
+  expanded(...texts: string[]) { requireNotRemote(this.agent, ...texts); }
+  /** Refuses an agent's resolved path that is not a local drive-letter path, or is in Clop's recovery folders. Call it before the path is looked up or written. */
+  local(...files: string[]) { for (const file of files) { requireLocalDrive(this.agent, file, this.opts.env.platform); this.opts.env.workdir.keepAgentOut(this.agent, file); } }
   get signal() { return this.opts.signal; }
   marker() { return this.opts.env.marker ?? defaultMarker(); }
   mark(file: string) { return this.marker().markOptimised(file).catch(() => {}); }

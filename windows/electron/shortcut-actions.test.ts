@@ -20,7 +20,7 @@ function setup(items: ItemResult[] = [], extra: Partial<ShortcutHost> = {}) {
     paused: () => state.paused, setPaused: async value => { state.paused = value; calls.push(`paused ${value}`); },
     optimiseClipboard: async aggressive => { calls.push(`clipboard ${aggressive ? 'aggressive' : 'plain'}`); },
     freshClipboard: async () => { calls.push('fresh clipboard'); return state.fresh; },
-    bitrates: async () => [64, 128, 96, 192],
+    bitrates: async () => [64, 128, 96, 192], bitrate: async () => undefined, pdfDpi: () => 0,
     inform: text => { calls.push(`inform ${text}`); },
     ...extra,
   };
@@ -149,8 +149,30 @@ test('the pause key cycles running, paused for the next clipboard event, stopped
   assert.equal(runner.consumePauseNext(), false, 'which is used up by one event');
 });
 
+test('a pause change from anywhere else drops an armed "next clipboard event" pause', async () => {
+  const { runner, state } = setup();
+  await runner.run({ kind: 'pause' });
+  // The tray or Settings pauses and resumes while the key's first press is still waiting.
+  state.paused = true; runner.pauseChanged(); state.paused = false; runner.pauseChanged();
+  assert.equal(runner.consumePauseNext(), false, 'the next copy is not ignored');
+  await runner.run({ kind: 'pause' });
+  assert.equal(runner.consumePauseNext(), true, 'the key arms it again');
+});
+
 test('the pause cycle as a pure step', () => {
   assert.deepEqual(nextPause({ paused: false, pauseNext: false }), { paused: false, pauseNext: true, notice: 'Paused. The next clipboard event will be ignored.' });
   assert.equal(nextPause({ paused: false, pauseNext: true }).paused, true);
   assert.deepEqual(nextPause({ paused: true, pauseNext: true }).pauseNext, false);
+});
+
+test('audio steps down from its own bitrate and a PDF from the resolution it was optimised at', async () => {
+  const audio = setup([item('s', { kind: 'audio' })], { bitrate: async () => 100 });
+  await audio.runner.run({ kind: 'downscale' });
+  assert.deepEqual(audio.calls, ['run s bitrate 96'], 'not 128, which would not lower a 100 kbps file');
+  const low = setup([item('s', { kind: 'audio' })], { bitrate: async () => 48 });
+  await assert.rejects(low.runner.run({ kind: 'downscale' }), /lowest bitrate/);
+  const pdf = setup([item('p', { kind: 'pdf' })], { pdfDpi: () => 100 });
+  await pdf.runner.run({ kind: 'downscale' }); await pdf.runner.run({ kind: 'downscale' });
+  assert.deepEqual(pdf.calls, ['run p resolution 72', 'run p resolution 48']);
+  await assert.rejects(pdf.runner.run({ kind: 'downscale' }), /lowest resolution/);
 });

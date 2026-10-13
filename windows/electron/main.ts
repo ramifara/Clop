@@ -3,21 +3,23 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cardOptimiser, cardPlaces } from './card';
 import { ItemEngine, message, type ImportExtra, type ItemAutomation } from './items';
 import { clipboardPNG } from '../core/media/image-codecs';
 import { imageDefaults, rendererSettings } from './settings';
 import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { SettingsStore } from '../core/settings/store';
 import { Workdir } from '../core/workdir';
+import { effectiveBehaviour, placementsSettled, placing } from '../core/placement';
 import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ignoredApp, withIgnored } from './apps';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
-import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, DEFAULT_NAME_TEMPLATE, mediaKind, sequenceReply, copyingApp, type ClipboardMemory, type CopyingApp } from './clipboard';
+import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, copiesFiles, DEFAULT_NAME_TEMPLATE, pausedForPoll, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
-import { enabledKey, placeholderReply } from './watch-rules';
-import { FolderResults, LastBatch, restoreAll } from './automation';
+import { enabledKey, localFile } from './watch-rules';
+import { FolderResults, folderPlacement, LastBatch, restoreAll } from './automation';
 import { appsReply } from './apps';
 import { conflictNotice, shortcutProblem, ShortcutRegistry, shortcutsFor, type ShortcutAction } from '../core/shortcuts';
 import { describeAccelerator } from '../src/settings/accelerator';
@@ -29,6 +31,7 @@ import { seedBuiltinPipelines } from '../core/pipeline/builtins';
 import { EDITOR_SETTING_KEYS } from '../core/pipeline/editor-state';
 import { cellCount, draggedType, gridHeight, tilesFor, zonePipeline } from '../core/pipeline/zones';
 import { EditorService } from './editor';
+import { PresetReveal } from './preset-reveal';
 import { pipelinesSkipOptimisation, type PipelinesOutcome } from '../core/pipeline/triggers';
 import type { PipelineEffects } from '../core/pipeline/executor';
 import type { MediaKind } from '../core/media/types';
@@ -38,29 +41,31 @@ import { settingsTarget } from '../core/settings/entries';
 import type { SettingsTab } from '../core/settings/tabs';
 import { createPrefs, LINKS } from './prefs';
 import { publishPipe, startPipeServer, type PipeServer } from './pipe-server';
-import { clopURLs, type ClopURL } from './clop-url';
+import { loginExecutable, syncLoginItem } from './login-item';
+import { clopURLs, linkInbox, MCP_START_QUESTION, type ClopURL } from './clop-url';
 import { installPortableCLI, isPortable, portableCLIDir, portableCLIInstalled, refreshPortableCLI, removePortableCLI } from './cli-install';
 import { mcpSettings } from './mcp';
 import { setupDebugDump, setupUpdates, setupWatchdog } from './support';
-import { FileCollector } from './file-collector';
+import { FileCollector, quietWindow } from './file-collector';
 import { pipelineMenu } from './pipeline-menu';
 import { installVerbs, portablePaths, removeVerbs, verbsStatus } from './explorer';
 import { explorerVerb, type VerbId } from '../core/shell-verbs';
+import { audioMetadata } from '../core/media/audio';
 import { stripExifFile } from '../core/media/strip-copy';
-import { explorerRequest, skippedNote, stripAll, stripSummary, usableFiles } from './verbs';
+import { expandFolders, explorerRequest, failureName, skippedNote, stripAll, stripSummary, usableFiles, verbNotes } from './verbs';
 import { mirrorConsoleToFile } from './debug-log';
 import { newPipePath, type OptimisationRequest } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
 import { shellEffects } from '../core/shell-effects';
 import { MEDIA_SCHEME, MediaFiles } from './media-files';
-import { applyCrop, cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
+import { applyCrop, cropSource, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
 import { compareSources, parseCompareView } from './compare';
 import { setupBatch } from './batch-window';
 import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
 import { expandHome } from '../core/settings/paths';
 import { menuTemplate } from './card-menu';
-import { coverArtCard, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, startProgram, type CardCreation, type CardHost } from './cards';
-import { CompactMode, cardsThatFit } from './compact';
+import { coverArtCard, eachResult, editorLabel, editorProgram, makesNewCard, mediaFacts, openWithDialog, pageCard, readyIds, runPlan, savePages, startProgram, thenCopyBack, type CardCreation, type CardHost } from './cards';
+import { CompactMode, cardsThatFit, extraHeight } from './compact';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // The crop and compare windows load the session's originals and results through this scheme, with byte ranges for video.
@@ -68,12 +73,13 @@ protocol.registerSchemesAsPrivileged([{ scheme: MEDIA_SCHEME, privileges: { stan
 let main: BrowserWindow, floating: BrowserWindow, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray | undefined, engine: ItemEngine, media: MediaFiles;
 /** Open crop, compare and preview windows, by `crop:<id>`, `compare:<id>` and `preview:<id>`. */
 const views = new Map<string, BrowserWindow>();
-let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false;
+let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false, bridgeStopped = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
 let dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
 /** The files being dragged, and whether Ctrl or Alt is held, as the Windows helper reports them: Ctrl or Alt shows the preset zone tiles. */
-let dragFiles: string[] = [], dragModifiers = { ctrl: false, alt: false }, presetsLatched = false;
+let dragFiles: string[] = [], presetsLatched = false;
+const presetReveal = new PresetReveal();
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
 const compactMode = new CompactMode({
@@ -90,7 +96,7 @@ let marker: OptimisedMarker, folders: FolderResults, watchers: FolderWatcher[] =
 let home = '', sessionDir = '';
 /** Folders of the work directory's temp folder that hold pipeline results cards show; kept from the cleaner for the session. */
 const keptRoots = new Set<string>();
-let batch: ReturnType<typeof setupBatch> | undefined;
+let batch: ReturnType<typeof setupBatch> | undefined, batchSettled = false, placementsDone = false;
 /** Results from watched folders in `dirsHideFloatingResult`; they never show as floating results. */
 const quiet = new Set<string>();
 /** Results that hid or were dismissed, latest last, for "Bring back last result". */
@@ -102,7 +108,11 @@ const lastBatch = new LastBatch();
 let lastCopier: { owner?: string; aumid?: string } | undefined;
 let shortcuts: ShortcutRegistry, trayShown: TrayVariant | undefined;
 const trayIcons: Partial<Record<TrayVariant, Electron.NativeImage>> = {};
-const paused = () => settings.pauseAutomaticOptimisations;
+/** An update is about to install: nothing new starts (watched folders, the clipboard, the command line) while the placements under way finish. */
+let updating = false;
+const paused = () => settings.pauseAutomaticOptimisations || updating;
+/** The settings the watched folders see: paused while an update installs. */
+const watchedSettings = () => updating ? { ...settings, pauseAutomaticOptimisations: true } : settings;
 const intake = new ClipboardIntake(error => inform(message(error)));
 // "Pause for the next clipboard event" (the pause shortcut's first step) lets one copy go by.
 const pickup = new ClipboardPickup(change => { if (!shortcutRunner.consumePauseNext()) void optimiseClipboard(change); });
@@ -115,7 +125,7 @@ const verbCollectors = new Map<VerbId, FileCollector>();
 function collectVerb(verb: VerbId, files: string[]) {
   let collector = verbCollectors.get(verb);
   if (!collector) {
-    collector = new FileCollector(all => { if (!service) collector!.add(all); else void runVerb(verb, all).catch(error => inform(message(error))); });
+    collector = new FileCollector(all => { if (!service) collector!.add(all); else void runVerb(verb, all).catch(error => inform(message(error))); }, quietWindow(verb, isPortable()));
     verbCollectors.set(verb, collector);
   }
   collector.add(files);
@@ -133,7 +143,7 @@ const currentSequence = async () => bridgeReady ? sequenceReply(await bridge.req
 /** Whether a result is still in the shelf and finished; a card can be dismissed while its import runs. */
 const isReady = (id: string) => { try { return engine.get(id).result.status === 'ready'; } catch { return false; } };
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
-const presetsRevealed = () => dragModifiers.ctrl || dragModifiers.alt;
+const presetsRevealed = () => presetReveal.revealed(settings.onlyShowPresetZonesOnControlTapped);
 /** The preset zone tiles for the files being dragged. */
 function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, draggedType(dragFiles, mediaKind)) }; }
 const visible = () => engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id));
@@ -146,8 +156,8 @@ const state = (): AppState => ({ items: visible(), settings, native: true, platf
 function broadcast() {
   refreshTrayIcon();
   for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
-  // The crop and compare windows follow their result even after its card hid, so they get every result.
-  if (views.size) { const all = { ...state(), items: engine.list() }; for (const window of views.values()) if (!window.isDestroyed()) window.webContents.send('clop:state', all); }
+  // The crop and compare windows follow their result even after its card hid, so they get it whether or not it shows; no other.
+  if (views.size) { const all = engine.list(); for (const [key, window] of views) if (!window.isDestroyed()) window.webContents.send('clop:state', { ...state(), items: viewItems(all, key) }); }
 }
 function inform(text: string) { notice = text; syncFloating(); broadcast(); }
 function positionFloating() {
@@ -167,12 +177,13 @@ function syncFloating() {
   const target = dropActive || settings.keepDropZoneVisible;
   const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
   const items = visible();
-  cardFit = cardsThatFit(area.height, target);
-  const compact = compactMode.update(items.map(item => ({ id: item.id, running: item.status === 'processing' })));
-  const count = Math.min(cardFit, items.length);
   // Room for the tiles stays once they were shown, until the drag ends: a tile under the pointer must not lose its window when Ctrl is let go.
   const tiles = presetsLatched || presetsRevealed() ? gridHeight(cellCount(presets())) + 8 : 0;
-  const height = (compact ? compactHeight(items.length) : count * 166 + Math.max(0, count - 1) * 4 + (count > 1 ? 28 : 0)) + (target ? 160 : 0) + tiles + (notice ? 85 : 0) + (settings.finishedOnboarding ? 0 : 220) + 40;
+  const extra = extraHeight({ tiles, notice: !!notice, welcome: !settings.finishedOnboarding });
+  cardFit = cardsThatFit(area.height, target, 170, 60 + extra);
+  const compact = compactMode.update(items.map(item => ({ id: item.id, running: item.status === 'processing' })));
+  const count = Math.min(cardFit, items.length);
+  const height = (compact ? compactHeight(items.length) : count * 166 + Math.max(0, count - 1) * 4 + (count > 1 ? 28 : 0)) + (target ? 160 : 0) + extra + 40;
   floating.setSize(compact ? 320 : 236, Math.min(height, area.height));
   positionFloating();
   if (items.length || target || notice || importsRunning || !settings.finishedOnboarding) showFloating(); else floating.hide();
@@ -258,7 +269,7 @@ async function importUrl(value: unknown, aggressive = false, source: ItemResult[
     await makeRoom();
     let name = path.basename(url.pathname);
     try { name = decodeURIComponent(name); } catch {}
-    const id = await engine.importBuffer(Buffer.concat(chunks), name || 'Download', source, defaults(aggressive));
+    const id = await engine.importBuffer(Buffer.concat(chunks), name || 'Download', source, defaults(aggressive), source === 'drop' && !aggressive ? dropExtra() : undefined);
     if (isReady(id)) await (source === 'clipboard' ? copyClipboardResults([id], sequence) : settings.autoCopyToClipboard ? copy([id], sequence) : undefined);
   } finally { importsRunning--; syncFloating(); broadcast(); }
 }
@@ -319,23 +330,27 @@ async function createWindows() {
   main = new BrowserWindow({ width: 920, height: 660, minWidth: 720, minHeight: 480, show: false, backgroundColor: '#f3f1ef', title: 'Clop settings', autoHideMenuBar: true, webPreferences: windowPreferences });
   floating = new BrowserWindow({ width: 236, height: 206, frame: false, resizable: false, transparent: true, show: false, skipTaskbar: true, alwaysOnTop: settings.floatingResultsAlwaysOnTop, backgroundColor: '#00000000', webPreferences: windowPreferences });
   configure(main); configure(floating);
+  // Windows asks before it signs out or shuts down: while a result is taking an original's place, Clop asks it to wait. A forced end is repaired at the next start.
+  main.on('query-session-end', event => { if (placing()) event.preventDefault(); });
   protectFromCapture(floating, settings.allowClopToAppearInScreenshots);
   await load(main, { preferences: '1' }); await load(floating, { floating: '1' });
   positionFloating();
   floating.setIgnoreMouseEvents(true, { forward: true });
-  if (settings.keepDropZoneVisible) { syncFloating(); floating.setIgnoreMouseEvents(false); }
+  // The drop zone that stays, and the welcome card of a first run, show from the start.
+  if (settings.keepDropZoneVisible || !settings.finishedOnboarding) syncFloating();
+  if (settings.keepDropZoneVisible) floating.setIgnoreMouseEvents(false);
 }
 /**
  * Puts results on the clipboard. One image goes on as image data, with its file unless `copyImageFilePath` is off. Other
  * results, and several at once, go on as a file list, with the last image's data when all are images. `text` also puts
- * the paths on as text, for results of a copied path.
+ * the paths on as text, for results of a copied path. `files` puts the file list on whatever `copyImageFilePath` says (Share).
  */
-async function copy(ids: string[], expectedSequence?: number, { text = false } = {}) {
-  const files = ids.map(id => engine.output(id));
+async function copy(ids: string[], expectedSequence?: number, { text = false, extra = [], files: asFiles = false }: { text?: boolean; extra?: string[]; files?: boolean } = {}) {
+  const outputs = ids.map(id => engine.output(id)), files = [...outputs, ...extra];
   const images = ids.every(id => engine.get(id).result.kind === 'image');
-  const withFiles = !images || ids.length > 1 || settings.copyImageFilePath;
+  const withFiles = copiesFiles({ allImages: images, count: ids.length, copyImageFilePath: settings.copyImageFilePath, extra: extra.length, files: asFiles });
   if (process.platform !== 'win32' && !images) throw new Error('Copying files needs the Windows clipboard helper. Save the result instead.');
-  await writeClipboard({ ...(withFiles ? { files } : {}), ...(images ? { image: files[files.length - 1] } : {}), ...(text ? { text: files.join('\r\n') } : {}) }, expectedSequence);
+  await writeClipboard({ ...(withFiles ? { files } : {}), ...(images ? { image: outputs[outputs.length - 1] } : {}), ...(text ? { text: files.join('\r\n') } : {}) }, expectedSequence);
 }
 /**
  * Writes a file list, an image's pixels and text to the clipboard, marked as Clop's own, unless the clipboard changed since
@@ -434,7 +449,6 @@ function afterPipelines(id: string | undefined, outcome: PipelinesOutcome, sourc
   for (const fork of outcome.forks) void makeRoom().then(() => engine.importPath(fork, source, defaults(), undefined, { automation: AS_IS })).catch(error => inform(message(error)));
 }
 /**
-/**
  * The pipelines attached to `source` (`clipboard` or `dropZone`) for a file of `kind`, or `pipelines` given outright (a preset
  * zone's), as an import's automation. A copied image skips the usual optimisation when every pipeline does (Images.swift); a
  * copied video, PDF or audio file is optimised first (ClopApp.swift), then the pipelines run. A drop skips it for every kind
@@ -475,6 +489,10 @@ async function importPaths(files: unknown, source: ItemResult['source'], { aggre
   } finally { importsRunning--; syncFloating(); broadcast(); }
   return completed;
 }
+/** The pipelines of the drop zone (or of the preset zone `zone`), chosen for the kind the file turns out to be rather than by its name. */
+const dropExtra = (zone?: unknown): ImportExtra => ({
+  late: kind => sourceAutomation(kind, 'dropZone', 'drop', undefined, zone === undefined ? undefined : [zonePipeline(settings.presetZones, settings.savedPipelines, zone, kind)]),
+});
 /**
  * Dropped and opened files; their results go on the clipboard with `autoCopyToClipboard`. Dropped files run the pipelines attached
  * to the drop zone, or the pipeline of the preset zone `zone` they were dropped on instead.
@@ -482,10 +500,7 @@ async function importPaths(files: unknown, source: ItemResult['source'], { aggre
 async function importFiles(files: unknown, source: ItemResult['source'], aggressive = false, zone?: unknown) {
   const sequence = await currentSequence();
   // Pipelines attached to the drop zone (or a preset zone's pipeline) run on drops, but not on a ⌘-drop's explicit aggressive optimisation (`wantsPipelineLookup`).
-  const extra = source !== 'drop' || aggressive ? undefined : (file: string) => {
-    const kind = mediaKind(file) ?? 'image';
-    return sourceAutomation(kind, 'dropZone', 'drop', undefined, zone === undefined ? undefined : [zonePipeline(settings.presetZones, settings.savedPipelines, zone, kind)]);
-  };
+  const extra = source !== 'drop' || aggressive ? undefined : () => dropExtra(zone);
   const ids = await importPaths(files, source, { aggressive, extra });
   if (settings.autoCopyToClipboard && ids.length) await copy(ids, sequence);
 }
@@ -507,7 +522,7 @@ async function prepareClipboardImages() {
   for (const id of replacedClipboardImages(engine.list(), settings)) await dismiss(id);
 }
 /** Clipboard results always go back on the clipboard; consecutive clipboard images together with `copyConsecutiveClipboardImages`. */
-async function copyClipboardResults(ids: string[], sequence?: number, options?: { text?: boolean }) {
+async function copyClipboardResults(ids: string[], sequence?: number, options?: { text?: boolean; extra?: string[] }) {
   ids = ids.filter(isReady);
   if (!ids.length) return;
   const images = ids.every(id => engine.get(id).result.kind === 'image');
@@ -516,7 +531,7 @@ async function copyClipboardResults(ids: string[], sequence?: number, options?: 
   await copy(accumulated.length > 1 ? accumulated : ids, sequence, options);
 }
 /** The steps of importing clipboard results (see `importClipboardList`), written back against the clipboard `sequence` they came from. */
-function clipboardSteps(sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }, app?: CopyingApp): ClipboardListSteps {
+function clipboardSteps(sequence: number | undefined, aggressive: boolean, options?: { text?: boolean; extra?: string[] }, app?: CopyingApp): ClipboardListSteps {
   return {
     turn: clipboardImageTurn, prepare: prepareClipboardImages, writeBack: ids => copyClipboardResults(ids, sequence, options),
     load: list => importPaths(list, 'clipboard', {
@@ -525,8 +540,10 @@ function clipboardSteps(sequence: number | undefined, aggressive: boolean, optio
     }),
   };
 }
-function importClipboardFiles(files: string[], sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }, app?: CopyingApp) {
-  return importClipboardList(files.slice(0, 20), clipboardSteps(sequence, aggressive, options, app));
+function importClipboardFiles(files: string[], rest: string[] | undefined, sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }, app?: CopyingApp) {
+  // Files past the limit and the entries Clop leaves alone stay in the list the results are written back to.
+  const split = splitClipboardList(files, rest);
+  return importClipboardList(split.take, clipboardSteps(sequence, aggressive, { ...options, extra: split.rest }, app));
 }
 function importClipboardImage(bytes: Buffer, name: string, sequence: number | undefined, aggressive: boolean, app?: CopyingApp) {
   return importClipboardImages(clipboardSteps(sequence, aggressive, undefined, app), async () => {
@@ -547,7 +564,7 @@ async function readClipboardImage() {
  * Optimises what is on the clipboard (see `clipboardIntake`). Reads run one at a time; the import each starts runs on its
  * own, so a long encode never holds up the next copy, and no copy or manual request is dropped.
  */
-function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive = false): Promise<void> {
+function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive = false, polled = false): Promise<void> {
   if (!manual && (!settings.enableClipboardOptimiser || paused())) return Promise.resolve();
   return intake.submit(async () => {
     const plan = await clipboardIntake(change, manual, memory, {
@@ -559,38 +576,32 @@ function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive 
         return snapshot;
       },
     });
+    // The helper's changes use up the pause as they arrive (`pickup`); a poll finds its change here.
+    if (polled && pausedForPoll(plan, () => shortcutRunner.consumePauseNext())) return;
     switch (plan.type) {
       case 'retry': void optimiseClipboard(plan.change, false, aggressive); return;
       case 'none': if (plan.notice) inform(plan.notice); return;
-      case 'files': return () => importClipboardFiles(plan.files, plan.sequence, aggressive, { text: plan.text }, plan.app);
+      case 'files': return () => importClipboardFiles(plan.files, plan.rest, plan.sequence, aggressive, { text: plan.text }, plan.app);
       case 'image': return () => importClipboardImage(plan.bytes, `Clipboard-${stamp()}.${plan.ext}`, plan.sequence, aggressive, plan.app);
       case 'url': return () => importUrl(plan.url, aggressive, 'clipboard', plan.sequence);
     }
-  });
+  }, () => manual || (settings.enableClipboardOptimiser && !paused()));
 }
 function startClipboardFallback() {
   if (clipboardTimer) return;
   let polling = false;
-  clipboardTimer = setInterval(() => { if (settings.enableClipboardOptimiser && !polling) { polling = true; void optimiseClipboard().finally(() => { polling = false; }); } }, 900);
+  clipboardTimer = setInterval(() => { if (settings.enableClipboardOptimiser && !polling) { polling = true; void optimiseClipboard(undefined, false, false, true).finally(() => { polling = false; }); } }, 900);
   clipboardTimer.unref();
 }
-/**
- * The CLI's "optimise this file and show a card" through the app's item engine (one adapter, so the engine can change behind
- * it). A card for every kind, but only for requests the engine's plain optimisation expresses (aggressive, and a downscale
- * for images); a crop, speed, bitrate, DPI or compression override the pipe service runs itself, without a card.
- */
-async function optimiseWithCard(file: string, kind: MediaKind, req: OptimisationRequest) {
-  const downscaled = req.downscaleFactor !== undefined && (kind === 'image' ? req.downscaleFactor < 0.1 : req.downscaleFactor < 1);
-  const changesMore = req.size || req.compression || req.adaptiveOptimisation || req.removeAudio || req.audioBitrate !== undefined || req.pdfDPI !== undefined
-    || (req.changePlaybackSpeedFactor !== undefined && req.changePlaybackSpeedFactor !== 1);
-  if (downscaled || changesMore) return undefined;
-  await makeRoom();
-  const scale = kind === 'image' && req.downscaleFactor ? { scale: req.downscaleFactor } : {};
-  const id = await engine.importPath(file, 'file', { ...defaults(req.aggressiveOptimisation), ...scale });
-  const { result } = engine.get(id);
-  if (result.status !== 'ready') throw new Error(result.error ?? `Clop could not optimise this ${kind}.`);
-  return result.unchanged ? file : engine.output(id);
-}
+// A card for a request on the user's own file places its result there itself, by the placement settings and the request's overrides, so the card's
+// Restore undoes the write. An explicit output, or results kept in the shelf (`temporary`, which the service copies beside the file), stay with the service.
+const optimiseWithCard = cardOptimiser({
+  engine: () => engine, makeRoom, defaults,
+  placement: (file, kind, req) => !cardPlaces(req, output => effectiveBehaviour(folderEnv(), kind, output, req.placement)) ? undefined
+    : folderPlacement(file, kind, req.origin === 'mcp' ? () => ({ ...folderEnv(), agent: true }) : folderEnv, value => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); }, req.placement),
+});
+/** The placement environment of watched files, Explorer verbs and command-line cards. */
+const folderEnv = () => ({ settings, workdir, marker, home, counter: nameCounter ??= { value: settings.lastAutoIncrementingNumber } });
 /** Requests from `clop` and the MCP server (spec step 24). Settings they change go through `updateSettings`, so they apply at once. */
 async function serveCLI(userData: string) {
   const files = shellEffects();
@@ -598,8 +609,13 @@ async function serveCLI(userData: string) {
   service = new ClopService({
     store: { get: () => store.get(), update: async change => { const wasEnabled = settings.mcpEnabled, reply = await store.update(change); await settingsChanged(reply.settings, wasEnabled); return reply; } },
     workdir, marker, effects: options => pipelineEffects(options), copyFiles: list => files.copyFiles(list), home: app.getPath('home'), withCard: optimiseWithCard,
+    counter: () => nameCounter ??= { value: settings.lastAutoIncrementingNumber },
   });
-  pipe = await startPipeServer(newPipePath(), (request, emit) => { console.log(`CLI request: ${request.kind}`); return service!.handle(request, emit); });
+  pipe = await startPipeServer(newPipePath(), (request, emit) => {
+    console.log(`CLI request: ${request.kind}`);
+    if (updating && request.kind === 'optimise') { for (const forURL of request.request.urls) emit({ kind: 'error', error: { error: 'Clop is about to restart to install an update. Try again in a moment.', forURL } }); emit({ kind: 'done' }); return Promise.resolve(); }
+    return service!.handle(request, emit);
+  });
   withdrawPipe = await publishPipe(userData, pipe);
 }
 /** `clop://settings/…` opens Settings on a tab and row and `clop://mcp/start|stop` flips the MCP switch; start asks first. */
@@ -610,7 +626,8 @@ async function openClopURL(link: ClopURL) {
   if (settings.mcpEnabled || askingMCP) return;
   askingMCP = true;
   let response: number;
-  try { ({ response } = await dialog.showMessageBox({ type: 'question', buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1, title: 'Clop', message: 'Let AI agents change files and settings through Clop?', detail: 'An agent asked to use Clop through its MCP server. You can turn this off again in Clop settings.' })); }
+  // Attached to the settings window, so the question is plainly Clop's own.
+  try { ({ response } = await dialog.showMessageBox(main, { type: 'question', buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1, title: 'Clop', ...MCP_START_QUESTION })); }
   finally { askingMCP = false; }
   if (response === 0) await updateSettings({ mcpEnabled: true });
 }
@@ -641,12 +658,15 @@ async function toggleExplorer() {
 /** What each Explorer verb does once its launches are gathered. All of it happens in this one app: nothing else is started. */
 async function runVerb(verb: VerbId, files: string[]) {
   if (verb === 'run-pipeline') return choosePipeline(files);
-  const { use, skipped } = usableFiles(verb, files);
+  const { use, skipped } = usableFiles(verb, await expandFolders(files));
   if (!use.length) { inform(skippedNote(skipped)); return; }
-  if (verb === 'strip-exif') { inform(stripSummary(await stripAll(use, stripExifFile), skipped)); return; }
-  const failures: string[] = [];
-  await service!.optimise(explorerRequest(verb, use, randomUUID()), reply => { if (reply.kind === 'error') failures.push(`${path.basename(reply.error.forURL)}: ${reply.error.error}`); });
-  const notes = [...failures.slice(0, 3), ...(failures.length > 3 ? [`${failures.length - 3} more failed.`] : []), ...(skipped ? [skippedNote(skipped)] : [])];
+  if (verb === 'strip-exif') { inform(stripSummary(await stripAll(use, file => stripExifFile(file, { workdir, marker })), skipped)); return; }
+  const failures: string[] = [], done: string[] = [];
+  await service!.optimise(explorerRequest(verb, use, randomUUID()), reply => {
+    if (reply.kind === 'error') failures.push(`${failureName(reply.error.forURL)}: ${reply.error.error}`);
+    else if (reply.kind === 'response') done.push(reply.response.path);
+  });
+  const notes = verbNotes({ verb, done, failures, skipped });
   if (notes.length) inform(notes.join('\n'));
 }
 /** "Run pipeline..." from Explorer: asks which saved pipeline with a menu at the pointer, then runs it on the files that pipeline works on. */
@@ -657,12 +677,16 @@ async function choosePipeline(files: string[]) {
     const pipeline = allPipelineChoices(settings).find(choice => choice.id === id);
     const usable = supported.filter(file => !pipeline?.fileType || mediaKind(file) === pipeline.fileType);
     if (usable.length < supported.length) inform(`${pipeline?.name ?? 'That pipeline'} works on ${pipeline?.fileType} files, so ${supported.length - usable.length} other file${supported.length - usable.length === 1 ? ' was' : 's were'} left out.`);
+    // On the selected files themselves, placed back by the optimised-file settings as a watched folder's are, and not on copies in the shelf.
     void (async () => {
-      // importPaths takes up to 20 files at a time; a larger selection goes in turns.
-      for (let at = 0; at < usable.length; at += 20) {
-        await importPaths(usable.slice(at, at + 20), 'drop', { extra: file => { const kind = mediaKind(file) ?? 'image'; return sourceAutomation(kind, 'dropZone', 'drop', undefined, [chosenPipeline(settings, kind, id)]); } });
+      for (const file of usable) {
+        const kind = mediaKind(file) ?? 'image';
+        const automation: ConstructorParameters<typeof FolderResults>[0]['automation'] = (source, fileKind, _dir, staged) => attachedAutomation([chosenPipeline(settings, fileKind, id)], {
+          host: pipelineHost, context: { kind: fileKind }, fallback: true, source, done: outcome => afterPipelines(staged(), outcome, 'folder'),
+        });
+        await folders.optimise(file, kind, path.dirname(file), automation).catch(error => inform(`${path.basename(file)}: ${message(error)}`));
       }
-    })().catch(error => inform(message(error)));
+    })();
   });
   if (!menu.length) { inform('No saved pipeline works on those files. Add one in the pipeline editor.'); return; }
   const built = Menu.buildFromTemplate(menu);
@@ -692,6 +716,8 @@ const shortcutRunner = new ShortcutRunner({
     return engine.list().find(item => !before.has(item.id) && item.source === 'clipboard' && item.status === 'ready');
   },
   bitrates: async id => (await mediaFacts(engine.output(id), 'audio')).bitrates ?? [],
+  bitrate: async id => audioMetadata(engine.output(id)).then(info => info.bitrate ? Math.round(info.bitrate / 1000) : undefined, () => undefined),
+  pdfDpi: () => settings.pdfDPI,
   inform,
 });
 const runShortcut = (action: ShortcutAction) => shortcutRunner.run(action);
@@ -715,7 +741,7 @@ const trayActions: TrayActions = {
   },
   openBackups: () => openFolder(workdir.backups), openWorkdir: () => openFolder(workdir.root),
   forceClean: async () => { const removed = await workdir.forceClean(); inform(removed ? `Working directory cleaned: ${removed} item${removed === 1 ? '' : 's'} removed.` : 'The working directory is already clean.'); },
-  revert: revertLast, bringBack: bringBackLast, stopAll: () => engine.stop(), set: updateSettings, toggleCLI, toggleExplorer,
+  revert: revertLast, bringBack: bringBackLast, stopAll: () => { engine.stop(); service?.stopAll(); void batch?.host.stop(); }, set: updateSettings, toggleCLI, toggleExplorer,
   checkForUpdates: async () => { const text = await updates.check(); if (text) inform(text); },
   saveDebugDump: async () => { inform(`Debug dump saved: ${path.basename(await saveDump())}`); },
   quit: () => app.quit(),
@@ -755,6 +781,11 @@ async function updateSettings(value: unknown) {
   const wasEnabled = settings.mcpEnabled;
   await settingsChanged(await store.set(value), wasEnabled);
 }
+/** A change that depends on the stored value, made while no other write can slip in (`SettingsStore.update`). */
+async function changeSettings(change: (current: typeof settings) => Partial<typeof settings>) {
+  const wasEnabled = settings.mcpEnabled;
+  await settingsChanged((await store.update(current => ({ patch: change(current), result: undefined }))).settings, wasEnabled);
+}
 /** Brings the app in line with settings that were just saved. */
 async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
   settings = saved;
@@ -762,7 +793,7 @@ async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
   if (!settings.enableClipboardOptimiser || paused()) pickup.cancel();
   floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop);
   syncFloating();
-  if (process.platform === 'win32') app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin, path: process.execPath, args: ['--hidden'] });
+  if (process.platform === 'win32') syncLoginItem(app, settings.launchAtLogin, loginExecutable());
   applyWindowSettings();
   if (bridgeReady) await bridge.request(nativeSettings());
   updateTray(); broadcast();
@@ -802,7 +833,7 @@ function cardIds(value: unknown) {
 async function cardFacts(id: string): Promise<Facts> {
   const { result } = engine.get(id), editor = editorFor(result.kind);
   const facts: Facts = { native: true, pipelines: pipelineChoices(settings, result.kind) };
-  if (isEditorPath(editor) && await isFile(editor)) facts.editor = path.win32.basename(editor).replace(/\.exe$/i, '');
+  facts.editor = await editorLabel(editor, isFile);
   if (result.status === 'ready') Object.assign(facts, await mediaFacts(engine.output(id), result.kind));
   return facts;
 }
@@ -872,7 +903,7 @@ async function runSavedPipeline(id: string, pipelineId: unknown) {
 }
 /** The Windows share sheet needs a packaged app, which Clop is not: the file goes on the clipboard and Explorer selects it, where Share is on its ribbon and context menu. */
 async function shareResult(id: string) {
-  await copy([id]);
+  await copy([id], undefined, { files: true });
   shell.showItemInFolder(engine.output(id));
 }
 /** The actions whose menu entry the file's facts can disable or hide; a request for one is checked against them. */
@@ -883,8 +914,8 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
   if (ids.length > 1) {
     const action = (raw as { action?: unknown } | null)?.action;
     if (typeof action !== 'string' || !(BATCH_ACTIONS as readonly string[]).includes(action)) throw new Error('This action works on one result at a time.');
-    if (action === 'saveAs') return saveResults(window, ids);
-    if (action === 'copy') return copy(ids);
+    if (action === 'saveAs') return saveResults(window, readyIds(engine, ids));
+    if (action === 'copy') return copy(readyIds(engine, ids));
     if (action === 'restore') {
       const { restored, failures } = await restoreAll(engine, ids);
       const clipboardIds = restored.filter(id => engine.has(id) && engine.get(id).result.source === 'clipboard');
@@ -895,12 +926,20 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
     // Each result on its own: those the action does not work on are skipped, a failure does not stop the rest, and the clipboard is written once at the end.
     const failures: string[] = [], applies = ids.filter(id => ACTION_KINDS[action as ActionId].includes(engine.get(id).result.kind));
     if (!applies.length) throw new Error('This action does not work on the selected results.');
-    for (const id of applies) {
-      try { if (action === 'dismiss') await dismiss(id); else await runCard(sender, [id], raw, { copyBack: false }); }
-      catch (error) { failures.push(`${engine.has(id) ? engine.get(id).result.name : 'A result'}: ${message(error)}`); }
-    }
-    const back = applies.filter(id => engine.has(id) && isReady(id) && copiesBack(id));
-    if (action !== 'dismiss' && back.length) await copy(back).catch(error => failures.push(message(error)));
+    // A result whose facts the action cannot use (an SDR video for HDR to SDR, a bitrate its format lacks) is skipped, not reported; only the ones the action ran on go back on the clipboard.
+    // Read before the work: a long encode must not put its results over something copied meanwhile.
+    const sequence = await currentSequence().catch(() => undefined);
+    const batch = await eachResult(applies, {
+      name: id => engine.has(id) ? engine.get(id).result.name : 'A result',
+      skip: async id => {
+        const item = engine.get(id).result, invocation = parseInvocation(item.kind, raw);
+        return FACT_ACTIONS.includes(invocation.action) && refuseUnavailable(item, invocation, { native: true, ...await mediaFacts(engine.output(id), item.kind) }) !== undefined;
+      },
+      run: id => action === 'dismiss' ? dismiss(id) : runCard(sender, [id], raw, { copyBack: false }),
+    });
+    failures.push(...batch.failures);
+    const back = batch.done.filter(id => engine.has(id) && isReady(id) && copiesBack(id));
+    if (action !== 'dismiss' && back.length) await copy(back, sequence).catch(error => failures.push(message(error)));
     if (failures.length) inform(failures.join('\n'));
     return;
   }
@@ -911,9 +950,10 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
   }
   if (plan.type !== 'ui') {
     if (makesNewCard(plan)) { await coverArtCard(creation(), id); return; }
-    await runPlan(cardHost(), id, plan);
-    shortcutRunner.noted(id, invocation);
-    if (copyBack && isReady(id) && copiesBack(id)) await copy([id]);
+    await thenCopyBack(currentSequence, () => runPlan(cardHost(), id, plan), async sequence => {
+      shortcutRunner.noted(id, invocation);
+      if (copyBack && isReady(id) && copiesBack(id)) await copy([id], sequence);
+    });
     return;
   }
   const file = () => engine.output(id);
@@ -1013,6 +1053,10 @@ ipcMain.on('clop:drag', (event, id: string) => {
     if (dismissOnDrop && process.platform === 'win32') setTimeout(() => { if (engine.has(id) && !over()) void dismiss(id); }, 250);
   } catch (error) { inform(message(error)); }
 });
+// `clop://` links wait until the app is up: a second instance can pass one before the windows exist.
+const linkQueue = linkInbox(link => { void openClopURL(link).catch(error => inform(message(error))); });
+// So do files another launch opens with Clop: before startup ends there is no engine to take them.
+const fileQueue = linkInbox<string[]>(files => { void importFiles(files, 'file').catch(error => inform(message(error))); });
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', (_event, argv) => {
@@ -1020,17 +1064,21 @@ else {
     const picked = explorerVerb(argv);
     if (picked) { collectVerb(picked.verb, picked.files); return; }
     const links = clopURLs(argv);
-    if (links.length) { if (engine) for (const link of links) void openClopURL(link).catch(error => inform(message(error))); return; }
+    if (links.length) { linkQueue.receive(links); return; }
     // Without the tray icon there is no menu to open, so another launch opens Settings.
     if (engine) { if (tray) showLatest(); else showSettings(); }
     const files = argv.filter(arg => path.isAbsolute(arg) && mediaKind(arg));
-    if (files.length) void importFiles(files, 'file').catch(error => inform(message(error)));
+    if (files.length) fileQueue.receive([files]);
   });
+  // The files this launch was started with for an Explorer verb join the other launches' at once: those reach `second-instance` while the app starts,
+  // and the collector waits for the service, so this launch's file must not arrive after them and run on its own.
+  const startupVerb = explorerVerb(process.argv.slice(1));
+  if (startupVerb) collectVerb(startupVerb.verb, startupVerb.files);
   app.whenReady().then(async () => {
     setupWatchdog();
     Menu.setApplicationMenu(null);
     const userData = app.getPath('userData');
-    store = new SettingsStore(path.join(userData, 'settings.json'), { home: app.getPath('home'), desktop: app.getPath('desktop'), userData });
+    store = new SettingsStore(path.join(userData, 'settings.json'), { home: app.getPath('home'), desktop: app.getPath('desktop'), userData }, true);
     // Watching guards against apps that rewrite many files in its first seconds on the first launch.
     const firstLaunch = !await stat(store.file).then(() => true, () => false);
     // An unreadable settings file is left alone; the defaults are used and the reason is shown once the windows exist.
@@ -1040,10 +1088,10 @@ else {
     if (!settingsError) settings = await store.update(current => ({ patch: seedBuiltinPipelines(current.savedPipelines, current.builtinPipelinesSeededVersion), result: undefined })).then(reply => reply.settings, error => { settingsError = error; return settings; });
     mirrorConsoleToFile(path.join(userData, 'logs', 'clop.log'), () => settings.persistDebugLogs);
     const paths = { home: app.getPath('home'), desktop: app.getPath('desktop'), userData };
-    updates = setupUpdates({ settings: () => settings, portable: isPortable(), releases: () => shell.openExternal(LINKS.releases), inform });
+    updates = setupUpdates({ settings: () => settings, portable: isPortable(), releases: () => shell.openExternal(LINKS.releases), inform, settle: placementsSettled, hold: () => { updating = true; return () => { updating = false; }; } });
     saveDump = setupDebugDump({ settings: () => settings, userData, workdir: () => workdir?.root ?? settings.workdir, portable: isPortable() });
     prefs = createPrefs({
-      settings: () => settings, defaults: () => defaultSettings(paths), set: async partial => { await updateSettings(partial); }, home: paths.home,
+      settings: () => settings, defaults: () => defaultSettings(paths), set: async partial => { await updateSettings(partial); }, update: change => changeSettings(change), home: paths.home,
       chooseFolder: async (title, defaultPath) => { const picked = await dialog.showOpenDialog(main, { title, defaultPath, properties: ['openDirectory', 'createDirectory'] }); return picked.canceled ? undefined : picked.filePaths[0]; },
       chooseProgram: async title => { const picked = await dialog.showOpenDialog(main, { title, properties: ['openFile'], filters: process.platform === 'win32' ? [{ name: 'Programs', extensions: ['exe'] }] : [] }); return picked.canceled ? undefined : picked.filePaths[0]; },
       apps: async () => bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [],
@@ -1061,16 +1109,20 @@ else {
       workdirProblem = `Clop cannot use the working directory ${settings.workdir}: ${message(error)} Using the default folder instead.`;
       return open(path.join(userData, 'work'));
     });
+    // A placement the last run never finished (a crash, a forced shutdown) gets its original back before anything else touches the folders: the cleaner starts after it.
+    await workdir.repair().then(files => { if (files.length) inform(`Clop put back ${files.length === 1 ? path.basename(files[0]) : `${files.length} files`} that it was replacing when it last stopped. ${files.length === 1 ? 'It is' : 'They are'} where ${files.length === 1 ? 'it was' : 'they were'}, as before.`); }, error => console.warn(`Could not check for unfinished placements: ${message(error)}`));
     // The running session's files stay until the next start, however short the cleanup interval is.
     const session = sessionDir = path.join(workdir.temp, `session-${Date.now()}`);
     workdir.protect(session);
     stopCleaner = workdir.startCleaner(() => store.get('workdirCleanupInterval'));
-    engine = new ItemEngine(session, () => settings);
+    engine = new ItemEngine(session, () => settings, file => marker.markOptimised(file));
     media = new MediaFiles([session]);
     protocol.handle(MEDIA_SCHEME, request => media.handle(request));
     engine.on('change', () => { syncFloating(); broadcast(); });
     engine.on('ready', (id: string) => { if (quiet.has(id)) return; hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
     engine.on('add', (id: string) => lastBatch.add(id));
+    // Whichever way a result gets its original back (card, selection, tray, error card), the shortcut steps start over.
+    engine.on('restored', (id: string) => shortcutRunner.forget(id));
     await createWindows();
     if (settingsError) inform(message(settingsError));
     if (workdirProblem) inform(workdirProblem);
@@ -1082,19 +1134,21 @@ else {
       saved: value => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); },
     });
     // A cloud-only OneDrive placeholder would download when read, so watched folders and batches leave it alone.
-    const isLocal = async (file: string) => !bridgeReady || !placeholderReply(await bridge.request({ type: 'attributes', paths: [file] }), 1)[0];
+    // Watched folders wait for the helper on Windows, as reading a placeholder downloads it; a batch is what the user asked for.
+    const isLocal = (strict: boolean) => (file: string) => localFile(file, bridgeReady ? paths => bridge.request({ type: 'attributes', paths }) : undefined, !(strict && process.platform === 'win32'));
     watchers = (['image', 'video', 'pdf', 'audio'] as const).map(kind => new FolderWatcher(kind, {
       // The stream hint moves with a renamed file, which the cache keyed by path cannot follow; it counts while the size is unchanged.
-      settings: () => settings, home, firstLaunch, owns: file => workdir.owns(file), isOptimised: async file => await marker.isOptimised(file) || await marker.hintMatches(file),
-      isLocal,
+      settings: watchedSettings, home, firstLaunch, owns: file => workdir.owns(file), isOptimised: async file => await marker.isOptimised(file) || await marker.hintMatches(file),
+      isLocal: isLocal(true), helper: () => bridgeReady || process.platform !== 'win32' ? 'ready' : bridgeStopped ? 'stopped' : 'starting',
       handle: (file, dir) => folders.optimise(file, kind, dir), cancel: files => folders.cancel(files), notice: inform,
       disable: () => toggleSetting({ [enabledKey(kind)]: false }),
     }));
     const counter = () => nameCounter ??= { value: settings.lastAutoIncrementingNumber };
     const saveCounter = (value: number) => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); };
-    batch = setupBatch({ here, devUrl, webPreferences, created: syncNative, quitting: () => quitting, settings: () => settings, owns: file => workdir.owns(file), isLocal, env: () => ({ settings: () => settings, workdir, marker, home, counter: counter(), saved: saveCounter }) });
+    batch = setupBatch({ here, devUrl, webPreferences, created: syncNative, quitting: () => quitting, settings: () => settings, owns: file => workdir.owns(file), isLocal: isLocal(false), env: () => ({ settings: () => settings, workdir, marker, home, counter: counter(), saved: saveCounter }) });
     store.on('change', (next, changed) => {
       settings = next; for (const watcher of watchers) void watcher.update();
+      if (changed.includes('pauseAutomaticOptimisations')) shortcutRunner.pauseChanged();
       if (changed.some(key => ['keyComboModifiers', 'enabledKeys', 'quickResizeKeys', 'allowClopToAppearInScreenshots'].includes(key))) applyWindowSettings();
       // A change made outside the app (the settings file, the CLI) shows or hides the tray icon and updates its menu and icon too.
       if (changed.some(key => ['showMenubarIcon', 'pauseAutomaticOptimisations', 'enableClipboardOptimiser', 'keepDropZoneVisible'].includes(key))) updateTray();
@@ -1102,11 +1156,13 @@ else {
       if (changed.some(key => (EDITOR_SETTING_KEYS as readonly string[]).includes(key))) { syncFloating(); broadcast(); for (const window of [editorWindow, editorLoading?.window]) if (window && !window.isDestroyed()) window.webContents.send('clop:editor-changed'); }
     });
     for (const watcher of watchers) void watcher.update();
+    // The `clop` command can change this while the app is closed.
+    if (app.isPackaged && process.platform === 'win32') syncLoginItem(app, settings.launchAtLogin, loginExecutable(), true);
     updateTray();
     shortcuts = new ShortcutRegistry(globalShortcut, action => guarded(() => runShortcut(action), reportFailure));
     applyWindowSettings();
     if (process.platform === 'win32') {
-      bridge.on('ready', () => { bridgeReady = true; void bridge.request(nativeSettings()).then(() => { if (settings.enableClipboardOptimiser) void optimiseClipboard(); }).catch(error => inform(message(error))); });
+      bridge.on('ready', () => { bridgeReady = true; bridgeStopped = false; for (const watcher of watchers) watcher.resume(); void bridge.request(nativeSettings()).then(() => { if (settings.enableClipboardOptimiser) void optimiseClipboard(); }).catch(error => inform(message(error))); });
       bridge.on('clipboard', event => {
         const change = clipboardChange(event);
         if (change && (change.owner || change.aumid)) lastCopier = { owner: change.owner, aumid: change.aumid };
@@ -1117,19 +1173,19 @@ else {
       bridge.on('foreground', event => pickup.focus(Number(event.process)));
       bridge.on('drag-start', event => {
         if (!settings.enableDragAndDrop) return;
-        dragging = true; dropActive = true; dragModifiers = { ctrl: false, alt: false }; presetsLatched = false;
+        dragging = true; dropActive = true; presetReveal.reset(); presetsLatched = false;
         dragFiles = Array.isArray(event.paths) ? (event.paths as unknown[]).filter((file): file is string => typeof file === 'string').slice(0, 64) : [];
         floating.setIgnoreMouseEvents(false); syncFloating(); broadcast();
       });
-      // The helper reads Ctrl and Alt while a drag lasts; either one shows the preset zone tiles.
+      // The helper reads Ctrl and Alt while a drag lasts; holding either shows the preset zone tiles, or tapping it with `onlyShowPresetZonesOnControlTapped`.
       bridge.on('drag-modifiers', event => {
         if (!dragging) return;
-        dragModifiers = { ctrl: event.ctrl === true, alt: event.alt === true }; presetsLatched ||= presetsRevealed(); syncFloating(); broadcast();
+        presetReveal.update({ ctrl: event.ctrl === true, alt: event.alt === true }, settings.onlyShowPresetZonesOnControlTapped); presetsLatched ||= presetsRevealed(); syncFloating(); broadcast();
       });
       // The tiles stay for the moment a drop on one needs to land.
-      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; dragFiles = []; dragModifiers = { ctrl: false, alt: false }; presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
+      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; dragFiles = []; presetReveal.reset(); presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
-      bridge.on('stopped', () => { bridgeReady = false; pickup.cancel(); startClipboardFallback(); });
+      bridge.on('stopped', () => { bridgeReady = false; bridgeStopped = true; pickup.cancel(); startClipboardFallback(); for (const watcher of watchers) watcher.resume(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));
     } else startClipboardFallback();
     // Requests can change settings, which updates the tray and the windows, so the pipe opens once they exist.
@@ -1142,10 +1198,10 @@ else {
       void mcp.repair().then(names => { if (names.length) console.log(`Repointed Clop's MCP server in ${names.join(', ')}`); }, error => console.warn(`Could not check the MCP clients: ${message(error)}`));
     }
     if (isPortable() && (cliInstalled = await portableCLIInstalled())) { updateTray(); void refreshPortableCLI(process.resourcesPath, path.dirname(process.execPath)).catch(error => inform(message(error))); }
-    for (const link of clopURLs(process.argv.slice(1))) void openClopURL(link).catch(error => inform(message(error)));
-    const picked = explorerVerb(process.argv.slice(1));
-    if (picked) collectVerb(picked.verb, picked.files);
-    else {
+    linkQueue.receive(clopURLs(process.argv.slice(1)));
+    linkQueue.ready();
+    fileQueue.ready();
+    if (!startupVerb) {
       const files = process.argv.slice(1).filter(arg => path.isAbsolute(arg) && mediaKind(arg));
       if (files.length) await importFiles(files, 'file');
     }
@@ -1158,7 +1214,14 @@ else {
     }
     if (app.isPackaged) stopUpdates = updates.start();
   }).catch(error => { dialog.showErrorBox('Clop could not start', message(error)); app.quit(); });
-  app.on('before-quit', () => { quitting = true; stopUpdates?.(); for (const collector of verbCollectors.values()) collector.cancel(); withdrawPipe?.(); void pipe?.close(); engine?.abort(); batch?.host.stop(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
+  app.on('before-quit', event => {
+    // A running batch is stopped, and quitting waits (briefly) for its files to settle: one being placed has moved its original aside.
+    const settling = batch?.host.stop();
+    if (settling && !batchSettled) { event.preventDefault(); void Promise.race([settling, new Promise(resolve => setTimeout(resolve, 15_000))]).finally(() => { batchSettled = true; app.quit(); }); }
+    // So does a placement under way (a result taking an original's place), for up to two minutes; a start after a forced end repairs one.
+    else if (placing() && !placementsDone) { event.preventDefault(); void Promise.race([placementsSettled(), new Promise(resolve => setTimeout(resolve, 120_000))]).finally(() => { placementsDone = true; app.quit(); }); }
+    if (quitting) return;
+    quitting = true; stopUpdates?.(); for (const collector of verbCollectors.values()) collector.cancel(); withdrawPipe?.(); void pipe?.close(); service?.stopAll(); engine?.abort(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });
   app.on('activate', () => { if (engine) showLatest(); });
 }

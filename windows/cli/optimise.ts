@@ -4,7 +4,7 @@ import { parseCompression } from '../core/pipeline/parser';
 import { PDF_DPI_STOPS } from '../core/media/pdf';
 import type { CompressionQuality, CropSize } from '../core/settings/schema';
 import { kebab, ValidationError, type OptionSpec, type Values } from './args';
-import { ALL_TYPES_HELP, AUDIO_TYPES, checkOutputIsDir, chosenTypes, IMAGE_TYPES, normalizeOutput, PDF_TYPES, validateItems, VIDEO_TYPES } from './items';
+import { ALL_TYPES_HELP, AUDIO_TYPES, checkOutputIsDir, chosenTypes, IMAGE_TYPES, gate, normalizeOutput, PDF_TYPES, validateItems, VIDEO_TYPES } from './items';
 import { flag, list, on, option, str, type ClopCommand, type Context } from './context';
 import { checkPipelineArgument } from './read-settings';
 import { ProgressPrinter } from './results';
@@ -177,8 +177,10 @@ async function sendOptimisation(ctx: Context, v: Values, urls: string[], extra: 
   return sendRequest(ctx, urls, { showProgress: !on(v, 'noProgress'), async: on(v, 'async'), gui: on(v, 'gui'), json: on(v, 'json'), operation }, request);
 }
 
-const items = (ctx: Context, v: Values, types: readonly string[], recursive = on(v, 'recursive'), skipErrors = on(v, 'skipErrors')) =>
-  validateItems(list(v, 'items') ?? [], { recursive, skipErrors, types, cwd: ctx.cwd, home: ctx.home });
+const items = async (ctx: Context, v: Values, types: readonly string[], recursive = on(v, 'recursive'), skipErrors = on(v, 'skipErrors')) => {
+  await gate(ctx, undefined, [...list(v, 'items') ?? [], ...['output', 'sameFolderTemplate', 'specificFolderTemplate'].map(name => str(v, name))]);
+  return validateItems(list(v, 'items') ?? [], { recursive, skipErrors, types, cwd: ctx.cwd, home: ctx.home });
+};
 
 function cropAndFactor(v: Values) {
   const crop = pixelSize(str(v, 'crop'), 'crop');
@@ -337,6 +339,7 @@ export const cropCommand: ClopCommand = {
     if (on(v, 'longEdge') && size.width !== size.height) throw new ValidationError('When using --long-edge, the size must be a single number');
     if (!size.width && !size.height) throw new ValidationError('Invalid size, must be greater than 0');
     const urls = await items(ctx, v, chosenTypes(list(v, 'types'), list(v, 'excludeTypes')));
+    await checkOutputIsDir(normalizeOutput(str(v, 'output'), ctx.cwd, ctx.home), urls.length);
     const dpi = pdfDPI(str(v, 'pdfDpi'));
     return sendOptimisation(ctx, v, urls, {
       size: { ...size, longEdge: on(v, 'longEdge'), smartCrop: on(v, 'smartCrop') }, downscaleFactor: 0.9, aggressiveOptimisation: on(v, 'aggressive'),
@@ -422,6 +425,7 @@ Add an explicit \`optimise\` step if you want one. Saved pipelines keep their
     option('autoConvertBehaviour', `Where auto-compatibility-converted files go: ${BEHAVIOUR_HELP}`),
     option('sameFolderTemplate', "Same-folder name template override (e.g. '%f_optimised.%e')"),
     option('specificFolderTemplate', "Specific-folder path template override (e.g. '~/Desktop/optimised/%f.%e')"),
+    flag('deleteFolders', 'Let a delete step move a folder to the Recycle Bin when the Clop app is not running, without asking (the app asks first)'),
   ],
   arguments: [{ name: 'pipeline', help: 'Saved pipeline name or inline pipeline steps' }, ITEMS('Files to run the pipeline on (can be a file, folder, or list of files)')],
   async run(v, ctx) {
@@ -431,7 +435,7 @@ Add an explicit \`optimise\` step if you want one. Saved pipelines keep their
     const urls = await items(ctx, v, chosenTypes(list(v, 'types'), undefined));
     if (!urls.length) throw new ValidationError('At least one file or folder must be specified');
     const request: OptimisationRequest = compact({
-      id: requestId(), urls, hideFloatingResult: !show, copyToClipboard: false, aggressiveOptimisation: false, source: 'cli', pipeline: str(v, 'pipeline'), origin: ctx.origin,
+      id: requestId(), urls, hideFloatingResult: !show, copyToClipboard: false, aggressiveOptimisation: false, source: 'cli', pipeline: str(v, 'pipeline'), origin: ctx.origin, deleteFolders: on(v, 'deleteFolders') || undefined,
       placement: placementOf({ optimised: behaviour(str(v, 'optimiseBehaviour'), 'optimiseBehaviour'), autoConvert: behaviour(str(v, 'autoConvertBehaviour'), 'autoConvertBehaviour'), manualConvert: behaviour(str(v, 'convertBehaviour'), 'convertBehaviour'), sameFolderTemplate: str(v, 'sameFolderTemplate'), specificFolderTemplate: str(v, 'specificFolderTemplate') }),
     });
     return sendRequest(ctx, urls, { showProgress: !on(v, 'noProgress'), async: on(v, 'async'), gui: show, json: on(v, 'json'), operation: 'pipeline' }, request);

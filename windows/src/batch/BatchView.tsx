@@ -5,6 +5,7 @@ import { Icon } from '../icons';
 import { batchApi as api } from './api';
 import { ParamCards } from './ParamCards';
 import type { BatchFailure, BatchFile, BatchParams, BatchSnapshot, BatchViewState } from './types';
+import { plural, reopenQuestion } from '../batch-text';
 import './batch.css';
 
 // BatchPrepView.swift: the batch window's prepare panel (files and parameter cards), results table and failures sheet.
@@ -14,7 +15,6 @@ const STATUS_ORDER = { running: 0, queued: 1, done: 2, reverted: 2, failed: 3, s
 export function humanBytes(n: number) { return n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `${Math.round(n / 1e3)} KB` : `${n} B`; }
 const savedPercent = (old: number, now?: number) => old > 0 && now ? Math.round((old - now) / old * 100) : undefined;
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 type Run = <T>(task: () => Promise<T>) => Promise<T | undefined>;
 
 /** Sorts rows by a column; clicking the column again reverses it. */
@@ -59,11 +59,11 @@ export function BatchView() {
       <p>This batch can still be reverted. Starting a new one keeps its backups, and you can open it again with Open previous batch to give its originals back.</p>
       <div className="sheet-actions"><button type="button" autoFocus onClick={() => void run(() => api.cancelAdd())}>Keep this batch</button><button type="button" className="primary" onClick={() => void run(() => api.confirmAdd())}>Start new batch</button></div>
     </Sheet>}
-    {state.pendingReopen !== undefined && <Sheet label="Open the previous batch?" onClose={() => void run(() => api.cancelAdd())}>
-      <h2>Open the previous batch and drop the {plural(state.pendingReopen, 'prepared file')}?</h2>
-      <p>The files you prepared here are removed from the window. You can drop them again afterwards.</p>
-      <div className="sheet-actions"><button type="button" autoFocus onClick={() => void run(() => api.cancelAdd())}>Keep these files</button><button type="button" className="primary" onClick={() => void run(() => api.confirmAdd())}>Open previous batch</button></div>
-    </Sheet>}
+    {state.pendingReopen !== undefined && (() => { const ask = reopenQuestion(state.pendingReopen); return <Sheet label="Open the previous batch?" onClose={() => void run(() => api.cancelAdd())}>
+      <h2>{ask.title}</h2>
+      <p>{ask.text}</p>
+      <div className="sheet-actions"><button type="button" autoFocus onClick={() => void run(() => api.cancelAdd())}>{ask.keep}</button><button type="button" className="primary" onClick={() => void run(() => api.confirmAdd())}>Open previous batch</button></div>
+    </Sheet>; })()}
     {error && <div className="batch-error" role="alert"><span>{error}</span><button type="button" aria-label="Dismiss message" onClick={() => setError('')}><Icon name="close" size={12}/></button></div>}
   </div>;
 }

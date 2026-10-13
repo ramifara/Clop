@@ -51,8 +51,11 @@ export function run(tool: ToolName | string, args: string[], opts: RunOptions = 
     if (signal?.aborted) return reject(abortError(signal));
     const command = isToolName(tool) ? toolPath(tool) : tool;
     const name = path.basename(command);
+    // Never the folder Clop happened to start in (an Explorer verb starts it in the selected file's folder, such as Downloads),
+    // where a tool could find a DLL someone left there: the tool's own folder, or Clop's, unless the caller chose one.
+    const cwd = opts.cwd ?? (path.isAbsolute(command) ? path.dirname(command) : path.dirname(process.execPath));
     // A detached child leads its own process group on POSIX, so the whole tree can be killed at once.
-    const child = spawn(command, args, { cwd: opts.cwd, env: opts.env, windowsHide: true, windowsVerbatimArguments: opts.windowsVerbatimArguments, detached: process.platform !== 'win32', stdio: [opts.input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { cwd, env: opts.env, windowsHide: true, windowsVerbatimArguments: opts.windowsVerbatimArguments, detached: process.platform !== 'win32', stdio: [opts.input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     const stdout: Buffer[] = [];
     let stderr = '', failure: Error | undefined, timer: NodeJS.Timeout | undefined;
     const stop = (error: Error) => { failure ??= error; killTree(child); };

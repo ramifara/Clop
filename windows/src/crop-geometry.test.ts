@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { centeredMaxRect, extendedCanvas, FULL, evenSide, handlePoint, keptSize, marquee, moved, oriented, resized, sizedRect, targetSize, toBox, toRect, type Box } from './crop-geometry';
+import { centeredMaxRect, extendedCanvas, FULL, evenSide, handlePoint, keptSize, marquee, moved, oriented, reorientedAspect, resized, sizedRect, targetSize, toBox, toRect, type Box } from './crop-geometry';
 
 const view = { width: 400, height: 200 };
 const close = (actual: Record<string, number>, expected: Record<string, number>) => {
@@ -47,6 +47,9 @@ test('draws a new selection by marquee, at the locked aspect, ignoring tiny drag
   assert.deepEqual(marquee({ x: 50, y: 50 }, { x: 150, y: 60 }, view, 1), { x: 50, y: 50, width: 100, height: 100 });
   assert.deepEqual(marquee({ x: 350, y: 150 }, { x: 450, y: 250 }, view), { x: 350, y: 150, width: 50, height: 50 });
   assert.equal(marquee({ x: 50, y: 50 }, { x: 55, y: 90 }, view), undefined);
+  // At an edge both sides shrink together, so a locked square stays square (view is 400 × 200).
+  assert.deepEqual(marquee({ x: 350, y: 100 }, { x: 450, y: 200 }, view, 1), { x: 350, y: 100, width: 50, height: 50 });
+  assert.deepEqual(marquee({ x: 100, y: 150 }, { x: 40, y: 230 }, view, 1), { x: 50, y: 150, width: 50, height: 50 });
 });
 
 test('fits presets: centred largest regions, orientations, typed sizes and the result size', () => {
@@ -77,4 +80,13 @@ test('a cropped result is downscaled from the area its crop keeps', () => {
 test('rounds a side to an even size without passing the limit', () => {
   assert.deepEqual([evenSide(201), evenSide(200), evenSide(199.6), evenSide(1)], [202, 200, 200, 2]);
   assert.deepEqual([evenSide(16382), evenSide(16383), evenSide(16384), evenSide(20000)], [16382, 16382, 16382, 16382]);
+});
+
+test('going back to adaptive turns the preset to the page\'s own orientation', () => {
+  const portrait = { width: 612, height: 792 }, a4 = { width: 297, height: 210 };
+  assert.equal(reorientedAspect(297 / 210, 'portrait', portrait), 210 / 297, 'a forced orientation turns the locked aspect');
+  assert.equal(reorientedAspect(210 / 297, 'landscape', portrait), 297 / 210);
+  assert.equal(reorientedAspect(297 / 210, 'adaptive', portrait, a4), 210 / 297, 'adaptive on a portrait page is portrait again');
+  assert.equal(reorientedAspect(210 / 297, 'adaptive', { width: 792, height: 612 }, a4), 297 / 210);
+  assert.equal(reorientedAspect(1.4, 'adaptive', portrait), undefined, 'no preset to return to');
 });

@@ -78,6 +78,18 @@ test('a lossless crop of an animated WebP keeps every frame through sharp', asyn
   assert.deepEqual([square.format, square.width, square.height, meta.pages, meta.delay], ['webp', 32, 32, 6, [100, 200, 100, 200, 100, 300]]);
 });
 
+test('a watermark without alpha, in colour or grey, is placed at its opacity too', async t => {
+  const w = await workspace(t); if (!w) return;
+  const input = await w.file('white-rgb.png', sharp({ create: { width: 400, height: 300, channels: 3, background: '#ffffff' } }).png());
+  const rgb = await w.file('mark.jpg', sharp({ create: { width: 40, height: 20, channels: 3, background: '#0000ff' } }).jpeg({ quality: 100 }));
+  const grey = await w.file('grey.png', sharp({ create: { width: 40, height: 20, channels: 3, background: '#000000' } }).greyscale().png());
+  const marked = await watermarkImage(input, w.out, { compression: lossless, watermark: { file: rgb, scale: 0.25, opacity: 0.5 }, name: 'rgb' });
+  const [r, g, b] = await pixel(marked.path, 379, 249);
+  assert.ok(Math.abs(r - 128) < 4 && Math.abs(g - 128) < 4 && b > 250, `half-transparent blue over white gave ${r},${g},${b}`);
+  const dark = await watermarkImage(input, w.out, { compression: lossless, watermark: { file: grey, scale: 0.25 }, name: 'grey' });
+  assert.deepEqual(await pixel(dark.path, 379, 249), [0, 0, 0]);
+});
+
 test('watermarks a corner at the requested scale and opacity, and every frame of an animation', async t => {
   const w = await workspace(t); if (!w) return;
   const input = await w.file('white.png', sharp({ create: { width: 400, height: 300, channels: 3, background: '#ffffff' } }).png());

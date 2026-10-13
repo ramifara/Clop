@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -10,17 +10,19 @@ import sharp from 'sharp';
 import { graphic, photo } from '../core/media/image.fixtures';
 import { run } from '../core/run';
 import { needTools } from '../core/testing';
+import { OptimisedMarker } from '../core/marker';
+import { validateItems } from './items';
 import { main } from './main';
 
 /** A folder of files and an empty app data folder; `clop` runs headless in this process with captured output. */
-async function cli(t: TestContext, colours = false) {
+async function cli(t: TestContext, colours = false, env: Record<string, string> = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-cli-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const userData = path.join(dir, 'data');
   const io = { out: [] as string[], err: [] as string[] };
   const clop = async (...argv: string[]) => {
     io.out.length = 0; io.err.length = 0;
-    return main(argv, { io: { out: text => { io.out.push(text); }, err: text => { io.err.push(text); }, errTTY: false }, cwd: dir, options: { userData, home: dir }, env: {}, colours });
+    return main(argv, { io: { out: text => { io.out.push(text); }, err: text => { io.err.push(text); }, errTTY: false }, cwd: dir, options: { userData, home: dir }, env, colours });
   };
   const settings = async () => JSON.parse(await readFile(path.join(userData, 'settings.json'), 'utf8'));
   return { dir, userData, clop, settings, out: () => io.out.join(''), err: () => io.err.join(''), file: (name: string) => path.join(dir, name) };
@@ -43,6 +45,22 @@ test('optimise works headless: results as JSON, exit 0 unless every file failed,
   assert.match(c.err(), /^Error: File .*nope\.png does not exist\nUsage: clop optimise files/);
   assert.equal(await c.clop('optimise', 'nope.png', '--skip-errors', '--json'), 0);
   assert.deepEqual(JSON.parse(c.out()), { done: [], failed: [] });
+});
+
+test('a file named twice, or named and inside a named folder, is sent once', async t => {
+  const c = await cli(t);
+  await graphic(20, 20).png().toFile(c.file('a.png'));
+  const urls = await validateItems(['a.png', 'a.png', '.'], { recursive: false, skipErrors: false, types: ['png'], cwd: c.dir });
+  assert.equal(urls.length, 1);
+});
+
+test('crop with several files needs a folder for its output, as optimise does', async t => {
+  const c = await cli(t);
+  await graphic(20, 20).png().toFile(c.file('a.png'));
+  await graphic(20, 20, { seed: 3 }).png().toFile(c.file('b.png'));
+  await writeFile(c.file('result.png'), 'a file');
+  assert.equal(await c.clop('crop', '-s', '10x10', '-o', 'result.png', 'a.png', 'b.png'), 64);
+  assert.match(c.err(), /Output path must be a folder when processing multiple files/);
 });
 
 test('result lines are coloured as Colorize.swift colours them when stdout is a terminal', async t => {
@@ -159,6 +177,12 @@ test('crop-pdf lists devices, crops to a paper size, and uncrop-pdf restores the
   assert.ok(Math.abs(box.width / box.height - 210 / 297) < 0.01);
   assert.equal(await c.clop('uncrop-pdf', 'a4.pdf'), 0, c.err());
   assert.deepEqual((await PDFDocument.load(await readFile(c.file('a4.pdf')))).getPage(0).getCropBox(), { x: 0, y: 0, width: 612, height: 792 });
+  assert.equal(await c.clop('crop-pdf', '--paper-size', 'A4', 'nope.pdf'), 1, 'nothing was cropped');
+  assert.match(c.err(), /nope\.pdf does not exist/);
+  assert.equal(await c.clop('uncrop-pdf', 'nope.pdf'), 1);
+  assert.match(c.err(), /nope\.pdf does not exist/);
+  assert.equal(await c.clop('uncrop-pdf', 'nope.pdf', 'a4.pdf'), 0, 'a file that is there was still uncropped');
+  assert.match(c.err(), /nope\.pdf does not exist/);
   assert.equal(await c.clop('crop-pdf', '--paper-size', 'B99', 'letter.pdf'), 64);
   assert.match(c.err(), /Unknown paper size "B99", use --list-paper-sizes/);
 });
@@ -169,11 +193,36 @@ test('strip-exif removes GPS but keeps the orientation', async t => {
   const file = c.file('gps.jpg');
   await photo(64, 48).jpeg().toFile(file);
   await run('exiftool', ['-overwrite_original', '-GPSLatitude=51.5', '-GPSLatitudeRef=N', '-Orientation#=6', '-Artist=Someone', file]);
+  const original = await readFile(file);
   assert.equal(await c.clop('strip-exif', 'gps.jpg'), 0, c.err());
   assert.match(c.out(), /✓ .*gps\.jpg done/);
   const tags = JSON.parse((await run('exiftool', ['-j', '-n', '-GPSLatitude', '-Artist', '-Orientation', file])).stdout.toString())[0];
   assert.deepEqual([tags.GPSLatitude, tags.Artist, tags.Orientation], [undefined, undefined, 6]);
+  // The original is kept in the work folder's backups, as every write over a file is, and the stripped file is marked as Clop's.
+  const workdir = (await c.settings().catch(() => ({}))).workdir ?? path.join(c.userData, 'work'), backups = path.join(workdir, 'backups');
+  const kept = await readdir(backups);
+  assert.equal(kept.length, 1);
+  assert.ok(original.equals(await readFile(path.join(backups, kept[0]))), 'the backup is the original');
+  assert.equal(await new OptimisedMarker(path.join(c.userData, 'optimised.json')).isOptimised(file), true);
   assert.equal(await c.clop('strip-exif', 'missing.jpg'), 1);
+});
+
+test('strip-exif on a folder runs exiftool through the image queue, never on every file at once', async t => {
+  if (process.platform === 'win32') { t.skip('the stand-in exiftool is a shell script'); return; }
+  const c = await cli(t);
+  // A stand-in exiftool that notes when each run starts and ends, and writes the copy it is asked for.
+  const tools = c.file('tools'), log = c.file('runs.log');
+  await mkdir(tools);
+  await writeFile(path.join(tools, 'exiftool'), `#!/bin/sh\nout=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; last="$a"; done\necho start >> '${log}'; sleep 0.2; cp "$last" "$out"; echo end >> '${log}'\n`, { mode: 0o755 });
+  const previous = process.env.CLOP_TOOLS_DIR;
+  process.env.CLOP_TOOLS_DIR = tools;
+  t.after(() => { if (previous === undefined) delete process.env.CLOP_TOOLS_DIR; else process.env.CLOP_TOOLS_DIR = previous; });
+  await mkdir(c.file('photos'));
+  for (let i = 0; i < 6; i++) await writeFile(c.file(`photos/${i}.jpg`), `photo ${i}`);
+  assert.equal(await c.clop('strip-exif', 'photos'), 0, c.err());
+  let running = 0, most = 0;
+  for (const line of (await readFile(log, 'utf8')).trim().split('\n')) { running += line === 'start' ? 1 : -1; most = Math.max(most, running); }
+  assert.equal(most, 2, 'two at a time, the image queue\'s limit');
 });
 
 test('the legacy convert writes next to the original and refuses to overwrite without --force', async t => {
@@ -185,6 +234,58 @@ test('the legacy convert writes next to the original and refuses to overwrite wi
   assert.match(c.err(), /icon\.webp already exists, use `--force` to replace/);
   assert.equal(await c.clop('convert', '-f', 'webp', '--force', '-o', 'out/%f-q%q', 'icon.png'), 0, c.err());
   assert.deepEqual(await readdir(c.file('out')), ['icon-q60.webp']);
+});
+
+test('the legacy convert from an agent is refused unless the user allowed agents', async t => {
+  const c = await cli(t, false, { CLOP_ORIGIN: 'mcp' });
+  await graphic(120, 80).png().toFile(c.file('icon.png'));
+  assert.equal(await c.clop('convert', '-f', 'webp', 'icon.png'), 64, c.err());
+  assert.match(c.err(), /not accepting changes from agents/);
+  assert.equal(await stat(c.file('icon.webp')).then(() => true, () => false), false);
+});
+
+test('an agent is refused before any path it names is looked up', async t => {
+  const c = await cli(t, false, { CLOP_ORIGIN: 'mcp' });
+  for (const argv of [['optimise', 'nope.png'], ['downscale', '--factor', '0.5', 'nope.png'], ['strip-exif', 'nope.png'], ['crop-pdf', '--paper-size', 'A4', 'nope.pdf']]) {
+    assert.equal(await c.clop(...argv), 64, argv.join(' '));
+    assert.match(c.err(), /not accepting changes from agents/, argv.join(' '));
+    assert.doesNotMatch(c.err(), /does not exist/, argv.join(' '));
+  }
+});
+
+test('an agent may not name a network share or a device path, as a file, an output, a template or the working folder, even with the switch on', async t => {
+  const c = await cli(t, false, { CLOP_ORIGIN: 'mcp' });
+  await mkdir(c.userData, { recursive: true });
+  await writeFile(path.join(c.userData, 'settings.json'), JSON.stringify({ mcpEnabled: true }));
+  await graphic(40, 30).png().toFile(c.file('a.png'));
+  for (const argv of [['optimise', '\\\\server\\share\\a.png'], ['optimise', 'a.png', '-o', '//server/share/a.png'], ['strip-exif', '\\\\?\\UNC\\server\\share\\a.jpg'],
+    ['convert', '-f', 'webp', 'a.png', '-o', '\\\\server\\share\\%f'], ['crop-pdf', '--paper-size', 'A4', 'a.pdf', '-o', '\\\\.\\C:\\out'],
+    ['pipeline', 'run', 'optimise()', 'a.png', '--specific-folder-template', '\\\\server\\share\\%f'], ['optimise', 'file://server/share/a.png']]) {
+    assert.equal(await c.clop(...argv), 64, argv.join(' '));
+    assert.match(c.err(), /is on a network share or a device\. Agents may only use files and folders on this PC's own drives/, argv.join(' '));
+  }
+  // A person keeps the paths that worked before: the same output is not refused for being a share.
+  const person = await cli(t);
+  await graphic(40, 30).png().toFile(person.file('a.png'));
+  await person.clop('optimise', 'a.png', '-o', '//server/share/a.png', '-n');
+  assert.doesNotMatch(person.err(), /network share or a device/);
+});
+
+test('headless, a pipeline deletes a folder only with --delete-folders, and an agent never does', async t => {
+  const person = await cli(t);
+  await graphic(40, 30).png().toFile(person.file('a.png'));
+  await mkdir(person.file('keep'));
+  assert.equal(await person.clop('pipeline', 'run', 'delete(path: "keep")', 'a.png', '-n'), 1);
+  assert.match(person.out() + person.err(), /Clop is not running, so nobody can be asked before this folder goes to the Recycle Bin\. .*--delete-folders/);
+  assert.ok((await stat(person.file('keep'))).isDirectory());
+  const agent = await cli(t, false, { CLOP_ORIGIN: 'mcp' });
+  await mkdir(agent.userData, { recursive: true });
+  await writeFile(path.join(agent.userData, 'settings.json'), JSON.stringify({ mcpEnabled: true }));
+  await graphic(40, 30).png().toFile(agent.file('a.png'));
+  await mkdir(agent.file('keep'));
+  assert.equal(await agent.clop('pipeline', 'run', 'delete(path: "keep")', 'a.png', '-n', '--delete-folders'), 1);
+  assert.match(agent.out() + agent.err(), /Agents cannot delete folders while Clop is not running/);
+  assert.ok((await stat(agent.file('keep'))).isDirectory());
 });
 
 test('mcp status and logs persist read and write the switches', async t => {

@@ -127,7 +127,7 @@ function savePipeline(settings: EditorSettings, c: Extract<EditorCommand, { type
   if (parsed.issues.length) return none(parsed.issues);
   if (!parsed.steps.length) return problem('Add at least one step.');
   if (c.id !== undefined) {
-    const conflicts = usages(settings, c.id), wrong = [...conflicts.attached.filter(use => c.fileType && use.kind !== c.fileType).map(use => `${use.kind} ${use.source}`),
+    const conflicts = usages(settings, previous!.id), wrong = [...conflicts.attached.filter(use => c.fileType && use.kind !== c.fileType).map(use => `${use.kind} ${use.source}`),
       ...conflicts.zones.filter(zone => c.fileType && zone.type !== c.fileType).map(zone => `the preset zone ${zone.name}`)];
     if (wrong.length) return problem(`It is attached to ${wrong.join(', ')}. Detach it there before limiting it to ${c.fileType} files.`);
   }
@@ -135,7 +135,7 @@ function savePipeline(settings: EditorSettings, c: Extract<EditorCommand, { type
   const pipeline: Pipeline = { ...previous, id: previous?.id ?? newPipelineId(), steps: parsed.steps, name: c.name, rawText, skipOptimisation: c.skipOptimisation, hideResult: c.hideResult, fileType: c.fileType, icon: c.icon, details: c.details };
   const savedPipelines = [...settings.savedPipelines];
   if (index < 0) savedPipelines.push(pipeline); else savedPipelines[index] = pipeline;
-  return { patch: { savedPipelines }, saved: pipeline.id };
+  return { patch: { savedPipelines }, saved: index < 0 ? pipeline.id : c.id };
 }
 
 /** Replaces an entry this version cannot read with the JSON the user fixed, keeping its id so what refers to it still does. */
@@ -162,8 +162,10 @@ function deletePipeline(settings: EditorSettings, c: Extract<EditorCommand, { ty
   if (!unchanged(settings.savedPipelines[index], c.base)) return changed();
   const patch: Partial<EditorSettings> = { savedPipelines: settings.savedPipelines.filter((_, i) => i !== index) };
   const removed = { attachments: 0, zones: 0 };
-  if (isReadable(settings.savedPipelines[index])) {
-    const id = c.key;
+  const deleted = settings.savedPipelines[index];
+  // What refers to an id stays while another pipeline still has it.
+  if (isReadable(deleted) && !readable(patch.savedPipelines!).some(other => other.id === deleted.id)) {
+    const id = deleted.id;
     for (const kind of FILE_TYPES) {
       const map = settings[PIPELINE_SOURCE_KEYS[kind]] ?? {}, next: Record<string, Stored<Pipeline>[]> = {};
       for (const [source, entries] of Object.entries(map)) next[source] = entries.filter(entry => !(isReadable(entry) && entry.libraryID === id));
@@ -226,7 +228,7 @@ function saveZone(settings: EditorSettings, c: Extract<EditorCommand, { type: 'z
   const zone: PresetZone = { ...previous, id: previous?.id ?? newPipelineId(), icon: c.icon, name: c.name, type: c.fileType, pipeline };
   const presetZones = [...settings.presetZones];
   if (index < 0) presetZones.push(zone); else presetZones[index] = zone;
-  return { patch: { presetZones }, saved: zone.id };
+  return { patch: { presetZones }, saved: index < 0 ? zone.id : c.id };
 }
 
 function moveZone(settings: EditorSettings, c: Extract<EditorCommand, { type: 'zone-move' }>): CommandResult {

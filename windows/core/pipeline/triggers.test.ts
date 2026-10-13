@@ -5,7 +5,7 @@ import { decodePipelines, pipelineToJSON } from './codec';
 import { referenceTo, type Pipeline } from './model';
 import { parseSteps } from './parser';
 import { pipelinesFor, pipelinesSkipOptimisation, runPipelines, skipsPreOptimisation } from './triggers';
-import { readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { graphic } from '../media/image.fixtures';
 import { pipelineWorkspace } from './executor.fixtures';
@@ -65,4 +65,19 @@ test('runPipelines runs each pipeline on the same file, reports failures and car
   assert.deepEqual([outcome.anyRan, outcome.hidden, outcome.file], [true, true, path.join(w.files, 'c', 'in.png')]);
   assert.deepEqual(outcome.warnings, ['Second: Step 1, copyLinkForSending, failed: Share links need an upload target in Settings.']);
   assert.deepEqual((await readdir(w.files)).sort(), ['a', 'c', 'in.png'], 'each started from in.png; the filtered one did nothing');
+});
+
+test('a fork keeps a copy when a later pipeline works on the same file', async t => {
+  const w = await pipelineWorkspace(t, 'pngquant'); if (!w) return;
+  const input = w.file('in.png');
+  await graphic(200, 150).png({ compressionLevel: 0 }).toFile(input);
+  const before = await readFile(input);
+  const env = { settings: w.settings, workdir: w.workdir, counter: w.counter, marker: w.marker };
+  const outcome = await runPipelines([pipeline('ONE', 'fork'), pipeline('TWO', 'optimise')], input, { fileType: 'image', env, effects: w.effects, allowScripts: true });
+  assert.equal(outcome.forks.length, 1);
+  assert.notEqual(outcome.forks[0], input, 'the fork is its own file');
+  assert.deepEqual(await readFile(outcome.forks[0]), before, 'and holds the file as the first pipeline left it');
+  // The last pipeline's fork can still be the file itself.
+  const alone = await runPipelines([pipeline('ONE', 'fork')], input, { fileType: 'image', env, effects: w.effects, allowScripts: true });
+  assert.deepEqual(alone.forks, [input]);
 });
