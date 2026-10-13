@@ -402,6 +402,8 @@ export class ItemEngine extends EventEmitter {
     this.entries.set(e.result.id, e); this.changed();
     return e.result.id;
   }
+  /** Whether any result is still being optimised; cheaper than listing them (which copies each). */
+  processing() { for (const e of this.entries.values()) if (e.result.status === 'processing') return true; return false; }
   /** Stops the running and queued jobs of `ids` (every result by default). Each ends with a "Stopped." error; sources stay as they are. */
   stop(ids?: readonly string[]) { for (const [id, e] of this.entries) if (!ids || ids.includes(id)) for (const job of e.jobs) job.abort(); }
   async idle() { await Promise.all(this.queues.values()); }

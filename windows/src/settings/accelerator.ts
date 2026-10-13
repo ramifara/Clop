@@ -45,9 +45,16 @@ export const modifierLabel = (modifier: Modifier) => NAMES[modifier];
 /** How an accelerator reads: `Control+Shift+C` as `Ctrl+Shift+C`. */
 export const describeAccelerator = (accelerator: string) => accelerator.split('+').map(part => (NAMES as Record<string, string>)[part] ?? part).join('+');
 
-/** The trigger keys must include something besides Shift, which alone would type capital letters (`allowShiftAlone: false` in the macOS pane). Returns why not, or undefined when they are fine. */
+/**
+ * What the trigger keys must be on Windows. Shift alone would type capital letters (`allowShiftAlone: false` in the macOS pane), and
+ * Control alone or Alt alone would take Copy, Paste, Undo and the window menu from every app, since a global shortcut is taken
+ * from all of them (on macOS the Command key is the one apps use). Two modifiers, or the Windows key alone, leave typing alone.
+ * Returns why not, or undefined when they are fine.
+ */
 export function triggerProblem(modifiers: readonly Modifier[]): string | undefined {
   if (!modifiers.length) return 'Choose at least one trigger key.';
-  if (modifiers.length === 1 && modifiers[0] === 'Shift') return 'Shift alone types capital letters. Add Ctrl, Alt or Win.';
-  return undefined;
+  if (modifiers.length > 1 || modifiers[0] === 'Super') return undefined;
+  if (modifiers[0] === 'Shift') return 'Shift alone types capital letters. Add Ctrl, Alt or Win.';
+  if (modifiers[0] === 'Control') return 'Ctrl alone would take Copy, Paste, Undo and more from every app. Add Shift, Alt or Win.';
+  return 'Alt alone would take Alt+Space and the window keys from every app. Add Ctrl, Shift or Win.';
 }

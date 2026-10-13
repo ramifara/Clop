@@ -66,6 +66,18 @@ test('get, set and schema answer like the macOS bridge', async () => {
   assert.deepEqual(await handleSettingsRequest({ action: 'set', key: 'stripMetadata' }, store), { ok: false, error: 'set needs a key and a value' });
 });
 
+test('shortcut settings that cannot work are refused, so a command line or an agent cannot hijack typing or Task Manager', async () => {
+  const store = memoryStore();
+  assert.match((await handleSettingsRequest({ action: 'set', key: 'keyComboModifiers', value: 'Control' }, store)).error!, /Ctrl alone/);
+  assert.match((await handleSettingsRequest({ action: 'set', key: 'keyComboModifiers', value: 'Shift' }, store)).error!, /Shift alone/);
+  assert.match((await handleSettingsRequest({ action: 'set', key: 'enabledKeys', value: 'C,Escape' }, store)).error!, /Ctrl\+Shift\+Escape opens Task Manager/);
+  assert.match((await handleSettingsRequest({ action: 'update', values: { quickResizeKeys: ['1', 'F5'] } }, store)).error!, /F5 cannot downscale/);
+  assert.match((await handleSettingsRequest({ action: 'update', values: { enabledKeys: ['Escape'] } }, store)).error!, /Task Manager/);
+  assert.deepEqual(store.current.keyComboModifiers, ['Control', 'Shift']);
+  assert.equal((await handleSettingsRequest({ action: 'set', key: 'enabledKeys', value: 'C,Z,Backspace' }, store)).ok, true);
+  assert.equal((await handleSettingsRequest({ action: 'set', key: 'keyComboModifiers', value: 'Control,Alt,Shift' }, store)).ok, true);
+});
+
 test('agents need the MCP switch to write, cannot flip the switches, and need permission for script steps', async () => {
   const store = memoryStore();
   assert.match((await handleSettingsRequest({ action: 'set', key: 'stripMetadata', value: 'false', origin: 'mcp' }, store)).error!, /not accepting changes from agents/);

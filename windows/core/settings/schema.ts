@@ -242,7 +242,10 @@ export const settingsSchema = {
   cliInstalled: bool(true, 'The `clop` command-line tool is installed.'),
   keyComboModifiers: list(['Control', 'Shift'], 'Modifiers held with an action key for global shortcuts. macOS: `[TriggerKey]`.', { values: KEY_MODIFIERS, unique: true, encoding: 'Electron accelerator modifiers; macOS stores left/right TriggerKeys.' }),
   quickResizeKeys: shortcutKeys([], 'Number keys that downscale the latest result.'),
-  enabledKeys: shortcutKeys(['-', '=', 'Backspace', 'Space', 'Z', 'P', 'C', 'A', 'X', 'R', 'K', 'Escape'], 'Action keys with a global shortcut.'),
+  // macOS defaults to `[-, =, Backspace, Space, Z, P, C, A, X, R, K, Escape]`. A global shortcut is taken from every app, and on Windows Ctrl+Shift+letter is where apps keep theirs
+  // (Ctrl+Shift+Escape is Task Manager), so only the keys that rarely collide are on by default; the others are one switch away in Settings.
+  enabledKeys: shortcutKeys(['-', '=', 'Space', 'C', 'A'], 'Action keys with a global shortcut. The Windows default is the keys that rarely collide with apps; the macOS default also has Backspace, Z, P, X, R, K and Escape.'),
+  shortcutConflictsSeen: list([], 'Shortcuts another program had already taken when Clop last tried them, so the notification comes once.', { unique: true, windowsOnly: true }),
   savedCropSizes: json<CropSize[]>([...DEFAULT_CROP_SIZES], 'Saved crop sizes. macOS: `[CropSize]`.', v => Array.isArray(v) && v.every(isCropSize)),
   pauseAutomaticOptimisations: bool(false, 'Pause clipboard and watched-folder optimisation.'),
   presetZones: pipelines<Stored<PresetZone>[]>([], 'Preset drop zones, each running a pipeline. macOS: `[PresetZone]`.', decodePresetZones),

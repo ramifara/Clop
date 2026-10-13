@@ -124,11 +124,11 @@ test('name templates apply under Same folder and path templates under Specific f
  * change wires a setting, remove it here and from the row's `ui.pending`; a new row that does nothing must be added here knowingly.
  */
 const PENDING_KEYS = [
-  'allowClopToAppearInScreenshots', 'autoHideClipboardResultAfter', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter',
+  'autoHideClipboardResultAfter', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter',
   'convertHDRToSDR', 'defaultLinkExpiration', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnUpload',
-  'enableFloatingResults', 'enabledKeys', 'followCursorScreen', 'formatsToConvertToJPEG', 'formatsToConvertToMP4',
-  'formatsToConvertToOutputAudio', 'formatsToConvertToPNG', 'keyComboModifiers', 'onlyShowDropZoneOnOption', 'onlyShowPresetZonesOnControlTapped', 'optimiseHEICAVIFClipboard',
-  'optimiseTIFF', 'quickResizeKeys', 'showMenubarIcon',
+  'enableFloatingResults', 'followCursorScreen', 'formatsToConvertToJPEG', 'formatsToConvertToMP4',
+  'formatsToConvertToOutputAudio', 'formatsToConvertToPNG', 'onlyShowDropZoneOnOption', 'onlyShowPresetZonesOnControlTapped', 'optimiseHEICAVIFClipboard',
+  'optimiseTIFF',
 ];
 
 test('the rows that do nothing yet are exactly the pinned list, each with a reason', () => {

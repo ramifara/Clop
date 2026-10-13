@@ -107,7 +107,9 @@ test('the last batch is the results started close together, taken once', () => {
   let now = 0;
   const batch = new LastBatch(2000, () => now);
   batch.add('a'); now = 1500; batch.add('b'); now = 3000; batch.add('c');
+  assert.equal(batch.size, 3);
   assert.deepEqual(batch.take(), ['a', 'b', 'c']);
+  assert.equal(batch.size, 0);
   assert.deepEqual(batch.take(), []);
   batch.add('d'); now = 6000; batch.add('e');
   assert.deepEqual(batch.take(), ['e']);

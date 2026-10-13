@@ -33,9 +33,9 @@ test('action names, action keys and resize keys are values the settings accept',
   assert.equal(new Set(TEMPLATE_VARIABLES.map(([token]) => token)).size, TEMPLATE_VARIABLES.length);
 });
 
-test('the default action keys are all offered, apart from the one Windows has no action for', () => {
+test('the default action keys are all offered in the window', () => {
   const offered = ACTION_KEYS.map(action => action.key) as string[];
-  assert.deepEqual((schema.enabledKeys.default as string[]).filter(key => !offered.includes(key)), ['K']);
+  assert.deepEqual((schema.enabledKeys.default as string[]).filter(key => !offered.includes(key)), []);
 });
 
 test('a key press becomes the accelerator Electron registers', () => {
@@ -73,6 +73,9 @@ test('the renderer\'s modifiers are the schema\'s', () => assert.deepEqual([...K
 test('trigger keys need more than Shift', () => {
   assert.equal(triggerProblem([]), 'Choose at least one trigger key.');
   assert.match(triggerProblem(['Shift'])!, /Shift alone/);
-  assert.equal(triggerProblem(['Control']), undefined);
+  assert.match(triggerProblem(['Control'])!, /Ctrl alone/);
+  assert.match(triggerProblem(['Alt'])!, /Alt alone/);
+  assert.equal(triggerProblem(['Super']), undefined);
+  assert.equal(triggerProblem(['Control', 'Shift']), undefined);
   assert.equal(triggerProblem(['Shift', 'Alt']), undefined);
 });

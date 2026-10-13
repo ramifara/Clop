@@ -315,8 +315,10 @@ test('stopping ends running and queued jobs, which can then run again', async t 
   const first = await clip(path.join(dir, 'first.mp4'), { width: 640, height: 360, seconds: 4 }), second = await clip(path.join(dir, 'second.mp4'), { width: 640, height: 360, seconds: 1 });
   const jobs = [engine.importPath(first, 'drop', balanced), engine.importPath(second, 'drop', balanced)];
   while (engine.list().length < 2) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(engine.processing(), true, 'the tray shows the working icon while a result runs');
   engine.stop();
   const ids = await Promise.all(jobs);
+  assert.equal(engine.processing(), false);
   for (const id of ids) assert.deepEqual([engine.get(id).result.status, engine.get(id).result.error], ['error', 'Stopped.']);
   // Stopping is not quitting: the stopped result can be restored, and new imports run.
   await engine.restore(ids[0]);
