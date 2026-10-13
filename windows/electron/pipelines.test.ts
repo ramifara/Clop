@@ -1,4 +1,5 @@
 import { test, type TestContext } from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
@@ -216,7 +217,7 @@ test('a result is not ready, to copy or drag, until the pipelines after its opti
   assert.doesNotThrow(() => f.engine.output(id!));
 });
 
-test('a file a pipeline changed in the watched folder is not "restored" over its changes', async t => {
+test('a file a pipeline changed in the watched folder comes back from the backup its step made', async t => {
   const f = await setup(t); if (!f) return;
   f.state.settings = { ...f.state.settings, pipelinesToRunOnImage: { [f.files]: [pipeline('HALF', 'downscale(factor: 0.5)', { skipOptimisation: true })] } };
   const env = (): FolderEnv => ({ settings: f.state.settings, workdir: f.workdir, marker: f.marker, counter: { value: 0 } });
@@ -228,9 +229,12 @@ test('a file a pipeline changed in the watched folder is not "restored" over its
   await folders.optimise(shot, 'image', f.files);
   assert.equal((await sharp(shot).metadata()).width, 200, 'the pipeline changed the watched file');
   const id = f.engine.list()[0].id;
-  await assert.rejects(() => f.engine.restore(id), /changed shot\.png.*in the backups/);
-  assert.equal((await sharp(shot).metadata()).width, 200);
-  assert.deepEqual(await Promise.all((await readdir(f.workdir.backups)).map(name => readFile(path.join(f.workdir.backups, name)))), [original], 'the original is kept');
+  const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+  assert.deepEqual((await Promise.all((await readdir(f.workdir.backups)).map(name => readFile(path.join(f.workdir.backups, name))))).map(digest), [digest(original)], 'the step kept the original');
+  // As macOS restores the starting file from its backup (`restoreOriginal`).
+  await f.engine.restore(id);
+  assert.equal(digest(await readFile(shot)), digest(original));
+  assert.equal(f.engine.output(id), shot);
 });
 
 test('a pipeline that makes a video a GIF gives the card the GIF\'s kind, so its actions follow', async t => {
