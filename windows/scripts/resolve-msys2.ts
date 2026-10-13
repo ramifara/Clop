@@ -1,6 +1,7 @@
-// Prints tools.json entries for MSYS2 UCRT64 tools and every DLL they load, with sha256, from the current repository.
-// repo.msys2.org prunes old versions, so rerun this when a pinned package URL stops downloading:
+// Prints tools.json entries for MSYS2 UCRT64 (x64) or CLANGARM64 (native ARM64) tools and every DLL they load, with sha256,
+// from the current repository. repo.msys2.org prunes old versions, so rerun this when a pinned package URL stops downloading:
 //   npx tsx scripts/resolve-msys2.ts libheif:heif-dec,heif-enc pngquant:pngquant
+//   npx tsx scripts/resolve-msys2.ts --arch arm64 libheif:heif-dec,heif-enc pngquant:pngquant
 // Each argument is <package>:<tool>[,<tool>...]; the tools are the package's bin/<tool>.exe. Following real PE imports
 // rather than package dependencies keeps out libraries the tools never load (SDL2 for heif-view, for example).
 // Licence files come from each package's share/licenses; packages without any keep the hand-pinned licenseTexts
@@ -10,7 +11,11 @@ import { readFileSync } from 'node:fs';
 import { zstdDecompressSync } from 'node:zlib';
 import { peImports } from './pe-imports';
 
-const REPO = 'https://repo.msys2.org/mingw/ucrt64/', PREFIX = 'mingw-w64-ucrt-x86_64-';
+const args = process.argv.slice(2), at = args.indexOf('--arch'), arch = at < 0 ? 'x64' : args.splice(at, 2)[1];
+if (arch !== 'x64' && arch !== 'arm64') { console.error('--arch is x64 or arm64.'); process.exit(1); }
+// CLANGARM64 packages link libc++ and libunwind where UCRT64 ones link libstdc++ and libgcc; PE imports pull in whichever is needed.
+const DIR = arch === 'arm64' ? 'clangarm64' : 'ucrt64', PREFIX = arch === 'arm64' ? 'mingw-w64-clang-aarch64-' : 'mingw-w64-ucrt-x86_64-';
+const REPO = `https://repo.msys2.org/mingw/${DIR}/`, BIN = `${DIR}/bin/`;
 interface Package { name: string; version: string; base: string; homepage: string; filename: string; sha256: string; license: string; files: string[]; depends: string[] }
 
 function untar(tar: Buffer) {
@@ -35,20 +40,20 @@ async function download(url: string) {
   return Buffer.from(await response.arrayBuffer());
 }
 
-const wanted = process.argv.slice(2).map(arg => { const [name, tools] = arg.split(':'); return { name, tools: tools?.split(',').filter(Boolean) ?? [] }; });
+const wanted = args.map(arg => { const [name, tools] = arg.split(':'); return { name, tools: tools?.split(',').filter(Boolean) ?? [] }; });
 if (!wanted.length || wanted.some(w => !w.tools.length)) {
-  console.error('Usage: npx tsx scripts/resolve-msys2.ts <package>:<tool>[,<tool>...] ...');
+  console.error('Usage: npx tsx scripts/resolve-msys2.ts [--arch arm64] <package>:<tool>[,<tool>...] ...');
   process.exit(1);
 }
 
 const packages = new Map<string, Package>(), owners = new Map<string, Package[]>();
-const db = untar(zstdDecompressSync(await download(`${REPO}ucrt64.files`)));
+const db = untar(zstdDecompressSync(await download(`${REPO}${DIR}.files`)));
 for (const [entry, body] of db) {
   if (!entry.endsWith('/desc')) continue;
   const fields = new Map(body.toString('utf8').split('\n\n').map(block => { const [key, ...values] = block.trim().split('\n'); return [key, values] as const; }));
   const pkg: Package = { name: fields.get('%NAME%')![0], version: fields.get('%VERSION%')![0], base: fields.get('%BASE%')![0], homepage: fields.get('%URL%')?.[0] ?? '', filename: fields.get('%FILENAME%')![0], sha256: fields.get('%SHA256SUM%')![0], license: (fields.get('%LICENSE%') ?? []).join(' AND ').replace(/spdx:/g, ''), files: db.get(entry.replace(/desc$/, 'files'))!.toString('utf8').split('\n').slice(1).filter(Boolean), depends: (fields.get('%DEPENDS%') ?? []).map(dep => dep.split(/[<>=]/)[0]) };
   packages.set(pkg.name, pkg);
-  for (const file of pkg.files) if (/^ucrt64\/bin\/[^/]+\.dll$/i.test(file)) owners.set(file.slice(11).toLowerCase(), [...owners.get(file.slice(11).toLowerCase()) ?? [], pkg]);
+  for (const file of pkg.files) if (file.toLowerCase().startsWith(BIN) && /^[^/]+\.dll$/i.test(file.slice(BIN.length))) owners.set(file.slice(BIN.length).toLowerCase(), [...owners.get(file.slice(BIN.length).toLowerCase()) ?? [], pkg]);
 }
 
 const contents = new Map<string, Map<string, Buffer>>();
@@ -69,7 +74,7 @@ for (const { name, tools } of wanted) {
   // Several packages can ship the same DLL (zlib and zlib-ng-compat both ship zlib1.dll); take the one the tool depends on.
   const dependencies = new Set([root.name]);
   for (const name of dependencies) for (const dep of packages.get(name)?.depends ?? []) dependencies.add(dep);
-  const queue = tools.map(tool => ({ pkg: root, file: `ucrt64/bin/${tool}.exe` })), seen = new Set<string>();
+  const queue = tools.map(tool => ({ pkg: root, file: `${BIN}${tool}.exe` })), seen = new Set<string>();
   for (let item; (item = queue.shift());) {
     if (seen.has(item.file)) continue;
     seen.add(item.file);
@@ -81,20 +86,22 @@ for (const { name, tools } of wanted) {
     for (const tool of tools) entry.usedBy.add(tool);
     for (const dll of peImports(body)) {
       const candidates = owners.get(dll.toLowerCase()) ?? [], owner = candidates.find(pkg => dependencies.has(pkg.name)) ?? candidates[0];
-      if (owner) queue.push({ pkg: owner, file: `ucrt64/bin/${owner.files.find(file => file.toLowerCase() === `ucrt64/bin/${dll.toLowerCase()}`)!.slice(11)}` });
+      if (owner) queue.push({ pkg: owner, file: `${BIN}${owner.files.find(file => file.toLowerCase() === `${BIN}${dll.toLowerCase()}`)!.slice(BIN.length)}` });
     }
   }
 }
 
-const pinned: { name: string; licenseTexts?: unknown[] }[] = JSON.parse(readFileSync(new URL('tools.json', import.meta.url), 'utf8'))['win32-x64'];
+// The x64 set is the reference for hand-pinned licence texts; both sets pin the same upstream versions of those packages.
+const sets = JSON.parse(readFileSync(new URL('tools.json', import.meta.url), 'utf8'));
+const pinned: { name: string; licenseTexts?: unknown[] }[] = [...sets[`win32-${arch}`] ?? [], ...sets['win32-x64']];
 const json = (value: unknown): string => Array.isArray(value) ? `[${value.map(json).join(', ')}]` : value && typeof value === 'object' ? `{${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)}: ${json(item)}`).join(', ')}}` : JSON.stringify(value);
 const lines = [...needed.values()].sort((a, b) => a.pkg.name.localeCompare(b.pkg.name)).map(({ pkg, files, usedBy }) => {
   const short = pkg.name.slice(PREFIX.length), root = wanted.find(w => w.name === short);
   // A tool's package records the upstream version, which is what the tool prints and what CI checks.
-  const licenses = pkg.files.filter(file => file.startsWith('ucrt64/share/licenses/') && !file.endsWith('/')).sort();
+  const licenses = pkg.files.filter(file => file.startsWith(`${DIR}/share/licenses/`) && !file.endsWith('/')).sort();
   const licenseTexts = pinned.find(entry => entry.name === `msys2-${short}`)?.licenseTexts;
   if (!licenses.length && !licenseTexts) console.error(`${pkg.name} ships no licence files; add licenseTexts for msys2-${short} to tools.json.`);
-  const fields = { name: `msys2-${short}`, version: root ? pkg.version.replace(/-\d+$/, '') : pkg.version, ...(root ? { provides: root.tools } : { usedBy: [...usedBy].sort() }), license: pkg.license, homepage: pkg.homepage, url: REPO + pkg.filename, sha256: pkg.sha256, archive: 'tar.zst', files: Object.fromEntries([...files].sort().map(file => [file, file.slice(11)])), ...(licenses.length ? { licenses } : {}), ...(licenseTexts ? { licenseTexts } : {}), sources: [`https://repo.msys2.org/mingw/sources/${pkg.base}-${pkg.version}.src.tar.zst`] };
+  const fields = { name: `msys2-${short}`, version: root ? pkg.version.replace(/-\d+$/, '') : pkg.version, ...(root ? { provides: root.tools } : { usedBy: [...usedBy].sort() }), license: pkg.license, homepage: pkg.homepage, url: REPO + pkg.filename, sha256: pkg.sha256, archive: 'tar.zst', files: Object.fromEntries([...files].sort().map(file => [file, file.slice(BIN.length)])), ...(licenses.length ? { licenses } : {}), ...(licenseTexts ? { licenseTexts } : {}), sources: [`https://repo.msys2.org/mingw/sources/${pkg.base}-${pkg.version}.src.tar.zst`] };
   return `    { ${Object.entries(fields).map(([key, value]) => `"${key}": ${json(value)}`).join(', ')} }`;
 });
 console.log(lines.join(',\n'));

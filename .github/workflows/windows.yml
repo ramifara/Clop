@@ -72,3 +72,72 @@ jobs:
             windows/release/Windows-*.png
           if-no-files-found: error
           retention-days: 30
+  # The ARM64 app is built and exercised on a native ARM64 runner (free for public repositories), not cross-built on x64: sharp's
+  # ARM64 package, the ARM64 tools and the packaged app then all run where users will run them. It runs every step the x64 job does.
+  windows-arm64:
+    runs-on: windows-11-arm
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+      - name: Show the machine
+        run: node -e "console.log(process.version, process.platform, process.arch); if (process.arch !== 'arm64') throw new Error('Expected a native ARM64 Node on the ARM64 runner.')"
+      - name: Install
+        run: npm ci
+      - name: Restore bundled tools
+        id: tools-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: windows/.tools
+          key: clop-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('windows/scripts/tools.json', 'windows/scripts/fetch-tools.mjs') }}
+      # Fetches the win32-arm64 set, because that is this machine's architecture.
+      - name: Fetch bundled tools
+        id: fetch-tools
+        run: node scripts/fetch-tools.mjs
+      - name: Save bundled tools
+        if: always() && steps.fetch-tools.outcome == 'success' && steps.tools-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: windows/.tools
+          key: ${{ steps.tools-cache.outputs.cache-primary-key }}
+      - name: Test engine and bundled tools
+        run: npm test
+      - name: Compile Windows helper
+        shell: powershell
+        run: powershell.exe -NoProfile -Sta -File native/bridge.ps1 -Check
+      # Also compiles native/clop.cs into clop.exe with the ARM64 .NET Framework's csc.exe.
+      - name: Build application
+        run: npm run build
+      - name: Check native clipboard integration
+        timeout-minutes: 3
+        run: node scripts/native-smoke.mjs
+      - name: Build installer and portable app
+        run: npx electron-builder --win nsis portable --arm64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Check the packaged files are ARM64, apart from the tools that run under emulation
+        run: node scripts/check-arch.mjs arm64
+      - name: Check the app is long path aware
+        run: node scripts/check-long-path.mjs
+      - name: Exercise packaged Windows app
+        timeout-minutes: 5
+        run: node scripts/desktop-smoke.mjs
+      - name: Exercise packaged clop command
+        timeout-minutes: 5
+        run: node scripts/cli-smoke.mjs
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Clop-Windows-arm64
+          path: |
+            windows/release/*.exe
+            windows/release/Windows-*.png
+          if-no-files-found: error
+          retention-days: 30

@@ -7,11 +7,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { peImports } from '../scripts/pe-imports';
 import { run } from './run';
-import { TOOL_NAMES, executableName, hasTool, toolDirs, toolPath, toolsDir, type ToolName } from './tools';
+import { TOOL_NAMES, devTarget, executableName, hasTool, toolDirs, toolPath, toolsDir, type ToolName } from './tools';
 
 const windowsRoot = fileURLToPath(new URL('..', import.meta.url));
-const bundle = path.join(windowsRoot, '.tools', 'win32-x64', 'bin');
-const packages: { name: string; version: string; license: string; url: string; provides?: ToolName[]; sources?: string[] }[] = JSON.parse(readFileSync(path.join(windowsRoot, 'scripts', 'tools.json'), 'utf8'))['win32-x64'];
+type Package = { name: string; version: string; license: string; url: string; sha256: string; provides?: ToolName[]; usedBy?: string[]; sources?: string[] };
+const toolSets: Record<string, Package[]> = JSON.parse(readFileSync(path.join(windowsRoot, 'scripts', 'tools.json'), 'utf8'));
+// The set for the machine the tests run on: ARM64 Windows runs the ARM64 set, everything else the x64 one.
+const target = process.arch === 'arm64' ? 'win32-arm64' : 'win32-x64';
+const bundle = path.join(windowsRoot, '.tools', target, 'bin');
+const packages = toolSets[target];
 const VERSION_ARGS: Record<ToolName, string[]> = { ffmpeg: ['-version'], ffprobe: ['-version'], gs: ['--version'], gifsicle: ['--version'], gifski: ['--version'], jpegoptim: ['--version'], pngquant: ['--version'], exiftool: ['-ver'], 'heif-dec': ['--version'], 'heif-enc': ['--version'], cjxl: ['--version'], djxl: ['--version'] };
 
 /** Missing tools skip locally; CI must have every tool. */
@@ -39,13 +43,37 @@ test('Windows executable names keep the tool names, except Ghostscript', () => {
   assert.equal(executableName('gs'), process.platform === 'win32' ? 'gswin64c.exe' : 'gs');
 });
 
+test('the development cache is the set for the machine: ARM64 Windows gets its own, other Windows machines the x64 set', t => {
+  const proc = process as { platform: string; arch: string };
+  const saved = { platform: proc.platform, arch: proc.arch };
+  t.after(() => { Object.defineProperty(process, 'platform', { value: saved.platform }); Object.defineProperty(process, 'arch', { value: saved.arch }); });
+  const set = (platform: string, arch: string) => { Object.defineProperty(process, 'platform', { value: platform }); Object.defineProperty(process, 'arch', { value: arch }); return devTarget(); };
+  assert.equal(set('win32', 'arm64'), 'win32-arm64');
+  assert.equal(set('win32', 'x64'), 'win32-x64');
+  assert.equal(set('win32', 'ia32'), 'win32-x64');
+  assert.equal(set('linux', 'arm64'), 'linux-arm64');
+});
+
+test('every Windows tool set provides every tool, and the ARM64 set pins the same version of each as the x64 one', () => {
+  assert.deepEqual(Object.keys(toolSets).sort(), ['win32-arm64', 'win32-x64']);
+  const versionOf = (set: string, name: ToolName) => toolSets[set].find(pkg => pkg.provides?.includes(name))?.version;
+  for (const name of TOOL_NAMES) {
+    for (const set of Object.keys(toolSets)) assert.ok(versionOf(set, name), `${set} has no package providing ${name}`);
+    assert.equal(versionOf('win32-arm64', name), versionOf('win32-x64', name), `${name} differs between the x64 and ARM64 sets`);
+  }
+  for (const [set, list] of Object.entries(toolSets)) {
+    assert.equal(new Set(list.map(pkg => pkg.name)).size, list.length, `${set} lists a package twice`);
+    for (const pkg of list) assert.match(pkg.sha256, /^[0-9a-f]{64}$/, `${set}: ${pkg.name} needs a sha256`);
+  }
+});
+
 test('resolves tools from CLOP_TOOLS_DIR, then the packaged resources, then the development cache, then PATH', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'clop-tools-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const override = path.join(root, 'override'), resources = path.join(root, 'resources'), onPath = path.join(root, 'path');
   for (const dir of [override, path.join(resources, 'bin'), onPath]) await mkdir(dir, { recursive: true });
   useEnvironment(t, { CLOP_TOOLS_DIR: override, resourcesPath: resources, PATH: onPath });
-  assert.deepEqual(toolDirs(), [override, path.join(resources, 'bin'), path.join(windowsRoot, '.tools', `${process.platform}-${process.platform === 'win32' ? 'x64' : process.arch}`, 'bin')]);
+  assert.deepEqual(toolDirs(), [override, path.join(resources, 'bin'), path.join(windowsRoot, '.tools', devTarget(), 'bin')]);
   assert.equal(toolsDir(), override);
 
   // A name no real bundle contains, so the development cache never answers first.
@@ -118,5 +146,19 @@ test('the Windows bundle carries licence texts for every package and notices wit
       assert.ok(pkg.sources?.length, `${pkg.name} has no source address`);
       for (const source of pkg.sources) assert.ok(notice.includes(source), `${pkg.name}'s notice lacks ${source}`);
     }
+  }
+});
+
+// Tools that open files through the ANSI code page cannot open a path with characters outside it. Clop runs them in a folder of its own on
+// bare names, but jpegoptim (--dest), libheif and libjxl still resolve the working folder, which can be non-ANSI, so each of their
+// builds must carry the manifest that makes Windows use UTF-8 as the process's ANSI code page.
+test('the Windows bundle’s jpegoptim, heif and jxl programs ask for a UTF-8 code page', async t => {
+  if (!existsSync(bundle)) {
+    if (process.env.CI) assert.fail('The tool bundle is missing. Run node scripts/fetch-tools.mjs.');
+    return t.skip('the tool bundle has not been fetched');
+  }
+  for (const name of ['jpegoptim', 'heif-dec', 'heif-enc', 'cjxl', 'djxl']) {
+    const text = (await readFile(path.join(bundle, `${name}.exe`))).toString('latin1');
+    assert.match(text, /<activeCodePage[^>]*>UTF-8<\/activeCodePage>/, `${name}.exe has no UTF-8 activeCodePage manifest`);
   }
 });

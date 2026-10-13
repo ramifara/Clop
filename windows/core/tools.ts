@@ -14,8 +14,9 @@ export function executableName(name: ToolName) {
   return name === 'gs' ? 'gswin64c.exe' : `${name}.exe`;
 }
 
-// fetch-tools.mjs prepares only the x64 Windows set; ARM64 Windows runs it under emulation.
-const devTarget = () => `${process.platform}-${process.platform === 'win32' ? 'x64' : process.arch}`;
+// fetch-tools.mjs prepares an x64 and an ARM64 Windows set (the ARM64 one has x64 builds, run under emulation, for tools without an ARM64 build).
+// Any other Windows architecture, such as an ia32 Node on x64, uses the x64 set.
+export const devTarget = () => `${process.platform}-${process.platform === 'win32' ? (process.arch === 'arm64' ? 'arm64' : 'x64') : process.arch}`;
 
 /** Bundled tool directories in resolution order: CLOP_TOOLS_DIR, the packaged app's resources, then the development cache. */
 export function toolDirs() {
