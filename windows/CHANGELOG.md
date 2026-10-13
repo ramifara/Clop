@@ -30,6 +30,7 @@ Windows and tools
 - Explorer right-click entries and Send To.
 - Update checks through GitHub Releases, with a beta channel.
 - A debug dump, hang detection and a first-run card.
+- A native ARM64 build for Windows 11 on ARM (`-arm64-` installer and portable app). ffmpeg, HEIC, JPEG XL, pngquant, jpegoptim and sharp run natively; Ghostscript, gifsicle, gifski and ExifTool run under x64 emulation.
 
 Settings
 - Every macOS setting key is read and written under its macOS name. Settings from 0.1.x carry over.
