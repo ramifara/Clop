@@ -12,9 +12,12 @@ public static class ClopDragSource {
   static void Draggable(Control control, object payload) {
     Point start = Point.Empty;
     bool armed = false;
-    control.MouseDown += (sender, args) => { start = args.Location; armed = args.Button == MouseButtons.Left; };
-    control.MouseUp += (sender, args) => { armed = false; };
+    int moves = 0, far = 0;
+    // What the window saw of each press, so a log shows where a drag that never started was lost.
+    control.MouseDown += (sender, args) => { start = args.Location; armed = args.Button == MouseButtons.Left; moves = 0; far = 0; Console.WriteLine("Source mouse down: " + control.AccessibleName + " " + args.Button + " at " + args.X + "," + args.Y); Console.Out.Flush(); };
+    control.MouseUp += (sender, args) => { if (armed) { Console.WriteLine("Source mouse up without a drag: " + control.AccessibleName + ", " + moves + " moves, farthest " + far + "px"); Console.Out.Flush(); } armed = false; };
     control.MouseMove += (sender, args) => {
+      if (armed) { moves++; far = Math.Max(far, Math.Abs(args.X - start.X) + Math.Abs(args.Y - start.Y)); }
       if (!armed || args.Button != MouseButtons.Left || Math.Abs(args.X - start.X) + Math.Abs(args.Y - start.Y) < 12) return;
       armed = false; // DoDragDrop pumps messages; never re-enter it on a queued MouseMove.
       Console.WriteLine("Source drag started: " + control.AccessibleName); Console.Out.Flush();

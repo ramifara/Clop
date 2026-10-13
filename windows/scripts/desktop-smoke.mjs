@@ -8,7 +8,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { PDFDocument } from '@cantoo/pdf-lib';
 import { WindowsBridge } from '../dist-electron/native-test.js';
-import { dragFixture, explorerFixture } from './drag-fixture.mjs';
+import { dragFixture, dragStartedOrSkip, explorerFixture } from './drag-fixture.mjs';
 import { unpackedDir } from './unpacked.mjs';
 // The inspection below opens files in the temporary profile. Release their Windows handles
 // immediately so the final recursive cleanup can remove that profile after the app exits.
@@ -146,13 +146,20 @@ try {
     assert.equal(await floating.evaluate('Boolean(document.querySelector(".drop-target"))'), false, `${kind} must not leave a target behind`);
   }
   // The app's own native helper must still reveal the target for a real image OLE drag.
+  // First the test window must really start the drag; if it cannot (ARM64 only), the steps that need a drag are skipped (see dragStartedOrSkip).
+  const dragsBefore = fixture.sourceDrags;
   const dragFinished = fixture.gesture('image', { hold: 2500 });
-  await until(() => floating.evaluate('Boolean(document.querySelector(".drop-target"))'), 'Dragging did not reveal the automatic corner target');
-  const dragCapture = await floating.send('Page.captureScreenshot', { format: 'png' });
-  await writeFile('release/Windows-drag-target.png', Buffer.from(dragCapture.data, 'base64'));
+  let dragging = dragStartedOrSkip(await fixture.dragsSince(dragsBefore, 8000), 'the image gesture');
+  if (dragging) {
+    await until(() => floating.evaluate('Boolean(document.querySelector(".drop-target"))'), 'Dragging did not reveal the automatic corner target');
+    const dragCapture = await floating.send('Page.captureScreenshot', { format: 'png' });
+    await writeFile('release/Windows-drag-target.png', Buffer.from(dragCapture.data, 'base64'));
+  }
   await dragFinished;
-  await until(() => floating.evaluate('!document.querySelector(".drop-target")'), 'Releasing the drag did not dismiss its target');
-  assert.ok((await main.evaluate('window.clop.state()')).items.every(item => item.id === initialImage.id), 'Dragging without a drop must not import another image');
+  if (dragging) {
+    await until(() => floating.evaluate('!document.querySelector(".drop-target")'), 'Releasing the drag did not dismiss its target');
+    assert.ok((await main.evaluate('window.clop.state()')).items.every(item => item.id === initialImage.id), 'Dragging without a drop must not import another image');
+  }
   // A browser/screenshot image has no file-drop payload. Copy text between repeated copies
   // of the image so content deduplication does not permanently suppress that image.
   execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::SetText("Clop clipboard smoke")']);
@@ -262,34 +269,38 @@ try {
   // A folder with two images, dragged from a real Explorer window onto the drop zone, opens the batch window with both files: the
   // helper must offer a folder as a drag, the zone must take the drop, and the dropped folder must reach the batch. As on macOS only a
   // folder holding more files than `batchModeFileCountThreshold` goes there, so the threshold is lowered to 1 for this drop.
-  const photos = path.join(profile, 'Two photos');
-  await mkdir(photos);
-  const folderFiles = ['first.png', 'second.png'].map(name => path.join(photos, name));
-  for (const file of folderFiles) await sharp({ create: { width: 640, height: 400, channels: 3, background: '#3a7bd5' } }).png({ compressionLevel: 0 }).toFile(file);
-  await fixture?.stop();
-  // No cards in the way, so the drop zone sits where it is measured. It is shown on purpose to measure it, then hidden: the drag has to bring it back.
-  for (const item of (await main.evaluate('window.clop.state()')).items) await main.evaluate(`window.clop.dismiss(${JSON.stringify(item.id)})`);
-  await main.evaluate('window.clop.settings({ keepDropZoneVisible: true })');
-  await until(() => floating.evaluate('Boolean(document.querySelector(".drop-target"))'), 'The drop zone did not show to be measured');
-  await pause(500);
-  const zone = await floating.evaluate('(() => { const rect = document.querySelector(".drop-target").getBoundingClientRect(); return { x: (screenX + rect.x + rect.width / 2) * devicePixelRatio, y: (screenY + rect.y + rect.height / 2) * devicePixelRatio }; })()');
-  await main.evaluate('window.clop.settings({ keepDropZoneVisible: false })');
-  await until(() => floating.evaluate('!document.querySelector(".drop-target")'), 'The drop zone did not hide again');
-  assert.equal((await main.evaluate('window.clop.state()')).settings.useBatchModeForFolders, true, 'Large folders go to the batch window by default');
-  await main.evaluate('window.clop.settings({ batchModeFileCountThreshold: 1 })');
-  fixture = await explorerFixture(await realpath(photos));
-  const folderDrag = fixture.gesture('image', { pressDelay: 4000, hold: 2500, to: zone });
-  await until(() => floating.evaluate('Boolean(document.querySelector(".drop-target"))'), 'Dragging a folder from Explorer did not reveal the drop zone', 30000);
-  await folderDrag;
-  const batchWindow = await connect(await until(async () => (await pages()).find(page => page.type === 'page' && page.url.includes('batch=1')), 'Dropping a folder did not open the batch window', 30000));
-  try {
-    const prepared = await until(async () => { const state = await batchWindow.evaluate('window.clopBatch.state()'); return state.files.length === 2 && state; }, 'The batch window does not hold both images of the dropped folder', 30000, () => batchWindow.evaluate('window.clopBatch.state().then(state => JSON.stringify(state.files.map(file => file.path)))'));
-    assert.deepEqual(prepared.files.map(file => path.basename(file.path)).sort(), ['first.png', 'second.png']);
-    assert.equal((await main.evaluate('window.clop.state()')).items.length, 0, 'A dropped folder goes to the batch window, not to floating results');
-    await batchWindow.evaluate('window.clopBatch.clear()');
-  } finally { batchWindow.close(); }
-  await main.evaluate('window.clop.settings({ batchModeFileCountThreshold: 30 })');
-  console.log('A folder dragged from Explorer onto the drop zone opened the batch window with both of its images.');
+  // A real Explorer window starts that drag through the same synthetic mouse input as the test window, so it is skipped with it.
+  if (!dragging) console.log('The folder drag from Explorer is skipped with the other real-drag steps on ARM64.');
+  else {
+    const photos = path.join(profile, 'Two photos');
+    await mkdir(photos);
+    const folderFiles = ['first.png', 'second.png'].map(name => path.join(photos, name));
+    for (const file of folderFiles) await sharp({ create: { width: 640, height: 400, channels: 3, background: '#3a7bd5' } }).png({ compressionLevel: 0 }).toFile(file);
+    await fixture?.stop();
+    // No cards in the way, so the drop zone sits where it is measured. It is shown on purpose to measure it, then hidden: the drag has to bring it back.
+    for (const item of (await main.evaluate('window.clop.state()')).items) await main.evaluate(`window.clop.dismiss(${JSON.stringify(item.id)})`);
+    await main.evaluate('window.clop.settings({ keepDropZoneVisible: true })');
+    await until(() => floating.evaluate('Boolean(document.querySelector(".drop-target"))'), 'The drop zone did not show to be measured');
+    await pause(500);
+    const zone = await floating.evaluate('(() => { const rect = document.querySelector(".drop-target").getBoundingClientRect(); return { x: (screenX + rect.x + rect.width / 2) * devicePixelRatio, y: (screenY + rect.y + rect.height / 2) * devicePixelRatio }; })()');
+    await main.evaluate('window.clop.settings({ keepDropZoneVisible: false })');
+    await until(() => floating.evaluate('!document.querySelector(".drop-target")'), 'The drop zone did not hide again');
+    assert.equal((await main.evaluate('window.clop.state()')).settings.useBatchModeForFolders, true, 'Large folders go to the batch window by default');
+    await main.evaluate('window.clop.settings({ batchModeFileCountThreshold: 1 })');
+    fixture = await explorerFixture(await realpath(photos));
+    const folderDrag = fixture.gesture('image', { pressDelay: 4000, hold: 2500, to: zone });
+    await until(() => floating.evaluate('Boolean(document.querySelector(".drop-target"))'), 'Dragging a folder from Explorer did not reveal the drop zone', 30000);
+    await folderDrag;
+    const batchWindow = await connect(await until(async () => (await pages()).find(page => page.type === 'page' && page.url.includes('batch=1')), 'Dropping a folder did not open the batch window', 30000));
+    try {
+      const prepared = await until(async () => { const state = await batchWindow.evaluate('window.clopBatch.state()'); return state.files.length === 2 && state; }, 'The batch window does not hold both images of the dropped folder', 30000, () => batchWindow.evaluate('window.clopBatch.state().then(state => JSON.stringify(state.files.map(file => file.path)))'));
+      assert.deepEqual(prepared.files.map(file => path.basename(file.path)).sort(), ['first.png', 'second.png']);
+      assert.equal((await main.evaluate('window.clop.state()')).items.length, 0, 'A dropped folder goes to the batch window, not to floating results');
+      await batchWindow.evaluate('window.clopBatch.clear()');
+    } finally { batchWindow.close(); }
+    await main.evaluate('window.clop.settings({ batchModeFileCountThreshold: 30 })');
+    console.log('A folder dragged from Explorer onto the drop zone opened the batch window with both of its images.');
+  }
   // A folder of two PNGs dropped on a preset zone whose pipeline converts to WebP: both files run the zone's pipeline, never the batch
   // window or a plain optimisation, and the originals are left as they were. The drop goes through the same `runPreset` call (the
   // `run-preset` IPC) the zone in the floating window makes; the files come from a file input that DevTools fills with the folder's

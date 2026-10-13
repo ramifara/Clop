@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import sharp from 'sharp';
-import { dragFixture, explorerFixture } from './drag-fixture.mjs';
+import { dragFixture, dragStartedOrSkip, explorerFixture } from './drag-fixture.mjs';
 const bridge = new WindowsBridge();
 process.env.CLOP_DEBUG_DRAG = '1';
 const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-native-'));
@@ -45,9 +45,17 @@ try {
     assert.deepEqual(events, [], `${kind} must not announce an image drag`);
     console.log(`No image target for ${kind}.`);
   }
-  for (const escape of [false, true]) {
+  // Steps that need a real drag first check that the test window started one for that gesture (see dragStartedOrSkip).
+  let dragging = true;
+  const drag = async (kind, options) => {
+    const before = fixture.sourceDrags;
     events.length = 0;
-    await fixture.gesture('image', { escape }); await pause(250);
+    await fixture.gesture(kind, options); await pause(250);
+    return dragStartedOrSkip(await fixture.dragsSince(before), `the ${kind} gesture`);
+  };
+  for (const escape of [false, true]) {
+    if (!dragging) break;
+    if (!(dragging = await drag('image', { escape }))) break;
     assert.deepEqual(events, ['drag-start', 'drag-end'], `A real image drag must appear and finish (${escape ? 'Escape' : 'release'})`);
     console.log(`Image drag detected and dismissed by ${escape ? 'Escape' : 'release'}.`);
   }
@@ -58,31 +66,32 @@ try {
   await fixture.gesture('title', { pressDelay: 20, moveX: 0, moveY: -60 }); await pause(250);
   assert.deepEqual(events, [], 'A fast title-bar drag must not mistake the image moved underneath its original point for a source');
   await bridge.request({ type: 'settings', explorerDrag: true, ownWindows: [fixture.window] });
-  events.length = 0; await fixture.gesture('image'); await pause(250);
-  assert.deepEqual(events, [], 'Clop’s own windows must not announce an external drag');
+  if (dragging && (dragging = await drag('image'))) assert.deepEqual(events, [], 'Clop’s own windows must not announce an external drag');
   await bridge.request({ type: 'settings', explorerDrag: false, ownWindows: [] });
-  events.length = 0; await fixture.gesture('image'); await pause(250);
-  assert.deepEqual(events, [], 'Disabling automatic drag detection must keep the target quiet');
-  console.log('Opening a task-owned Explorer window for image selection checks.');
-  await fixture.stop(); fixture = await explorerFixture(png);
-  await bridge.request({ type: 'settings', explorerDrag: true });
-  const paths = []; bridge.on('drag-start', event => paths.push(event.paths));
-  // Let a cold runner finish Explorer's Shell/accessibility lookup at the original press.
-  // Explorer can defer COM selection queries once it enters its OLE drag loop.
-  events.length = 0; await fixture.gesture('image', { pressDelay: 4000, hold: 2500 }); await pause(250);
-  assert.deepEqual(events, ['drag-start', 'drag-end'], 'A real Explorer image drag must still announce and finish');
-  assert.deepEqual(paths, [[png]], 'Explorer must identify the actual supported image file');
-  for (const kind of ['title', 'resize', 'blank']) {
-    events.length = 0; await fixture.gesture(kind); await pause(250);
-    assert.deepEqual(events, [], `Explorer ${kind} must not announce a drag, even with an image selected`);
+  if (dragging && (dragging = await drag('image'))) assert.deepEqual(events, [], 'Disabling automatic drag detection must keep the target quiet');
+  // The Explorer window starts its drags through the same synthetic mouse input, so it is skipped too when the test window could not drag.
+  if (dragging) {
+    console.log('Opening a task-owned Explorer window for image selection checks.');
+    await fixture.stop(); fixture = await explorerFixture(png);
+    await bridge.request({ type: 'settings', explorerDrag: true });
+    const paths = []; bridge.on('drag-start', event => paths.push(event.paths));
+    // Let a cold runner finish Explorer's Shell/accessibility lookup at the original press.
+    // Explorer can defer COM selection queries once it enters its OLE drag loop.
+    events.length = 0; await fixture.gesture('image', { pressDelay: 4000, hold: 2500 }); await pause(250);
+    assert.deepEqual(events, ['drag-start', 'drag-end'], 'A real Explorer image drag must still announce and finish');
+    assert.deepEqual(paths, [[png]], 'Explorer must identify the actual supported image file');
+    for (const kind of ['title', 'resize', 'blank']) {
+      events.length = 0; await fixture.gesture(kind); await pause(250);
+      assert.deepEqual(events, [], `Explorer ${kind} must not announce a drag, even with an image selected`);
+    }
+    // A folder is a drag candidate too (Clop optimises what is inside it); its name has a dot, which must not make it look like a file.
+    const folderPath = path.join(dir, 'Two photos.2024'); await mkdir(folderPath);
+    for (const name of ['one.png', 'two.png']) await sharp({ create: { width: 64, height: 32, channels: 4, background: '#7864bf80' } }).png().toFile(path.join(folderPath, name));
+    const folder = await realpath(folderPath);
+    await fixture.stop(); fixture = await explorerFixture(folder);
+    paths.length = 0; events.length = 0; await fixture.gesture('image', { pressDelay: 4000, hold: 2500 }); await pause(250);
+    assert.deepEqual(events, ['drag-start', 'drag-end'], 'A real Explorer folder drag must announce and finish');
+    assert.deepEqual(paths, [[folder]], 'Explorer must identify the dragged folder');
   }
-  // A folder is a drag candidate too (Clop optimises what is inside it); its name has a dot, which must not make it look like a file.
-  const folderPath = path.join(dir, 'Two photos.2024'); await mkdir(folderPath);
-  for (const name of ['one.png', 'two.png']) await sharp({ create: { width: 64, height: 32, channels: 4, background: '#7864bf80' } }).png().toFile(path.join(folderPath, name));
-  const folder = await realpath(folderPath);
-  await fixture.stop(); fixture = await explorerFixture(folder);
-  paths.length = 0; events.length = 0; await fixture.gesture('image', { pressDelay: 4000, hold: 2500 }); await pause(250);
-  assert.deepEqual(events, ['drag-start', 'drag-end'], 'A real Explorer folder drag must announce and finish');
-  assert.deepEqual(paths, [[folder]], 'Explorer must identify the dragged folder');
-  console.log('Windows native smoke passed: clipboard formats, sequence protection, the clipboard owner and the app list, real image/Explorer/folder drags, release/Escape and suppression of text, unsupported images, empty space, window movement and resizing.');
+  console.log(dragging ? 'Windows native smoke passed: clipboard formats, sequence protection, the clipboard owner and the app list, real image/Explorer/folder drags, release/Escape and suppression of text, unsupported images, empty space, window movement and resizing.' : 'Windows native smoke passed WITHOUT its real-drag steps (skipped on ARM64, see above): clipboard formats, sequence protection, the clipboard owner and the app list, and the gestures that must stay quiet.');
 } finally { await fixture?.stop(); bridge.stop(); await rm(dir, { recursive: true, force: true }); }
