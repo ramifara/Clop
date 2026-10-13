@@ -9,6 +9,17 @@ import type { ImportExtra, ItemAutomation, ItemPlacement } from './items';
 /** A result shown as it is, without optimising: a file a pipeline forked off, or a dropped file Clop optimised already. */
 export const AS_IS: ItemAutomation = { skipOptimisation: true, fallback: false, run: async ({ original }) => ({ file: original, anyRan: false, warnings: [] }) };
 
+/**
+ * What happens to a copied file, as `handleClipboardChange` in ClopApp.swift decides: a copied video, PDF or audio file Clop optimised
+ * already (its xattr there, the marker here) is not optimised again on an automatic copy; only the clipboard's pipelines run on it, out of
+ * sight (`pipelines`), and with none it is left alone (`skip`). Anything else is imported (`import`): a manual optimisation and an aggressive
+ * one show it unchanged or optimise it as a drop does, and an image is never placed (`Image.fromPasteboard` copies it into Clop's own folder).
+ */
+export function copiedFilePlan({ kind, marked, aggressive, manual, pipelines }: { kind: MediaKind; marked: boolean; aggressive: boolean; manual: boolean; pipelines: boolean }): 'import' | 'pipelines' | 'skip' {
+  if (kind === 'image' || !marked || aggressive || manual) return 'import';
+  return pipelines ? 'pipelines' : 'skip';
+}
+
 export interface DroppedFileOptions {
   /**
    * Where the file's results go, for the kind its content turns out to be (`folderPlacement`). Undefined leaves them in the shelf: a

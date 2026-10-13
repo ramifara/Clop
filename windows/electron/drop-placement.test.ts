@@ -11,7 +11,8 @@ import { exists } from '../core/fileops';
 import { Workdir } from '../core/workdir';
 import { graphic } from '../core/media/image.fixtures';
 import { folderPlacement, type FolderEnv } from './automation';
-import { AS_IS, droppedFileExtra } from './drop-placement';
+import { AS_IS, copiedFilePlan, droppedFileExtra } from './drop-placement';
+import { tone } from '../core/media/audio.fixtures';
 import { ItemEngine, type ItemAutomation, type ItemPlacement } from './items';
 
 const balanced = { mode: 'balanced', format: 'auto', scale: 1 } as const;
@@ -116,4 +117,32 @@ test('a dropped file with the temporary setting stays in the shelf only', async 
   assert.notEqual(f.engine.output(id), f.file);
   assert.equal(await digest(f.file), before);
   assert.deepEqual(await readdir(path.dirname(f.file)), ['shot.png']);
+});
+
+test('a copied file is imported, except a video, PDF or audio file Clop optimised already on an automatic copy', () => {
+  const plan = (over: Partial<Parameters<typeof copiedFilePlan>[0]>) => copiedFilePlan({ kind: 'video', marked: false, aggressive: false, manual: false, pipelines: false, ...over });
+  assert.equal(plan({}), 'import');
+  assert.equal(plan({ marked: true }), 'skip', 'left alone, as macOS returns without a card');
+  assert.equal(plan({ marked: true, pipelines: true }), 'pipelines', 'only the clipboard pipelines run, on the file');
+  assert.equal(plan({ marked: true, manual: true }), 'import', 'asked for: shown unchanged');
+  assert.equal(plan({ marked: true, aggressive: true }), 'import');
+  assert.equal(plan({ kind: 'image', marked: true }), 'import', 'images take their own path');
+});
+
+test('a copied audio file is optimised where it is, with a backup, and Restore puts it back', async t => {
+  if (!needTools(t, 'ffmpeg', 'ffprobe')) return;
+  const root = await mkdtemp(path.join(os.tmpdir(), 'clop-copied-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workdir = await new Workdir(path.join(root, 'work')).ensure(), marker = new OptimisedMarker(path.join(root, 'optimised.json'));
+  const settings = defaultSettings() as ClopSettings, env = (): FolderEnv => ({ settings, workdir, marker, counter: { value: 0 } });
+  const engine = new ItemEngine(path.join(workdir.temp, 'session'), () => settings, file => marker.markOptimised(file));
+  const file = await tone(path.join(root, 'song.mp3'), { codec: ['-c:a', 'libmp3lame', '-b:a', '320k'] }), before = await digest(file);
+  const id = await engine.importPath(file, 'clipboard', balanced, undefined, droppedFileExtra(undefined, {
+    placement: kind => kind === 'image' ? undefined : folderPlacement(file, kind, env), marked: false, aggressive: false, zone: false,
+  }));
+  const item = engine.get(id).result;
+  assert.deepEqual([item.status, engine.output(id)], ['ready', file], item.error);
+  assert.ok((await stat(file)).size < (await stat(path.join(workdir.backups, (await readdir(workdir.backups))[0]))).size);
+  await engine.restore(id);
+  assert.equal(await digest(file), before);
 });

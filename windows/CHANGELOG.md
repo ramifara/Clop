@@ -17,7 +17,7 @@ Media
 Automation
 - The clipboard takes videos, PDFs, audio and copied file paths as well as images.
 - Watched folders, with backups, pause, revert, bring back and stop all. Copies from chosen apps can be ignored.
-- Dropped and opened files are placed by the placement settings, as on macOS: in place with a backup by default, and Restore puts the original back.
+- Dropped and opened files, and copied videos, PDFs and audio files, are placed by the placement settings, as on macOS: in place with a backup by default, and Restore puts the original back, also after a pipeline that ran on the file.
 - Pipelines in the macOS format, with the built-in library, the editor and preset zones. A dragged folder shows the zones for the type of the files inside it.
 - A batch window with whole-batch revert.
 

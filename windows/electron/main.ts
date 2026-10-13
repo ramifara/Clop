@@ -66,7 +66,7 @@ import { compareSources, parseCompareView } from './compare';
 import { setupBatch } from './batch-window';
 import { expandDroppedFolders, splitFolders } from './dropped';
 import { dropRunsPipelines, planZoneDrop, zoneAutomation } from './zone-drop';
-import { AS_IS, droppedFileExtra } from './drop-placement';
+import { AS_IS, copiedFilePlan, droppedFileExtra } from './drop-placement';
 import { DragType } from './drag-type';
 import { MAX_BATCH_FILES } from '../core/batch/scan';
 import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
@@ -663,20 +663,48 @@ async function copyClipboardResults(ids: string[], sequence?: number, options?: 
     ? engine.list().filter(item => item.source === 'clipboard' && item.kind === 'image' && item.status === 'ready').map(item => item.id).reverse() : [];
   await copy(accumulated.length > 1 ? accumulated : ids, sequence, options);
 }
+/**
+ * A copied file, as macOS treats one (`handleClipboardChange` in ClopApp.swift): a video, PDF or audio file is optimised and placed by the
+ * placement settings (in place by default, with the original in the backups), so Restore puts it back; an image file is optimised as a copy
+ * in the shelf and never written to. A video, PDF or audio file Clop optimised already only runs the clipboard's pipelines, on the file itself
+ * and out of sight, or is left alone (`skip`) without them, unless the optimisation was asked for or is aggressive.
+ */
+async function copiedFile(file: string, { aggressive, manual, app }: { aggressive: boolean; manual: boolean; app?: CopyingApp }): Promise<ImportExtra | undefined | 'skip'> {
+  const kind = mediaKind(file) ?? 'image', base = clipboardAutomation(kind, app);
+  if (kind === 'image') return base;
+  const own = workdir.owns(file), marked = !own && await markedOptimised(file), pipelines = attachedPipelines(kind, 'clipboard', settings, home);
+  switch (copiedFilePlan({ kind, marked, aggressive, manual, pipelines: pipelines.length > 0 })) {
+    case 'skip': return 'skip';
+    case 'pipelines': {
+      let id: string | undefined;
+      const automation = attachedAutomation(pipelines, { host: pipelineHost, context: { kind, sourceApp: app }, fallback: false, skipOptimisation: true, source: file, done: outcome => afterPipelines(id, outcome, 'clipboard') })!;
+      return { automation, staged: staged => { id = staged; quietResult(staged); } };
+    }
+    case 'import': return droppedFileExtra(base, {
+      // The content decides: a file named like a video that holds an image is not placed.
+      placement: own ? undefined : found => found === 'image' ? undefined : folderPlacement(file, found, folderEnv, saveCounter), marked, aggressive, zone: false,
+    });
+  }
+}
 /** The steps of importing clipboard results (see `importClipboardList`), written back against the clipboard `sequence` they came from. */
-function clipboardSteps(sequence: number | undefined, aggressive: boolean, options?: { text?: boolean; extra?: string[] }, app?: CopyingApp): ClipboardListSteps {
+function clipboardSteps(sequence: number | undefined, aggressive: boolean, options?: { text?: boolean; extra?: string[] }, app?: CopyingApp, manual = false): ClipboardListSteps {
+  // Files left alone stay in the list written back, as they were.
+  const kept = [...options?.extra ?? []];
   return {
-    turn: clipboardImageTurn, prepare: prepareClipboardImages, writeBack: ids => copyClipboardResults(ids, sequence, options),
-    load: list => importPaths(list, 'clipboard', {
-      aggressive, name: async file => mediaKind(file) === 'image' ? clipboardImageName(path.basename(file)) : undefined,
-      extra: file => clipboardAutomation(mediaKind(file) ?? 'image', app),
-    }),
+    turn: clipboardImageTurn, prepare: prepareClipboardImages, writeBack: ids => copyClipboardResults(ids, sequence, { ...options, extra: kept }),
+    load: async list => {
+      const extras = new Map<string, ImportExtra | undefined>();
+      for (const file of list) { const extra = await copiedFile(file, { aggressive, manual, app }); if (extra === 'skip') kept.push(file); else extras.set(file, extra); }
+      return importPaths(list.filter(file => extras.has(file)), 'clipboard', {
+        aggressive, name: async file => mediaKind(file) === 'image' ? clipboardImageName(path.basename(file)) : undefined, extra: file => extras.get(file),
+      });
+    },
   };
 }
-function importClipboardFiles(files: string[], rest: string[] | undefined, sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }, app?: CopyingApp) {
+function importClipboardFiles(files: string[], rest: string[] | undefined, sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }, app?: CopyingApp, manual = false) {
   // Files past the limit and the entries Clop leaves alone stay in the list the results are written back to.
   const split = splitClipboardList(files, rest);
-  return importClipboardList(split.take, clipboardSteps(sequence, aggressive, { ...options, extra: split.rest }, app));
+  return importClipboardList(split.take, clipboardSteps(sequence, aggressive, { ...options, extra: split.rest }, app, manual));
 }
 function importClipboardImage(bytes: Buffer, name: string, sequence: number | undefined, aggressive: boolean, app?: CopyingApp) {
   return importClipboardImages(clipboardSteps(sequence, aggressive, undefined, app), async () => {
@@ -714,7 +742,7 @@ function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive 
     switch (plan.type) {
       case 'retry': void optimiseClipboard(plan.change, false, aggressive); return;
       case 'none': if (plan.notice) inform(plan.notice); return;
-      case 'files': return () => importClipboardFiles(plan.files, plan.rest, plan.sequence, aggressive, { text: plan.text }, plan.app);
+      case 'files': return () => importClipboardFiles(plan.files, plan.rest, plan.sequence, aggressive, { text: plan.text }, plan.app, manual);
       case 'image': return () => importClipboardImage(plan.bytes, `Clipboard-${stamp()}.${plan.ext}`, plan.sequence, aggressive, plan.app);
       case 'url': return () => importUrl(plan.url, aggressive, 'clipboard', plan.sequence);
     }

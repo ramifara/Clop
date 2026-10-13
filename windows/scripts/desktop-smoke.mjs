@@ -226,7 +226,14 @@ try {
   for (let page = 0; page < 4; page++) pdf.addPage([288, 216]).drawImage(photo, { x: 0, y: 0, width: 288, height: 216 });
   await writeFile(scan, await pdf.save());
   const copyFiles = files => execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', '$ErrorActionPreference = "Stop"; Add-Type -AssemblyName System.Windows.Forms; $list = New-Object System.Collections.Specialized.StringCollection; foreach ($file in $env:CLOP_SMOKE_FILES.Split([char]10)) { [void]$list.Add($file) }; [System.Windows.Forms.Clipboard]::SetFileDropList($list)'], { env: { ...process.env, CLOP_SMOKE_FILES: files.join('\n') } });
-  for (const [file, kind] of [[video, 'video'], [scan, 'pdf'], [song, 'audio']]) {
+  // As on macOS, a copied video, PDF or audio file is optimised where it is (`optimised…Behaviour`, in place by default), its original kept in
+  // the working directory's backups, and the clipboard keeps naming it. Copies of the fixtures are used, so the files the later steps copy stay as they were.
+  const copiedDir = path.join(profile, 'Copied');
+  await mkdir(copiedDir);
+  for (const [source, kind] of [[video, 'video'], [scan, 'pdf'], [song, 'audio']]) {
+    const file = path.join(copiedDir, path.basename(source));
+    await copyFile(source, file);
+    const sourceBytes = (await stat(file)).size;
     const before = new Set((await main.evaluate('window.clop.state()')).items.map(item => item.id));
     copyFiles([file]);
     const item = await until(async () => (await main.evaluate('window.clop.state()')).items.find(item => !before.has(item.id) && item.kind === kind && item.source === 'clipboard' && item.status !== 'processing'), `Copying a ${kind} file did not produce a result`, 90000, () => appState(main));
@@ -234,8 +241,12 @@ try {
     assert.equal(item.status, 'ready', item.error);
     assert.ok(item.outputBytes < item.originalBytes, `The ${kind} should be smaller after optimising`);
     await until(() => shown(path.basename(file)), `The ${kind} card did not render`);
-    const rewritten = await until(async () => { const [result] = (await externalClipboard.request({ type: 'read' })).paths; return result && result !== file && path.basename(result) === path.basename(file) && result; }, `The clipboard was not rewritten with the optimised ${kind}`);
-    assert.equal((await stat(rewritten)).size, item.outputBytes, `The clipboard should hold the optimised ${kind}`);
+    const rewritten = await until(async () => { const read = await externalClipboard.request({ type: 'read' }); const [result] = read.paths; return result && path.basename(result) === path.basename(file) && result; }, `The clipboard was not rewritten with the optimised ${kind}`);
+    assert.equal(path.resolve(rewritten).toLowerCase(), path.resolve(file).toLowerCase(), `The clipboard should name the copied ${kind}, optimised where it is`);
+    assert.equal((await stat(file)).size, item.outputBytes, `The copied ${kind} should be replaced by its optimised version`);
+    const copiedBackup = (await readdir(path.join(profile, 'work', 'backups'))).find(name => name.startsWith(`${path.parse(file).name}-`) && name.endsWith(path.extname(file)));
+    assert.ok(copiedBackup, `The copied ${kind}'s original should be in the backups`);
+    assert.equal((await stat(path.join(profile, 'work', 'backups', copiedBackup))).size, sourceBytes, `The backup should be the original ${kind}`);
   }
   assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'Copying video, PDF and audio files must not show an error');
   // A video and an image dropped into a watched folder are optimised where they are, each original kept in the working directory's backups.
