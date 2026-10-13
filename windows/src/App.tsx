@@ -115,7 +115,7 @@ export function App() {
   return <div className={`corner-surface ${state.settings.floatingResultsCorner} ${compact ? 'compact' : ''}`} onDragOver={event => { setHeldKeys(event.ctrlKey || event.altKey); if (imageDrag(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }} onDragEnter={event => { if (imageDrag(event)) { event.preventDefault(); setLocalDrag(true); } }} onDrop={drop}>
     <div className="corner-stack">
       {tilesFirst && tiles}
-      {targetShown && <div className={`drop-target ${localDrag ? 'receiving' : ''}`} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setLocalDrag(false); }}><strong>Drop to optimise</strong><div className="drop-ring"><span/><span/><span/></div><small>Images, videos, PDFs, audio</small><small>Originals stay safe</small><small>Ctrl: smaller file</small></div>}
+      {targetShown && <div className={`drop-target ${localDrag ? 'receiving' : ''}`} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setLocalDrag(false); }}><strong>Drop to optimise</strong><div className="drop-ring" aria-hidden="true"/><small>Images, videos, PDFs, audio</small><small>Originals stay safe</small><small><kbd>Ctrl</kbd> for a smaller file</small></div>}
       {!tilesFirst && tiles}
       {compact ? <CompactList state={state} run={run} selection={selection} onSelection={setSelection} onMenu={openMenu} onSelect={setSelected}/>
         : cards.map(item => <ResultCard key={item.id} item={item} state={state} run={run} onSelect={() => setSelected(item.id)} onMenu={openMenu}/>)}

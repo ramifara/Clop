@@ -1,4 +1,4 @@
-/* Progress bars, the extension chip, the compact list, menus rendered as HTML and the preview window. */
+/* Progress bars, the extension chip, the compact list and menus rendered as HTML. */
 .progress-bar{display:inline-block;width:92px;height:5px;border-radius:3px;background:#ffffff33;overflow:hidden;vertical-align:middle}
 .progress-bar>span{display:block;height:100%;background:#ffc46e;border-radius:3px;transition:width .2s}
 .card-progress{flex-direction:column;gap:5px}
@@ -9,59 +9,48 @@
 .ext-chip:hover{background:#f0e4cfe6;color:#443e42}
 .format-picker .format-bar+.ext-chip{margin-top:4px}
 
+/* The compact list: a glass panel like the drop zone's, in the theme's tint. */
 .corner-surface.compact .corner-stack{align-items:stretch;width:300px}
-.compact-list{pointer-events:auto;display:flex;flex-direction:column;min-height:0;max-height:100%;background:#262128ea;backdrop-filter:blur(16px);border:1px solid #ffffff2e;border-radius:14px;box-shadow:0 8px 14px #00000066;overflow:hidden;color:#fff}
-.compact-header{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:7px 10px;font-size:10px;color:#d9d0db;border-bottom:1px solid #ffffff1c;flex-shrink:0}
+.compact-list{pointer-events:auto;display:flex;flex-direction:column;min-height:0;max-height:100%;background:var(--glass-solid);backdrop-filter:blur(16px) saturate(1.2);border:1px solid var(--glass-line);border-radius:14px;box-shadow:inset 0 1px 0 var(--glass-edge),var(--shadow-pop);overflow:hidden;color:var(--glass-ink);font-family:var(--font)}
+.compact-header{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:7px 10px;font-size:10px;color:var(--glass-muted);border-bottom:1px solid var(--glass-line);flex-shrink:0}
 .compact-tools{display:flex;gap:4px}
-.compact-tools button{border:1px solid #ffffff2e;background:#ffffff14;color:#fff;font-size:9px;border-radius:6px;padding:2px 7px}
-.compact-tools button:hover:not(:disabled){background:#f0e4cfe6;color:#443e42}
+.compact-tools button{border:1px solid var(--glass-line);background:var(--hover);color:var(--glass-ink);font-size:9px;border-radius:6px;padding:2px 7px}
+.compact-tools button:hover:not(:disabled){background:var(--button-glass-hover);color:var(--button-glass-ink)}
 .compact-rows{list-style:none;margin:0;padding:0;overflow-y:auto;min-height:0}
-.compact-row{position:relative;display:flex;align-items:center;min-height:34px;padding:0 8px 0 10px;border-bottom:1px solid #ffffff12;user-select:none}
+.compact-row{position:relative;display:flex;align-items:center;min-height:34px;padding:0 8px 0 10px;border-bottom:1px solid var(--glass-line);user-select:none}
 .compact-row.with-image{min-height:58px}
 .compact-row:last-child{border-bottom:0}
-.compact-row:hover{background:#ffffff12}
-.compact-row.selected{background:#ffc46e2e;box-shadow:inset 3px 0 0 #ffc46e}
+.compact-row:hover{background:var(--hover)}
+.compact-row.selected{background:color-mix(in srgb,var(--amber) 20%,transparent);box-shadow:inset 3px 0 0 var(--amber)}
 .compact-main{flex:1;min-width:0;display:flex;align-items:center;gap:8px;padding:4px 0}
 .compact-main[draggable=true]{cursor:grab}
-.compact-thumb{width:46px;height:46px;border-radius:7px;object-fit:cover;flex-shrink:0;-webkit-user-drag:none}
+.compact-thumb{width:46px;height:46px;border-radius:7px;object-fit:cover;flex-shrink:0;-webkit-user-drag:none;box-shadow:0 0 0 1px var(--glass-line)}
 .compact-info{min-width:0;display:flex;flex-direction:column;gap:1px}
 .compact-name{font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.compact-sizes,.compact-progress,.compact-error{font:10px 'Consolas','Cascadia Code',monospace;color:#ffc46e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px}
+.compact-sizes,.compact-progress,.compact-error{font:10px var(--mono);color:var(--amber-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px}
 .compact-sizes{display:block}
-.compact-sizes .old{color:#ff6f8a}.compact-sizes strong{font-weight:600}.compact-sizes .larger{color:#ff335b}
-.compact-facts{color:#bdb3c0}
-.compact-error{color:#ff8da2;display:block}
+.compact-sizes .old,.compact-sizes .larger{color:var(--rose)}.compact-sizes strong{font-weight:600}
+.compact-facts{color:var(--glass-muted)}
+.compact-error{color:var(--danger);display:block}
+.compact-progress .progress-bar{background:var(--line)}
 .compact-actions{display:none;gap:2px;flex-shrink:0;align-items:center}
 .compact-row:hover .compact-actions,.compact-row:focus-within .compact-actions,.compact-row.selected .compact-actions{display:flex}
-.compact-actions button{border:0;background:transparent;color:#e1dce4;width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;padding:0}
-.compact-actions button:hover{background:#ffffff24}
-.compact-close{border:0;background:transparent;color:#e1dce4;width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;margin-left:2px}
-.compact-close:hover{background:#ffffff24}
+.compact-actions button,.compact-close{border:0;background:transparent;color:var(--glass-muted);width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0}
+.compact-close{margin-left:2px}
+.compact-actions button:hover,.compact-close:hover{background:var(--press);color:var(--glass-ink)}
 
 .menu-popup{position:fixed;z-index:20;pointer-events:auto}
-.html-menu{list-style:none;margin:0;padding:4px;min-width:210px;background:#f6f2ecf2;color:#2f2830;border:1px solid #cfc6bb;border-radius:8px;box-shadow:0 8px 20px #0005;font-size:11px}
+.html-menu{list-style:none;margin:0;padding:4px;min-width:210px;background:var(--raised);color:var(--ink);border:1px solid var(--line);border-radius:9px;box-shadow:var(--shadow-pop);font:11px var(--font)}
 .html-menu li{position:relative}
 .html-menu button{display:flex;align-items:center;width:100%;border:0;background:transparent;color:inherit;text-align:left;padding:4px 8px 4px 4px;border-radius:5px;gap:4px;white-space:nowrap}
-.html-menu button:hover:not(:disabled),.html-menu button:focus-visible{background:#ffc46e66}
+.html-menu button:hover:not(:disabled),.html-menu button:focus-visible{background:var(--selected);outline:0}
 .html-menu button:disabled{opacity:.45}
 .html-menu .menu-check{width:14px;text-align:center;font-size:10px}
 .html-menu .menu-label{flex:1}
-.html-menu kbd{font:10px 'Segoe UI',sans-serif;color:#7a6f7c}
-.html-menu .menu-arrow{color:#7a6f7c}
-.menu-header{padding:6px 8px 2px 18px;font-size:9px;font-weight:600;color:#7a6f7c;text-transform:uppercase;letter-spacing:.04em}
-.menu-separator{height:1px;margin:4px 6px;background:#d8cfc4}
+.html-menu kbd{font:10px var(--font);color:var(--muted)}
+.html-menu .menu-arrow{color:var(--muted)}
+.menu-header{padding:6px 8px 2px 18px;font-size:10px;font-weight:600;color:var(--muted)}
+.menu-separator{height:1px;margin:4px 6px;background:var(--line)}
 .html-menu .submenu{position:absolute;left:calc(100% - 4px);z-index:2}
-
-.preview-window{flex-direction:column}
-.preview-stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#17141a;padding:12px}
-.preview-stage img,.preview-stage video{max-width:100%;max-height:100%;object-fit:contain;border-radius:3px;box-shadow:0 3px 14px #0009}
-.preview-audio{display:flex;flex-direction:column;align-items:center;gap:16px}
-.preview-audio .audio-art{width:min(60vh,360px);height:min(60vh,360px);border-radius:12px;background-size:cover;background-position:center;box-shadow:0 3px 14px #0009}
-.preview-audio audio{width:min(80vw,420px)}
-.preview-bar{display:flex;align-items:center;gap:12px;padding:7px 14px;background:#211d23;border-top:1px solid #ffffff1c;font-size:11px;color:#c9bfcb}
-.preview-bar strong{color:#fff;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.preview-pages{margin-left:auto;display:flex;align-items:center;gap:8px}
-.flat{border:0;background:transparent;color:#e1dce4;padding:2px 6px;border-radius:4px}
-.flat:hover:not(:disabled){background:#ffffff22}
 
 .corner-card:has(.format-picker .format-bar) .filename-chip{display:none}
