@@ -18,12 +18,12 @@ Automation
 - The clipboard takes videos, PDFs, audio and copied file paths as well as images.
 - Watched folders, with backups, pause, revert, bring back and stop all. Copies from chosen apps can be ignored.
 - Dropped and opened files are placed by the placement settings, as on macOS: in place with a backup by default, and Restore puts the original back.
-- Pipelines in the macOS format, with the built-in library, the editor and preset zones.
+- Pipelines in the macOS format, with the built-in library, the editor and preset zones. A dragged folder shows the zones for the type of the files inside it.
 - A batch window with whole-batch revert.
 
 Windows and tools
 - Result cards with right-click menus and per-type actions, and a compact list.
-- Crop and compare windows.
+- Crop and compare windows. The compare window has macOS's path fields and file menus; the crop window remembers its size and position and closes when its result runs again.
 - The settings window with all sixteen tabs and search.
 - The full tray menu and configurable global shortcuts.
 - The `clop` command and `clop://` links.
