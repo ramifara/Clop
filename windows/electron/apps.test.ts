@@ -11,6 +11,11 @@ test('an ignored app is matched by exe path or AUMID whatever the case and slash
   assert.equal(ignoredApp({}, ['bitwarden.exe']), false);
   assert.equal(ignoredApp({ owner }, []), false);
   assert.equal(ignoredApp({ owner }, ['  ']), false);
+  // On ARM64 Windows, as elsewhere, System32's PowerShell and SysWOW64's x86 one are two programs; an exe-name entry covers both.
+  const native = 'C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', x86 = 'C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe';
+  assert.equal(ignoredApp({ owner: native }, ['C:\\Windows\\system32\\WindowsPowerShell\\v1.0\\powershell.exe']), true);
+  assert.equal(ignoredApp({ owner: x86 }, ['C:\\Windows\\system32\\WindowsPowerShell\\v1.0\\powershell.exe']), false);
+  assert.equal([native, x86].every(path => ignoredApp({ owner: path }, ['powershell.exe'])), true);
 });
 test('the Windows helper\'s app list is checked entry by entry and sorted with running apps first', () => {
   assert.deepEqual(appsReply({ apps: [
