@@ -563,6 +563,12 @@ namespace ClopWindows {
     static bool ItemNameMatches(string name, string file, string displayName) {
       return String.Equals(name, displayName, StringComparison.OrdinalIgnoreCase) || String.Equals(name, Path.GetFileName(file), StringComparison.OrdinalIgnoreCase) || String.Equals(name, Path.GetFileNameWithoutExtension(file), StringComparison.OrdinalIgnoreCase);
     }
+    // A folder is a candidate too: Clop optimises the media inside it (the batch window). It is checked
+    // first so a folder named "holiday.png" is not mistaken for a missing file.
+    static bool IsDragCandidate(string path) {
+      if (String.IsNullOrEmpty(path)) return false;
+      try { return Directory.Exists(path) || (MediaExtensions.Contains(Path.GetExtension(path)) && File.Exists(path)); } catch { return false; }
+    }
     static string[] ExplorerSelection(IntPtr window, string name) {
       var paths = new List<string>();
       if (!IsExplorer(window) || String.IsNullOrEmpty(name)) return paths.ToArray();
@@ -576,7 +582,7 @@ namespace ClopWindows {
             if ((long)explorer.HWND != window.ToInt64()) continue;
             foreach (dynamic item in explorer.Document.SelectedItems()) {
               string file = Convert.ToString(item.Path);
-              if (MediaExtensions.Contains(Path.GetExtension(file)) && File.Exists(file)) {
+              if (IsDragCandidate(file)) {
                 paths.Add(file);
                 if (ItemNameMatches(name, file, Convert.ToString(item.Name))) hitSelectedImage = true;
               }
@@ -591,6 +597,7 @@ namespace ClopWindows {
       if (className.ToString() == "Progman" || className.ToString() == "WorkerW") {
         foreach (var directory in new[] { Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory) }) {
           try { foreach (var file in Directory.EnumerateFiles(directory)) if (MediaExtensions.Contains(Path.GetExtension(file)) && ItemNameMatches(name, file, Path.GetFileName(file))) return new[] { file }; } catch { }
+          try { foreach (var folder in Directory.EnumerateDirectories(directory)) if (ItemNameMatches(name, folder, Path.GetFileName(folder))) return new[] { folder }; } catch { }
         }
       }
       return new string[0];
