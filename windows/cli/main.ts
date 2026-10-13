@@ -40,6 +40,10 @@ export interface MainOptions {
   backend?: () => Promise<Backend>;
   env?: NodeJS.ProcessEnv;
   colours?: boolean;
+  /** Stands in for Ctrl-C: aborting it stops the running request. Given, the process's own signals are left alone. */
+  signal?: AbortSignal;
+  /** Sees the error a command failed with, before it is printed. */
+  onError?: (error: unknown) => void;
 }
 
 const processIO: IO = { out: text => { process.stdout.write(text); }, err: text => { process.stderr.write(text); }, errTTY: !!process.stderr.isTTY };
@@ -56,9 +60,11 @@ export async function main(argv: readonly string[], overrides: MainOptions = {})
     detach: args => { spawn(process.execPath, [...process.execArgv, process.argv[1], ...args], { detached: true, stdio: 'ignore', env: { ...env, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}) }, windowsHide: true }).unref(); },
     onInterrupt: handler => {
       interrupt = handler;
+      if (overrides.signal) { if (handler && overrides.signal.aborted) void handler().catch(() => {}); return; }
       if (handler) process.on('SIGINT', onSignal).on('SIGTERM', onSignal); else process.off('SIGINT', onSignal).off('SIGTERM', onSignal);
     },
   };
+  overrides.signal?.addEventListener('abort', () => { void interrupt?.().catch(() => {}); }, { once: true });
   let path: ClopCommand[] = [ROOT];
   try {
     const resolved = resolve(ROOT, argv);
@@ -67,6 +73,7 @@ export async function main(argv: readonly string[], overrides: MainOptions = {})
     return (await path.at(-1)!.run!(resolved.values, ctx)) ?? 0;
   } catch (error) {
     if (error instanceof ExitCode) return error.code;
+    overrides.onError?.(error);
     if (error instanceof ValidationError) {
       io.err(`Error: ${error.message}\nUsage: ${usage(path)}\n  See '${path.map(c => c.name).join(' ')} --help' for more information.\n`);
       return 64;

@@ -1,0 +1,13 @@
+GOOSE_PROVIDER: anthropic
+GOOSE_MODEL: claude-sonnet-5
+extensions:
+  developer:
+    enabled: true
+    name: developer
+    type: builtin
+    timeout: 300
+  # memory keeps notes
+  memory:
+    enabled: false
+    type: builtin
+GOOSE_MODE: smart_approve

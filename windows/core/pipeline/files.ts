@@ -39,9 +39,10 @@ async function place(run: RunState, behaviour: FileBehaviour, produced: string, 
  * - `sameFolder` copies the result next to the original. A result named like the original replaces it, as on macOS, but backed up.
  * - `temporaryFolder` leaves it in the run's temporary folder.
  * - anything else is a path template: a bare name lands next to the original, a trailing separator or an existing folder
- *   means "into this folder", and the result's extension is added when the template has none.
+ *   means "into this folder", and the result's extension is added when the template has none. An agent's run refuses a
+ *   template that names a file that exists, unless the user's own placement settings chose it.
  */
-export async function applyLocation(run: RunState, location: string, result: string, original: string): Promise<string> {
+export async function applyLocation(run: RunState, location: string, result: string, original: string, fromSettings = false): Promise<string> {
   const unchanged = samePath(result, original);
   // A result in the original's format keeps the original's spelling of the extension (`photo.jpg`, not the encoder's `photo.jpeg`).
   const ownExtension = placedExtension(result, original), name = path.parse(result).name + ownExtension;
@@ -69,6 +70,9 @@ export async function applyLocation(run: RunState, location: string, result: str
   }
   if (!hasFileExtension(path.basename(dest), [extension(result), extension(original)]) && ext) dest = `${dest}.${ext}`;
   if (samePath(dest, result)) return result;
+  if (run.opts.refuseExisting && !fromSettings && location !== run.opts.refuseExisting.settingsLocation && ![original, run.original].some(file => samePath(dest, file)) && await exists(dest)) {
+    throw new Error(`${dest} already exists. Agents can't replace a file that is already there: ask for an output path that doesn't exist yet.`);
+  }
   await mkdir(path.dirname(dest), { recursive: true });
   return place(run, samePath(dest, original) ? 'inPlace' : 'specificFolder', result, original, dest);
 }

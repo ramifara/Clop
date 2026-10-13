@@ -35,6 +35,11 @@ export function backendOptions(env: NodeJS.ProcessEnv = process.env): BackendOpt
   return { userData: env.CLOP_USER_DATA || paths.userData, home: os.homedir() };
 }
 
+/** As the app does: a working directory that cannot be used falls back to the default one. */
+export async function openWorkdir(chosen: string, { userData, home }: BackendOptions): Promise<Workdir> {
+  return new Workdir(chosen, { home }).ensure().catch(() => new Workdir(path.join(userData, 'work'), { home }).ensure());
+}
+
 class AppBackend implements Backend {
   readonly app = true;
   constructor(private readonly pipe: PipeEndpoint) {}
@@ -68,8 +73,7 @@ class HeadlessBackend implements Backend {
   private loadService() {
     return this.service ??= (async () => {
       const store = await this.loadStore(), { home, userData } = this.options;
-      // As the app does: a working directory that cannot be used falls back to the default one.
-      const workdir = await new Workdir(store.get('workdir'), { home }).ensure().catch(() => new Workdir(path.join(userData, 'work'), { home }).ensure());
+      const workdir = await openWorkdir(store.get('workdir'), this.options);
       // Programs by path are only for the user's own pipelines, and never from a watched folder, as in the app.
       const effects = (options: { allowExe: boolean }) => shellEffects({ ...options, watched: watchedFolders(store.get(), home) });
       return new ClopService({ store, workdir, effects, copyFiles: files => shellEffects().copyFiles(files), marker: new OptimisedMarker(path.join(userData, 'optimised.json')), home });

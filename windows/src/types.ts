@@ -33,5 +33,12 @@ export interface ClopApi {
   /** The saved pipelines the card can run on a result, and running one of them. */
   pipelines(id: string): Promise<PipelineChoice[]>; runPipeline(id: string, pipelineId: string): Promise<void>;
   window(action: 'hide' | 'main' | 'float' | 'quit' | 'minimize' | 'interactive' | 'passthrough' | 'dismiss-notice'): Promise<void>;
+  mcp(request: McpRequest): Promise<McpState>;
 }
 declare global { interface Window { clop?: ClopApi } }
+/** One agent in the MCP pane: whether Clop's server is in its config, and the line under its name. */
+export interface McpClientRow { id: string; name: string; featured: boolean; state: 'installed' | 'notInstalled' | 'unusable'; detail: string; failed: boolean }
+/** The MCP pane: the agents, and the server command for installing by hand, or why there is none. */
+export interface McpState { clients: McpClientRow[]; server?: string; command?: string; missing?: string }
+/** What the MCP pane asks the main process for. Clients are named by id; the main process owns every path. */
+export type McpRequest = { action: 'state' } | { action: 'install' | 'remove' | 'reveal'; id: string } | { action: 'enable' | 'scripts'; on: boolean } | { action: 'copy'; what: 'command' | 'server' };

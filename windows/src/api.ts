@@ -50,5 +50,6 @@ const browser: ClopApi = {
   pipelines: async () => [],
   runPipeline: async () => { throw new Error('Pipelines run in the Clop app.'); },
   window: async action => { if (action === 'float') window.open('/?floating=1', 'clop-floating', 'width=420,height=660'); },
+  mcp: async () => ({ clients: [], missing: 'Installing the MCP server into agents works in the desktop app.' }),
 };
 export const api = window.clop ?? browser;

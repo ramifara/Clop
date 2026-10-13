@@ -14,7 +14,7 @@ const api: ClopApi = {
   apply: (id, options) => invoke('apply', id, options), restore: id => invoke('restore', id),
   copy: id => invoke('copy', id), save: id => invoke('save', id), reveal: id => invoke('reveal', id),
   drag: id => ipcRenderer.send('clop:drag', id), dismiss: id => invoke('dismiss', id),
-  settings: settings => invoke('settings', settings), window: action => invoke('window', action), apps: () => invoke('apps'),
+  settings: settings => invoke('settings', settings), window: action => invoke('window', action), apps: () => invoke('apps'), mcp: request => invoke('mcp', request),
   pipelines: id => invoke('pipelines', id), runPipeline: (id, pipelineId) => invoke('run-pipeline', id, pipelineId),
 };
 contextBridge.exposeInMainWorld('clop', api);
