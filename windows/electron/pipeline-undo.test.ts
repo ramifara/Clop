@@ -13,7 +13,7 @@ import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { needTools } from '../core/testing';
 import { Workdir } from '../core/workdir';
 import { ItemEngine, type ItemAutomation } from './items';
-import { beforeRun, undoRun } from './pipeline-undo';
+import { beforeRun, recordingWorkdir, undoRun } from './pipeline-undo';
 import { attachedAutomation, type PipelineHost } from './pipelines';
 
 const balanced = { mode: 'balanced', format: 'auto', scale: 1 } as const;
@@ -76,7 +76,7 @@ test('Restore refuses, and changes nothing, when the pipeline changed the origin
   // A pipeline step that writes the file itself, keeping no copy (as a script could).
   const env = { workdir: f.workdir, mark: (file: string) => f.marker.markOptimised(file) };
   const scribble: ItemAutomation = { skipOptimisation: true, fallback: false, run: async () => {
-    const start = await beforeRun(env, f.file);
+    const start = await beforeRun(f.file, recordingWorkdir(f.workdir).backups);
     await appendFile(f.file, 'scribbled');
     return { file: f.file, started: f.file, anyRan: true, warnings: [], undo: await undoRun(env, start, f.file) };
   } };
@@ -99,4 +99,39 @@ test('Restore refuses, and changes nothing, when the pipeline changed the origin
   await assert.rejects(engine.restore(other), /fresh\.webp changed after the pipeline made it/);
   assert.equal(await digest(fresh), before);
   assert.ok((await readdir(f.dir)).includes('fresh.webp'));
+});
+
+test('Restore uses the backup its own run made: the first of two runs on one file gets the first run\'s original back', async t => {
+  const f = await setup(t); if (!f) return;
+  const first = await digest(f.file);
+  const one = await f.drop('downscale(factor: 0.5)');
+  const second = await digest(f.file);
+  assert.notEqual(second, first);
+  // The same file again, in the same session: its step backs up the same path, now holding the first run's result.
+  const two = await f.drop('downscale(factor: 0.5)');
+  assert.equal(f.engine.get(two).result.width, 120, f.engine.get(two).result.error);
+  await f.engine.restore(one);
+  assert.equal(await digest(f.file), first, 'the first run\'s original, not the latest backup of the path');
+});
+
+test('Restore never takes a backup some other run made of the same path', async t => {
+  const f = await setup(t); if (!f) return;
+  // An earlier backup of shot.webp in this session (another run or placement), of a file that is gone since.
+  const webp = path.join(f.dir, 'shot.webp');
+  await writeFile(webp, 'an older shot.webp');
+  await f.workdir.backup(webp, { force: true });
+  await rm(webp);
+  const before = await digest(f.file);
+  const id = await f.drop('convert(to: webp)');
+  await f.engine.restore(id);
+  assert.deepEqual(await readdir(f.dir), ['shot.png'], 'the WebP this run made is removed, not replaced by the older backup');
+  assert.equal(await digest(f.file), before);
+});
+
+test('Restore refuses when the backup its run made is gone, rather than taking another', async t => {
+  const f = await setup(t); if (!f) return;
+  const id = await f.drop('downscale(factor: 0.5)'), after = await digest(f.file);
+  for (const name of await readdir(f.workdir.backups)) await rm(path.join(f.workdir.backups, name));
+  await assert.rejects(f.engine.restore(id), /copy of shot\.png that the pipeline kept is no longer in the backups/);
+  assert.equal(await digest(f.file), after);
 });

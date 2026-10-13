@@ -11,7 +11,7 @@ import { defaultMarker } from '../core/marker';
 import type { ClopSettings } from '../core/settings/schema';
 import type { PipelineChoice } from '../src/types';
 import type { ItemAutomation, ItemPipelineOutcome, ItemPipelineRun } from './items';
-import { beforeRun, undoRun } from './pipeline-undo';
+import { beforeRun, recordingWorkdir, undoRun } from './pipeline-undo';
 
 export { isAumid, resolveApp, watchedFolders, type AppLookup };
 // The app's side of pipelines (spec step 21): the pipelines attached to the clipboard and to watched folders run after, or
@@ -71,9 +71,12 @@ export function attachedAutomation(pipelines: readonly Pipeline[], { host, conte
     run: async (input: ItemPipelineRun): Promise<ItemPipelineOutcome> => {
       const file = input.optimised ?? source ?? await input.fresh();
       // On the user's own file, what the run does is noted so Restore can undo it.
+      // The run's backups are recorded on its result, so Restore puts back exactly what this run kept.
       const env = file === source ? host.env() : undefined, undoEnv = env && { workdir: env.workdir, mark: (target: string) => (env.marker ?? defaultMarker()).markOptimised(target) };
-      const start = undoEnv && await beforeRun(undoEnv, file);
-      const outcome = await runForApp(host, pipelines, file, context, input.signal);
+      const recorded = env && recordingWorkdir(env.workdir);
+      const start = recorded && await beforeRun(file, recorded.backups);
+      const runHost: PipelineHost = recorded ? { ...host, env: () => ({ ...host.env(), workdir: recorded.workdir }) } : host;
+      const outcome = await runForApp(runHost, pipelines, file, context, input.signal);
       done?.(outcome);
       const undo = undoEnv && start && outcome.anyRan ? await undoRun(undoEnv, start, outcome.file) : undefined;
       return { file: outcome.file, anyRan: outcome.anyRan, warnings: outcomeNotes(outcome), started: file, ...(undo ? { undo } : {}) };
