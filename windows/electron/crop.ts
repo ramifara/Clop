@@ -121,3 +121,18 @@ export async function applyCrop(engine: ItemEngine, id: string, request: CropReq
 
 /** The window key `crop:<id>` or `compare:<id>` names a result; its window is sent that one and no other. */
 export const viewItems = (items: ItemResult[], key: string) => items.filter(item => item.id === key.slice(key.indexOf(':') + 1));
+
+/**
+ * The crop windows to close because their result started processing again, as CropView closes on `optimiser.running` on macOS: a card
+ * action, a crop the window itself applied (its error then shows on the card) or anything else that runs the result. `keptOpen` holds
+ * results whose window asked to stay open while it works (a PDF's "Uncrop", which macOS does without running the result).
+ */
+export function cropsToClose(keys: Iterable<string>, status: (id: string) => ItemResult['status'] | undefined, keptOpen: ReadonlySet<string>): string[] {
+  const closing: string[] = [];
+  for (const key of keys) {
+    if (!key.startsWith('crop:')) continue;
+    const id = key.slice('crop:'.length);
+    if (status(id) === 'processing' && !keptOpen.has(id)) closing.push(key);
+  }
+  return closing;
+}

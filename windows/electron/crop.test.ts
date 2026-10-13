@@ -11,7 +11,7 @@ import { boxes, photoPDF, round } from '../core/media/pdf.fixtures';
 import type { CropSize } from '../core/settings/schema';
 import { ItemEngine } from './items';
 import { MediaFiles } from './media-files';
-import { applyCrop, cropSource, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
+import { applyCrop, cropSource, cropsToClose, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
 import { compareSources, parseCompareView } from './compare';
 import { viewFile } from './previews';
 
@@ -234,4 +234,10 @@ test('a crop or compare window is sent its own result and no other', async t => 
   assert.deepEqual(viewItems(engine.list(), `crop:${a}`).map(item => item.id), [a]);
   assert.deepEqual(viewItems(engine.list(), `compare:${b}`).map(item => item.id), [b]);
   assert.deepEqual(viewItems(engine.list(), 'crop:gone'), []);
+});
+
+test('a crop window closes when its result starts processing again, unless it asked to stay open', () => {
+  const status = (id: string) => ({ a: 'processing', b: 'ready', c: 'processing', d: 'error' } as const)[id as 'a'];
+  assert.deepEqual(cropsToClose(['crop:a', 'crop:b', 'compare:c', 'crop:c', 'crop:d', 'crop:gone'], status, new Set()), ['crop:a', 'crop:c'], 'compare windows stay; ready, failed and dismissed results close nothing');
+  assert.deepEqual(cropsToClose(['crop:a', 'crop:c'], status, new Set(['c'])), ['crop:a'], 'a PDF being uncropped from its window keeps it open');
 });

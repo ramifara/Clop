@@ -60,7 +60,8 @@ import { newPipePath, type OptimisationRequest } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
 import { shellEffects } from '../core/shell-effects';
 import { MEDIA_SCHEME, MediaFiles } from './media-files';
-import { applyCrop, cropSource, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
+import { applyCrop, cropSource, cropsToClose, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
+import { restoredFrame, trackFrame, WindowFrames } from './window-frame';
 import { compareSources, parseCompareView } from './compare';
 import { setupBatch } from './batch-window';
 import { expandDroppedFolders, splitFolders } from './dropped';
@@ -80,6 +81,15 @@ protocol.registerSchemesAsPrivileged([{ scheme: MEDIA_SCHEME, privileges: { stan
 let main: BrowserWindow, floating: BrowserWindow, backdrop: DropBackdrop | undefined, backdropWindow: BrowserWindow | undefined, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray | undefined, engine: ItemEngine, media: MediaFiles;
 /** Open crop, compare and preview windows, by `crop:<id>`, `compare:<id>` and `preview:<id>`. */
 const views = new Map<string, BrowserWindow>();
+/** Frames kept across launches: every crop window opens where the last one was left, at its size (the "Crop Window" autosave name on macOS). */
+let windowFrames: WindowFrames | undefined;
+const CROP_FRAME = 'crop', CROP_MIN = { width: 780, height: 520 };
+/** Results whose crop window applies a change that keeps it open (a PDF's Uncrop), so it is not closed while that runs. */
+const cropKeptOpen = new Set<string>();
+/** Closes the crop windows of results that started processing again, as macOS does. */
+function closeRunningCrops() {
+  for (const key of cropsToClose(views.keys(), id => engine.has(id) ? engine.get(id).result.status : undefined, cropKeptOpen)) views.get(key)?.close();
+}
 let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false, bridgeStopped = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
@@ -334,9 +344,11 @@ async function openView(view: 'crop' | 'compare' | 'preview', id: unknown) {
   if (result.status !== 'ready') throw new Error('Wait for this result to finish first.');
   if (view === 'crop' && result.kind === 'audio') throw new Error('Audio files have nothing to crop.');
   if (open && !open.isDestroyed()) { open.show(); open.focus(); return; }
-  const size = view === 'crop' ? { width: 1020, height: 660, minWidth: 780, minHeight: 520 } : view === 'preview' ? { width: 900, height: 700, minWidth: 420, minHeight: 320 } : { width: 1100, height: 760, minWidth: 600, minHeight: 460 };
+  const frame = view === 'crop' ? restoredFrame(windowFrames?.get(CROP_FRAME), screen.getAllDisplays().map(display => display.workArea), CROP_MIN) : undefined;
+  const size = view === 'crop' ? { width: 1020, height: 660, minWidth: CROP_MIN.width, minHeight: CROP_MIN.height, ...frame } : view === 'preview' ? { width: 900, height: 700, minWidth: 420, minHeight: 320 } : { width: 1100, height: 760, minWidth: 600, minHeight: 460 };
   const window = new BrowserWindow({ ...size, show: false, title: `${{ crop: 'Crop', compare: 'Compare', preview: 'Preview' }[view]}: ${result.name}`, backgroundColor: background(), autoHideMenuBar: true, webPreferences: webPreferences() });
   views.set(key, window);
+  if (view === 'crop' && windowFrames) trackFrame(windowFrames, CROP_FRAME, window);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.on('page-title-updated', event => event.preventDefault());
@@ -1129,7 +1141,13 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'card-menu': await cardMenu(event.sender, cardIds(args[0]), args[1]); break;
     case 'card-action': await runCard(event.sender, cardIds(args[0]), args[1]); break;
     case 'crop-source': return cropSource(engine.get(id), parseCropView(args[1]), media);
-    case 'crop': await applyCrop(engine, id, parseCropRequest(args[1], engine.get(id).result.kind)); if (copiesBack(id)) await copy([id]); break;
+    case 'crop': {
+      const request = parseCropRequest(args[1], engine.get(id).result.kind), keep = request.type === 'pdf-uncrop';
+      if (keep) cropKeptOpen.add(id);
+      try { await applyCrop(engine, id, request); } finally { if (keep) cropKeptOpen.delete(id); }
+      if (copiesBack(id)) await copy([id]);
+      break;
+    }
     case 'crop-sizes': return settings.savedCropSizes;
     case 'save-crop-sizes': settings = await store.set({ savedCropSizes: parseSavedCropSizes(args[0]) }); broadcast(); return settings.savedCropSizes;
     case 'compare-sources': return compareSources(engine.get(id), parseCompareView(args[1]), media);
@@ -1204,6 +1222,7 @@ else {
     setupWatchdog();
     Menu.setApplicationMenu(null);
     const userData = app.getPath('userData');
+    windowFrames = await new WindowFrames(path.join(userData, 'window-frames.json')).load();
     store = new SettingsStore(path.join(userData, 'settings.json'), { home: app.getPath('home'), desktop: app.getPath('desktop'), userData }, true);
     // Watching guards against apps that rewrite many files in its first seconds on the first launch.
     const firstLaunch = !await stat(store.file).then(() => true, () => false);
@@ -1244,7 +1263,7 @@ else {
     engine = new ItemEngine(session, () => settings, file => marker.markOptimised(file));
     media = new MediaFiles([session]);
     protocol.handle(MEDIA_SCHEME, request => media.handle(request));
-    engine.on('change', () => { syncFloating(); broadcast(); });
+    engine.on('change', () => { syncFloating(); broadcast(); closeRunningCrops(); });
     engine.on('ready', (id: string) => { if (quiet.has(id)) return; hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
     engine.on('add', (id: string) => lastBatch.add(id));
     // Whichever way a result gets its original back (card, selection, tray, error card), the shortcut steps start over.
