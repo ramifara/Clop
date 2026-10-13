@@ -342,8 +342,12 @@ try {
   }, 'Dropping a folder on the preset zone did not give a result for each of its images', 60000, () => appState(main));
   console.log('Preset zone results:', JSON.stringify(zoneResults.map(({ name, status, error, format }) => ({ name, status, error, format }))));
   assert.deepEqual(zoneResults.map(item => [item.name, item.status, item.format]).sort(), [['one.png', 'ready', 'webp'], ['two.png', 'ready', 'webp']], 'Both images should run the zone\'s WebP pipeline');
-  const batchAfterZone = await connect((await pages()).find(page => page.type === 'page' && page.url.includes('batch=1')));
-  try { assert.equal((await batchAfterZone.evaluate('window.clopBatch.state()')).files.length, 0, 'A drop on a preset zone must not go to the batch window'); } finally { batchAfterZone.close(); }
+  // The batch window exists only if an earlier step opened it (the folder drag, skipped on ARM64); with none, the drop cannot have gone there.
+  const batchPage = (await pages()).find(page => page.type === 'page' && page.url.includes('batch=1'));
+  if (batchPage) {
+    const batchAfterZone = await connect(batchPage);
+    try { assert.equal((await batchAfterZone.evaluate('window.clopBatch.state()')).files.length, 0, 'A drop on a preset zone must not go to the batch window'); } finally { batchAfterZone.close(); }
+  }
   assert.deepEqual(await Promise.all(zoneFiles.map(digest)), zoneOriginals, 'The dropped originals must be left as they were');
   assert.deepEqual((await readdir(zoneFolder)).sort(), ['one.png', 'two.png'], 'Nothing should be written next to the dropped originals');
   assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'A drop on a preset zone must not show an error');
