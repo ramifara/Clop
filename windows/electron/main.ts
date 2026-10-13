@@ -64,6 +64,7 @@ import { applyCrop, cropSource, viewItems, parseCropRequest, parseCropView, pars
 import { compareSources, parseCompareView } from './compare';
 import { setupBatch } from './batch-window';
 import { expandDroppedFolders, splitFolders } from './dropped';
+import { planZoneDrop } from './zone-drop';
 import { MAX_BATCH_FILES } from '../core/batch/scan';
 import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
 import { expandHome } from '../core/settings/paths';
@@ -565,13 +566,13 @@ const dropExtra = (zone?: unknown): ImportExtra => ({
 });
 /** What a drop on the drop zone does: the batch window takes folders (with `useBatchModeForFolders`) and large piles, everything else is optimised one by one. */
 async function dropped(files: unknown, aggressive: boolean) {
-  if (!await batch?.host.drop(files, aggressive)) await importFiles(files, 'drop', aggressive);
+  if (!await batch?.host.drop(files, aggressive)) await importFiles(files, 'drop', { aggressive });
 }
 /**
  * Dropped and opened files; their results go on the clipboard with `autoCopyToClipboard`. Dropped files run the pipelines attached
  * to the drop zone, or the pipeline of the preset zone `zone` they were dropped on instead.
  */
-async function importFiles(files: unknown, source: ItemResult['source'], aggressive = false, zone?: unknown) {
+async function importFiles(files: unknown, source: ItemResult['source'], { aggressive = false, zone, limit = 20 }: { aggressive?: boolean; zone?: unknown; limit?: number } = {}) {
   const sequence = await currentSequence();
   // Pipelines attached to the drop zone (or a preset zone's pipeline) run on drops, but not on a Shift-drop's explicit aggressive optimisation (⌘ on macOS, `wantsPipelineLookup`).
   const extra = source !== 'drop' || aggressive ? undefined : () => dropExtra(zone);
@@ -581,12 +582,19 @@ async function importFiles(files: unknown, source: ItemResult['source'], aggress
     for (const notice of expanded.notices) inform(notice);
     files = expanded.files;
     if (!(files as string[]).length) return;
-    const ids = await importPaths(files, source, { aggressive, extra, limit: MAX_BATCH_FILES });
-    if (settings.autoCopyToClipboard && ids.length) await copy(ids, sequence);
-    return;
+    limit = MAX_BATCH_FILES;
   }
-  const ids = await importPaths(files, source, { aggressive, extra });
+  const ids = await importPaths(files, source, { aggressive, extra, limit });
   if (settings.autoCopyToClipboard && ids.length) await copy(ids, sequence);
+}
+/**
+ * A drop on the preset zone `zone`: its pipeline runs on every dropped file and on every file in the dropped folders, never the batch
+ * window. A zone that cannot run refuses the whole drop with one notice.
+ */
+async function zoneDropped(zone: unknown, files: unknown, aggressive: boolean) {
+  const plan = await planZoneDrop(settings, zone, files, { owns: file => workdir.owns(file), isLocal: scanLocal, kindOf: mediaKind });
+  if (plan.notice) inform(plan.notice);
+  if (plan.files.length) await importFiles(plan.files, 'drop', { aggressive, zone, limit: MAX_BATCH_FILES });
 }
 /**
  * The name for a clipboard image: `customNameTemplateForClipboardImages` (or the macOS default template) when
@@ -1083,14 +1091,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'dismiss': await dismiss(id); break;
     case 'settings': if (event.sender !== main.webContents) throw new Error('Only the settings window can do this.'); await updateSettings(rendererSettings(args[0], settings)); break;
     case 'apps': return bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [];
-    case 'run-preset': {
-      // A folder dropped on a preset zone is handled as on the drop zone itself, without the zone's pipeline, as macOS does (optimiseDir takes none).
-      const split = await splitFolders(args[1]);
-      if (!split?.folders.length) { await importFiles(args[1], 'drop', false, args[0]); break; }
-      if (split.files.length) await importFiles(split.files, 'drop', false, args[0]);
-      await dropped(split.folders, false);
-      break;
-    }
+    case 'run-preset': await zoneDropped(args[0], args[1], false); break;
     case 'pipelines': return pipelineChoices(settings, engine.get(itemId(args[0])).result.kind);
     case 'run-pipeline': await runSavedPipeline(itemId(args[0]), args[1]); break;
     case 'mcp': if (event.sender !== main.webContents) throw new Error('Only the settings window can do this.'); return mcp.handle(args[0]);
