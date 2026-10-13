@@ -45,7 +45,11 @@ export interface ItemPlacement {
  * What the attached pipelines did to a file (`runPipelines` in core/pipeline/triggers.ts). `started` is the file they started
  * from: when it is outside the shelf (a watched or placed file), restoring cannot undo what they did to it.
  */
-export type ItemPipelineOutcome = Pick<PipelinesOutcome, 'file' | 'anyRan' | 'warnings'> & { started?: string };
+export type ItemPipelineOutcome = Pick<PipelinesOutcome, 'file' | 'anyRan' | 'warnings'> & {
+  started?: string;
+  /** Undoes what the pipelines did to `started` when it is outside the shelf, resolving with its path; throws when it cannot (`undoRun` in electron/pipeline-undo.ts). */
+  undo?: () => Promise<string>;
+};
 /** The pipelines attached to where a file came from, which run once, after or instead of its optimisation. */
 export interface ItemAutomation {
   /** Every pipeline skips the plain optimisation, so they start from the original. */
@@ -74,6 +78,8 @@ interface Entry {
   placing?: boolean;
   /** A pipeline changed a file outside the shelf, which restoring cannot give back. */
   changedOutside?: string;
+  /** Undoes what pipelines did to a file outside the shelf, instead of the placement's restore. */
+  undoOutside?: () => Promise<string>;
 }
 /** `placement` puts each result back where the file came from; `staged` hears the result's id as soon as it is in the shelf; `automation` runs attached pipelines. */
 export interface ImportExtra {
@@ -328,7 +334,10 @@ export class ItemEngine extends EventEmitter {
     signal.throwIfAborted();
     // Pipelines that replaced optimisation work on the user's file where it is, with no placement to undo them: its original is in the backups.
     // So do pipelines that ran after an optimisation that left the file as it was: nothing was backed up for them either.
-    if ((fresh || r.unchanged) && outcome.anyRan && outcome.started && !within(e.directory, outcome.started)) e.changedOutside ??= outcome.started;
+    // With an undo for that run, restoring puts things back as far as it safely can; without one, it refuses.
+    if ((fresh || r.unchanged) && outcome.anyRan && outcome.started && !within(e.directory, outcome.started) && !e.changedOutside && !e.undoOutside) {
+      if (outcome.undo) e.undoOutside = outcome.undo; else e.changedOutside = outcome.started;
+    }
     const info = outcome.anyRan ? await stat(outcome.file).catch(() => undefined) : undefined;
     if (info?.isFile()) {
       const kind = await detectKind(outcome.file, { signal }).catch(() => undefined) ?? r.kind;
@@ -410,7 +419,8 @@ export class ItemEngine extends EventEmitter {
     const e = this.get(id);
     if (e.changedOutside) throw new Error(`A pipeline changed ${path.basename(e.changedOutside)}, so Clop leaves it as it is. Its original is in the backups.`);
     // A pipeline's file outside the shelf is no longer the result once the original is back.
-    e.placedPath = e.placement ? await e.placement.restore(resume) : undefined;
+    if (e.undoOutside) { e.placedPath = await e.undoOutside(); e.undoOutside = undefined; }
+    else e.placedPath = e.placement ? await e.placement.restore(resume) : undefined;
     e.outputPath = e.originalPath;
     if (e.result.kind === 'audio') e.result.coverArt = await probe(e.originalPath).then(info => info.kind === 'audio' ? info.hasCoverArt : undefined, () => e.result.coverArt);
     Object.assign(e.result, { status: 'ready', width: e.result.originalWidth, height: e.result.originalHeight, outputBytes: e.result.originalBytes,
