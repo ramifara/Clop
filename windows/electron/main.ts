@@ -26,6 +26,13 @@ import type { PipelineEffects } from '../core/pipeline/executor';
 import type { MediaKind } from '../core/media/types';
 import { spawn } from 'node:child_process';
 import type { AppEntry, AppState, ImageOptions, ItemResult } from '../src/types';
+import { publishPipe, startPipeServer, type PipeServer } from './pipe-server';
+import { clopURLs, type ClopURL } from './clop-url';
+import { installPortableCLI, isPortable, portableCLIInstalled, refreshPortableCLI, removePortableCLI } from './cli-install';
+import { mirrorConsoleToFile } from './debug-log';
+import { newPipePath, type OptimisationRequest } from '../core/ipc/protocol';
+import { ClopService } from '../core/ipc/service';
+import { shellEffects } from '../core/shell-effects';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let main: BrowserWindow, floating: BrowserWindow, tray: Tray, engine: ItemEngine;
@@ -55,6 +62,7 @@ const intake = new ClipboardIntake(error => inform(message(error)));
 const pickup = new ClipboardPickup(change => { void optimiseClipboard(change); });
 let clipboardWrites: Promise<void> = Promise.resolve();
 const bridge = new WindowsBridge();
+let pipe: PipeServer | undefined, withdrawPipe: (() => void) | undefined, cliInstalled = false, askingMCP = false;
 const devUrl = process.env.CLOP_DEV_URL;
 const fingerprint = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 /** Files are recognised by path, size and modification time: hashing a large video's bytes on every copy would take too long. */
@@ -420,6 +428,52 @@ function startClipboardFallback() {
   clipboardTimer = setInterval(() => { if (settings.enableClipboardOptimiser && !polling) { polling = true; void optimiseClipboard().finally(() => { polling = false; }); } }, 900);
   clipboardTimer.unref();
 }
+/**
+ * The CLI's "optimise this file and show a card" through the app's item engine (one adapter, so the engine can change behind
+ * it). A card for every kind, but only for requests the engine's plain optimisation expresses (aggressive, and a downscale
+ * for images); a crop, speed, bitrate, DPI or compression override the pipe service runs itself, without a card.
+ */
+async function optimiseWithCard(file: string, kind: MediaKind, req: OptimisationRequest) {
+  const downscaled = req.downscaleFactor !== undefined && (kind === 'image' ? req.downscaleFactor < 0.1 : req.downscaleFactor < 1);
+  const changesMore = req.size || req.compression || req.adaptiveOptimisation || req.removeAudio || req.audioBitrate !== undefined || req.pdfDPI !== undefined
+    || (req.changePlaybackSpeedFactor !== undefined && req.changePlaybackSpeedFactor !== 1);
+  if (downscaled || changesMore) return undefined;
+  await makeRoom();
+  const scale = kind === 'image' && req.downscaleFactor ? { scale: req.downscaleFactor } : {};
+  const id = await engine.importPath(file, 'file', { ...defaults(req.aggressiveOptimisation), ...scale });
+  const { result } = engine.get(id);
+  if (result.status !== 'ready') throw new Error(result.error ?? `Clop could not optimise this ${kind}.`);
+  return result.unchanged ? file : engine.output(id);
+}
+/** Requests from `clop` and the MCP server (spec step 24). Settings they change go through `updateSettings`, so they apply at once. */
+async function serveCLI(userData: string) {
+  const files = shellEffects();
+  // The same effects as pipelines run from the app, per request: an agent without the permission for script steps cannot open a program by path.
+  const service = new ClopService({
+    store: { get: () => store.get(), set: async value => { await updateSettings(value); return settings; } },
+    workdir, marker, effects: options => pipelineEffects(options), copyFiles: list => files.copyFiles(list), home: app.getPath('home'), withCard: optimiseWithCard,
+  });
+  pipe = await startPipeServer(newPipePath(), (request, emit) => { console.log(`CLI request: ${request.kind}`); return service.handle(request, emit); });
+  withdrawPipe = await publishPipe(userData, pipe);
+}
+/** `clop://settings/…` opens Settings (tabs arrive with the settings window) and `clop://mcp/start|stop` flips the MCP switch; start asks first. */
+async function openClopURL(link: ClopURL) {
+  if (link.kind === 'settings') { console.log(`Settings link: ${link.tab ?? 'general'}${link.row ? ` / ${link.row}` : ''}`); main.show(); main.focus(); return; }
+  if (link.action === 'stop') return updateSettings({ mcpEnabled: false });
+  // Repeated start links while the question is open ask nothing more.
+  if (settings.mcpEnabled || askingMCP) return;
+  askingMCP = true;
+  let response: number;
+  try { ({ response } = await dialog.showMessageBox({ type: 'question', buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1, title: 'Clop', message: 'Let AI agents change files and settings through Clop?', detail: 'An agent asked to use Clop through its MCP server. You can turn this off again in Clop settings.' })); }
+  finally { askingMCP = false; }
+  if (response === 0) await updateSettings({ mcpEnabled: true });
+}
+function toggleCLI() {
+  const appDir = path.dirname(process.execPath);
+  (cliInstalled ? removePortableCLI(process.resourcesPath, appDir) : installPortableCLI(process.resourcesPath, appDir))
+    .then(() => { cliInstalled = !cliInstalled; updateTray(); inform(cliInstalled ? 'Open a new terminal to use the clop command.' : 'The clop command is removed.'); })
+    .catch(error => inform(message(error)));
+}
 function updateTray() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show latest results', click: showLatest },
@@ -435,6 +489,7 @@ function updateTray() {
     { type: 'separator' },
     { label: 'Settings…', click: () => main.show() },
     { label: 'Open originals and results', click: () => { void shell.openPath(workdir.temp); } },
+    ...(isPortable() ? [{ label: cliInstalled ? 'Remove command-line tool' : 'Install command-line tool', click: toggleCLI }] : []),
     { type: 'separator' }, { label: 'Quit Clop', click: () => app.quit() },
   ]));
 }
@@ -512,7 +567,13 @@ ipcMain.on('clop:drag', (event, id: string) => {
 });
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', (_event, argv) => { if (engine) showLatest(); const files = argv.filter(arg => path.isAbsolute(arg) && mediaKind(arg)); if (files.length) void importFiles(files, 'file').catch(error => inform(message(error))); });
+  app.on('second-instance', (_event, argv) => {
+    const links = clopURLs(argv);
+    if (links.length) { if (engine) for (const link of links) void openClopURL(link).catch(error => inform(message(error))); return; }
+    if (engine) showLatest();
+    const files = argv.filter(arg => path.isAbsolute(arg) && mediaKind(arg));
+    if (files.length) void importFiles(files, 'file').catch(error => inform(message(error)));
+  });
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
     const userData = app.getPath('userData');
@@ -525,6 +586,7 @@ else {
     // The built-in pipelines join the library once per version. Not over a settings file that could not be read: saving would replace it.
     const seeded = settingsError ? undefined : seedBuiltinPipelines(settings.savedPipelines, settings.builtinPipelinesSeededVersion);
     if (seeded) settings = await store.set(seeded).catch(error => { settingsError = error; return settings; });
+    mirrorConsoleToFile(path.join(userData, 'logs', 'clop.log'), () => settings.persistDebugLogs);
     // Earlier versions kept originals in `images`. It ages out with the cleanup interval instead of being migrated.
     const open = async (root: string) => new Workdir(root, { home: app.getPath('home'), legacy: [path.join(userData, 'images')] }).ensure();
     workdir = await open(settings.workdir).catch(async error => {
@@ -580,10 +642,17 @@ else {
       bridge.on('stopped', () => { bridgeReady = false; pickup.cancel(); startClipboardFallback(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));
     } else startClipboardFallback();
+    // Requests can change settings, which updates the tray and the windows, so the pipe opens once they exist.
+    await serveCLI(userData).catch(error => inform(`The clop command cannot reach Clop: ${message(error)}`));
+    // An installed copy owns clop:// links; a portable copy only takes them when nothing else has.
+    const exe = process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath;
+    if (app.isPackaged && process.platform === 'win32' && (!isPortable() || !app.getApplicationNameForProtocol('clop://') || app.isDefaultProtocolClient('clop', exe))) app.setAsDefaultProtocolClient('clop', exe);
+    if (isPortable() && (cliInstalled = await portableCLIInstalled())) { updateTray(); void refreshPortableCLI(process.resourcesPath, path.dirname(process.execPath)).catch(error => inform(message(error))); }
+    for (const link of clopURLs(process.argv.slice(1))) void openClopURL(link).catch(error => inform(message(error)));
     const files = process.argv.slice(1).filter(arg => path.isAbsolute(arg) && mediaKind(arg));
     if (files.length) await importFiles(files, 'file');
   }).catch(error => { dialog.showErrorBox('Clop could not start', message(error)); app.quit(); });
-  app.on('before-quit', () => { quitting = true; engine?.abort(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
+  app.on('before-quit', () => { quitting = true; withdrawPipe?.(); void pipe?.close(); engine?.abort(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });
   app.on('activate', () => { if (engine) showLatest(); });
 }
