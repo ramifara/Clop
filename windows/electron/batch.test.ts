@@ -29,25 +29,38 @@ async function setup(t: TestContext, change: Partial<ClopSettings> = {}, extra: 
 }
 const until = async (check: () => boolean) => { for (let i = 0; i < 300 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 50)); assert.ok(check(), 'timed out'); };
 
-test('drops of a folder or of more files than the threshold go to the batch window', async t => {
-  const { dir, host, file, shown } = await setup(t);
+test('a drop of more files than the threshold goes to the batch window whole; up to the threshold they stay cards', async t => {
+  const { host, file, shown } = await setup(t);
   const few = await Promise.all(['a.png', 'b.png', 'c.png'].map(name => file(name)));
-  assert.equal(await host.drop(few), false, 'up to the threshold, files become cards');
+  assert.deepEqual(await host.drop(few), few, 'up to the threshold, files become cards');
   assert.equal(shown(), 0);
-  assert.equal(await host.drop([...few, await file('d.mp4')], true), true);
+  assert.deepEqual(await host.drop([...few, await file('d.mp4')], true), [], 'one more than the threshold, the window takes them all');
   assert.equal(shown(), 1);
   assert.deepEqual(host.state().files.map(f => path.basename(f.path)), ['a.png', 'b.png', 'c.png', 'd.mp4']);
   assert.equal(host.state().defaults.aggressive, true, 'an aggressive drop seeds an aggressive batch');
-  await file('sub/e.pdf'); await file('sub/notes.txt');
-  assert.equal(await host.drop([path.join(dir, 'files', 'sub')]), true, 'a single folder opens the window');
-  assert.deepEqual(host.state().files.map(f => path.basename(f.path)), ['a.png', 'b.png', 'c.png', 'd.mp4', 'e.pdf'], 'a later drop adds to the prepared files');
+});
+
+test('a dropped folder goes to the batch window only when it holds more supported files than the threshold (optimiseDir)', async t => {
+  const { dir, host, file, shown } = await setup(t);
+  // The threshold is 3: three supported files (and a text file, which does not count) stay cards.
+  for (const name of ['a.png', 'b.jpg', 'sub/c.pdf', 'notes.txt']) await file(path.join('small', name));
+  const small = path.join(dir, 'files', 'small'), loose = await file('loose.png');
+  assert.deepEqual(await host.drop([small]), [small], 'a folder with as many files as the threshold is optimised file by file');
+  assert.equal(shown(), 0);
+  for (const name of ['a.png', 'b.png', 'c.png', 'sub/d.mp4']) await file(path.join('large', name));
+  const large = path.join(dir, 'files', 'large');
+  assert.deepEqual(await host.drop([small, large, loose]), [small, loose], 'one more than the threshold: only that folder goes to the window');
+  assert.equal(shown(), 1);
+  assert.deepEqual(host.state().files.map(f => path.basename(f.path)), ['a.png', 'b.png', 'c.png', 'd.mp4']);
+  await file('sub/e.pdf');
+  assert.deepEqual(await host.drop([path.join(dir, 'files', 'sub')]), [path.join(dir, 'files', 'sub')], 'a folder with one file stays cards');
 });
 
 test('drops stay cards when batch mode is off or the request is malformed', async t => {
-  const { dir, host, shown } = await setup(t, { useBatchModeForFolders: false });
-  assert.equal(await host.drop([dir]), false);
+  const { dir, host, shown } = await setup(t, { useBatchModeForFolders: false, batchModeFileCountThreshold: 0 });
+  assert.deepEqual(await host.drop([dir]), [dir]);
   const on = await setup(t);
-  for (const bad of [undefined, 'C:\\a.png', [], [1], ['relative/a.png'], [on.dir, 42]]) assert.equal(await on.host.drop(bad), false, JSON.stringify(bad));
+  for (const bad of [undefined, 'C:\\a.png', [], [1], ['relative/a.png'], [on.dir, 42]]) assert.deepEqual(await on.host.drop(bad), bad, JSON.stringify(bad));
   assert.equal(shown() + on.shown(), 0);
 });
 

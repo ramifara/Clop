@@ -256,7 +256,8 @@ try {
   assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'An Explorer verb must not show an error');
   console.log('Explorer verb launches reached the running app and optimised both files.');
   // A folder with two images, dragged from a real Explorer window onto the drop zone, opens the batch window with both files: the
-  // helper must offer a folder as a drag, the zone must take the drop, and the dropped folder must reach the batch.
+  // helper must offer a folder as a drag, the zone must take the drop, and the dropped folder must reach the batch. As on macOS only a
+  // folder holding more files than `batchModeFileCountThreshold` goes there, so the threshold is lowered to 1 for this drop.
   const photos = path.join(profile, 'Two photos');
   await mkdir(photos);
   const folderFiles = ['first.png', 'second.png'].map(name => path.join(photos, name));
@@ -270,7 +271,8 @@ try {
   const zone = await floating.evaluate('(() => { const rect = document.querySelector(".drop-target").getBoundingClientRect(); return { x: (screenX + rect.x + rect.width / 2) * devicePixelRatio, y: (screenY + rect.y + rect.height / 2) * devicePixelRatio }; })()');
   await main.evaluate('window.clop.settings({ keepDropZoneVisible: false })');
   await until(() => floating.evaluate('!document.querySelector(".drop-target")'), 'The drop zone did not hide again');
-  assert.equal((await main.evaluate('window.clop.state()')).settings.useBatchModeForFolders, true, 'Folders go to the batch window by default');
+  assert.equal((await main.evaluate('window.clop.state()')).settings.useBatchModeForFolders, true, 'Large folders go to the batch window by default');
+  await main.evaluate('window.clop.settings({ batchModeFileCountThreshold: 1 })');
   fixture = await explorerFixture(await realpath(photos));
   const folderDrag = fixture.gesture('image', { pressDelay: 4000, hold: 2500, to: zone });
   await until(() => floating.evaluate('Boolean(document.querySelector(".drop-target"))'), 'Dragging a folder from Explorer did not reveal the drop zone', 30000);
@@ -282,6 +284,7 @@ try {
     assert.equal((await main.evaluate('window.clop.state()')).items.length, 0, 'A dropped folder goes to the batch window, not to floating results');
     await batchWindow.evaluate('window.clopBatch.clear()');
   } finally { batchWindow.close(); }
+  await main.evaluate('window.clop.settings({ batchModeFileCountThreshold: 30 })');
   console.log('A folder dragged from Explorer onto the drop zone opened the batch window with both of its images.');
   console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, copied video, PDF and audio files, an ignored app, a video and an image optimised in place in a watched folder, a clipboard pipeline converting to WebP, and a folder dragged from Explorer into the batch window.');
 } finally {

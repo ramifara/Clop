@@ -564,9 +564,14 @@ async function importPaths(files: unknown, source: ItemResult['source'], { aggre
 const dropExtra = (zone?: unknown): ImportExtra => ({
   late: kind => sourceAutomation(kind, 'dropZone', 'drop', undefined, zone === undefined ? undefined : [zonePipeline(settings.presetZones, settings.savedPipelines, zone, kind)]),
 });
-/** What a drop on the drop zone does: the batch window takes folders (with `useBatchModeForFolders`) and large piles, everything else is optimised one by one. */
+/**
+ * What a drop on the drop zone does: with `useBatchModeForFolders` the batch window takes a pile of more files than
+ * `batchModeFileCountThreshold` and each folder holding more than that; everything else, the files in smaller folders too, is optimised one by one.
+ */
 async function dropped(files: unknown, aggressive: boolean) {
-  if (!await batch?.host.drop(files, aggressive)) await importFiles(files, 'drop', { aggressive });
+  const rest = batch ? await batch.host.drop(files, aggressive) : files;
+  // What is left is at most `batchModeFileCountThreshold` files and folders, which may be more than the usual 20.
+  if (!Array.isArray(rest) || rest.length) await importFiles(rest, 'drop', { aggressive, limit: settings.useBatchModeForFolders ? Math.max(20, settings.batchModeFileCountThreshold) : 20 });
 }
 /**
  * Dropped and opened files; their results go on the clipboard with `autoCopyToClipboard`. Dropped files run the pipelines attached
@@ -575,8 +580,8 @@ async function dropped(files: unknown, aggressive: boolean) {
 async function importFiles(files: unknown, source: ItemResult['source'], { aggressive = false, zone, limit = 20 }: { aggressive?: boolean; zone?: unknown; limit?: number } = {}) {
   const sequence = await currentSequence();
   const extra = source === 'drop' && dropRunsPipelines({ aggressive, zone }) ? () => dropExtra(zone) : undefined;
-  // A folder among the files becomes the files inside it (the batch window takes folders whole, see `dropped`).
-  if (Array.isArray(files) && files.length <= 20 && files.every(file => typeof file === 'string' && path.isAbsolute(file)) && await splitFolders(files).then(split => split!.folders.length > 0)) {
+  // A folder among the files becomes the files inside it (the batch window takes the larger ones, see `dropped`).
+  if (Array.isArray(files) && files.length <= limit && files.every(file => typeof file === 'string' && path.isAbsolute(file)) && await splitFolders(files).then(split => split!.folders.length > 0)) {
     const expanded = await expandDroppedFolders(files as string[], { owns: file => workdir.owns(file), isLocal: scanLocal });
     for (const notice of expanded.notices) inform(notice);
     files = expanded.files;

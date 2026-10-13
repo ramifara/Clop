@@ -73,16 +73,24 @@ export class BatchHost {
   private get running() { return this.batch?.phase === 'running' || this.batch?.phase === 'reverting'; }
 
   /**
-   * Whether a drop goes to the batch window instead of the floating results: with `useBatchModeForFolders`, a drop holding a
-   * folder or more files than `batchModeFileCountThreshold`. Such a drop is prepared in the window and true is returned.
+   * What of a drop the batch window takes instead of the floating results, decided as macOS does with `useBatchModeForFolders`: a drop
+   * of more files and folders than `batchModeFileCountThreshold` goes there whole (`optimiseDroppedItems`), and so does each dropped
+   * folder that holds more supported files than that (`optimiseDir`). Returns what is left to optimise one by one: the whole drop when
+   * the window takes none of it (or the request is malformed), nothing when it takes all of it.
    */
-  async drop(files: unknown, aggressive = false): Promise<boolean> {
+  async drop(files: unknown, aggressive = false): Promise<unknown> {
     const s = this.options.settings();
-    if (!s.useBatchModeForFolders || !isPathList(files, MAX_BATCH_FILES)) return false;
-    const folder = (await Promise.all(files.map(file => stat(file).then(info => info.isDirectory(), () => false)))).some(Boolean);
-    if (!folder && files.length <= s.batchModeFileCountThreshold) return false;
-    await this.add(files, aggressive);
-    return true;
+    if (!s.useBatchModeForFolders || !isPathList(files, MAX_BATCH_FILES)) return files;
+    if (files.length > s.batchModeFileCountThreshold) { await this.add(files, aggressive); return []; }
+    const large = await Promise.all(files.map(async file => {
+      if (!await stat(file).then(info => info.isDirectory(), () => false)) return false;
+      // Counting stops one past the threshold: a folder just has to hold more.
+      const found = await scanBatch([file], { owns: this.options.owns, isLocal: this.options.isLocal, limit: s.batchModeFileCountThreshold + 1 });
+      return found.files.length > s.batchModeFileCountThreshold;
+    }));
+    const taken = files.filter((_, i) => large[i]);
+    if (taken.length) await this.add(taken, aggressive);
+    return files.filter((_, i) => !large[i]);
   }
 
   /**

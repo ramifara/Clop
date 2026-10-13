@@ -3,8 +3,9 @@ import path from 'node:path';
 import { MAX_BATCH_ENTRIES, MAX_BATCH_FILES, scanBatch, type ScanOptions } from '../core/batch/scan';
 
 // A drop can hold folders as well as files (the native helper offers Explorer's selected folders to the drop zone). The batch
-// window takes them whole; this is what the one-by-one import does with them when `useBatchModeForFolders` is off or a drop is
-// small, as optimiseDir does on macOS: every supported file inside, recursive, hidden files and `.clopignore-<type>` rules skipped.
+// window takes large ones whole; this is what the one-by-one import does with the others (every folder when `useBatchModeForFolders`
+// is off, and every folder dropped on a preset zone), as optimiseDir does on macOS: every supported file inside, recursive, hidden
+// files and `.clopignore-<type>` rules skipped.
 
 const isDirectory = (file: string) => stat(file).then(info => info.isDirectory(), () => false);
 
