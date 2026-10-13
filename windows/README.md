@@ -31,7 +31,7 @@ Settings stay closed unless requested from the tray (`Settings…`) or a `clop:/
 
 ## Install
 
-Download the [Windows x64 installer](https://github.com/ramifara/Clop/releases/download/windows-v0.1.1/Clop-Windows-0.1.1-x64-Setup.exe) or [portable executable](https://github.com/ramifara/Clop/releases/download/windows-v0.1.1/Clop-Windows-0.1.1-x64-Portable.exe). Quit the previous version from its tray menu before upgrading. Windows 10 and Windows 11 are supported. The builds are unsigned, so Windows SmartScreen warns about a download from the releases page: choose `More info`, then `Run anyway`. A signing certificate is not decided yet. Releases are tagged `v<version>` from the next release on (the existing `windows-v0.1.1` tag is the last of the old format, which the updater cannot read); see [Updates](#updates). No Node.js, PowerShell module or development setup is required to use them.
+Download `Clop-Windows-<version>-x64-Setup.exe` (installer) or `Clop-Windows-<version>-x64-Portable.exe` from the [releases page](https://github.com/ramifara/Clop/releases). The current version is 1.0.0-beta.1, a pre-release, so it is listed under its own heading on that page rather than as "Latest". Quit the previous version from its tray menu before upgrading. Windows 10 and Windows 11 are supported. The builds are unsigned, so Windows SmartScreen warns about a download from the releases page: choose `More info`, then `Run anyway`. A signing certificate is not decided yet. What changed in each version is in [CHANGELOG.md](CHANGELOG.md); how versions are numbered is under [Versions](#versions). No Node.js, PowerShell module or development setup is required to use them.
 
 ## Image and clipboard details
 
@@ -246,10 +246,19 @@ Right-clicking a supported file in Explorer offers `Optimise with Clop`, `Optimi
 
 The installed app checks GitHub Releases of this fork for a newer version shortly after it starts and once a day, through `electron-updater`. A new version opens a dialog: `Download and install` downloads the NSIS installer and restarts into it, `See what changed` opens the releases page. Nothing is downloaded without that choice. The portable app cannot update itself (the update feed describes the installer), so its dialog sends you to the releases page. Releases are tagged `v<version>`, and a release marked as a prerelease is a beta.
 
-- Settings, Updates has `Check for updates` (on by default) and `Include beta versions` (off by default); both are Windows-only keys, `checkForUpdates` and `betaUpdates`. The update check is the only time Clop contacts the internet by itself. With checking off, nothing is requested, and the tray's `Check for updates…` and the `Check for updates now` button say so instead.
+- Settings, Updates has `Check for updates` (on by default) and `Include beta versions` (off by default); both are Windows-only keys, `checkForUpdates` and `betaUpdates`. A beta build is offered the next beta whatever that setting says, as electron-updater does by default, so testers stay on the beta line until the stable release; a stable build is offered betas only with the setting on. The update check is the only time Clop contacts the internet by itself. With checking off, nothing is requested, and the tray's `Check for updates…` and the `Check for updates now` button say so instead.
 - Development builds and unpackaged runs never check, whatever the setting says, and neither does any system but Windows. The updater is not even loaded then (`electron/updates.ts`, `updateGate`).
 - The installer is not signed. Updating from inside the app does not raise SmartScreen (the app downloads the file itself); downloading from a browser does, see [Install](#install). Update integrity rests on the SHA-512 in `latest.yml` served over HTTPS from GitHub, since electron-updater only checks an installer's signature when a publisher name is configured. The packaged app is built with Electron's fuses set so that `NODE_OPTIONS` and the `--inspect` switches have no effect and the app's `app.asar` is checked against the hash built into the exe; RunAsNode stays on, because `clop.exe` runs the command line inside the app's Electron as Node.
 - `package.json` has an electron-builder `publish` section for GitHub (this repository), which makes the build write `latest.yml` and the app's update configuration. CI still only uploads the build as an artifact and runs electron-builder with `--publish never`; publishing a release is done by hand.
+
+## Versions
+
+Clop for Windows has its own version line, separate from the macOS app's (the `v3.x` tags in this repository are upstream macOS history).
+
+- Versions follow [semantic versioning](https://semver.org): `MAJOR.MINOR.PATCH`. A patch fixes bugs, a minor release adds features, and a major release changes something people rely on (settings that move or go away, a command-line flag that changes meaning).
+- Betas are `MAJOR.MINOR.PATCH-beta.N` and are published as GitHub pre-releases. 1.0.0-beta.1 is the first version with the macOS app's features (Phases 0–6 of the parity plan); 1.0.0 follows once the Windows-only parts (installer entries, Explorer verbs, updates) have been tried on real PCs.
+- The version lives in `windows/package.json` (and its lock file); the installer and portable names, the About window and the update check all read it from there. Releases are tagged `v<version>`; the older `windows-v0.1.x` tags are the last of a format the updater cannot read.
+- Each release gets an entry in [CHANGELOG.md](CHANGELOG.md) before it is tagged.
 
 ## Debug dump and hang detection
 

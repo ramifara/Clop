@@ -19,6 +19,9 @@ export function updateGate({ packaged, platform, enabled }: UpdateEnv): UpdateGa
   return { ok: true };
 }
 
+/** Whether `version` is a prerelease such as `1.0.0-beta.1` (semver: a `-` before any `+build` part). */
+export const isPrerelease = (version: string) => version.split('+')[0].includes('-');
+
 /** The part of electron-updater's `AppUpdater` that Clop uses. */
 export interface UpdateDriver {
   autoDownload: boolean;
@@ -63,7 +66,8 @@ export class Updates {
     const driver = await (this.driver ??= this.options.load());
     // The user decides about downloading and installing; a check only looks.
     driver.autoDownload = false; driver.autoInstallOnAppQuit = false; driver.allowDowngrade = false;
-    driver.allowPrerelease = this.options.env().beta;
+    // A beta build follows the betas, as electron-updater does by default; a stable build takes them only with the setting.
+    driver.allowPrerelease = this.options.env().beta || isPrerelease(this.options.version);
     return driver;
   }
 
