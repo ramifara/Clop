@@ -10,10 +10,12 @@ await build({ entryPoints: ['electron/native.ts'], bundle: true, platform: 'node
 // The CLI ships beside app.asar in resources; cli/sharp.ts finds sharp inside the archive.
 await build({ entryPoints: ['cli/index.ts'], bundle: true, platform: 'node', format: 'esm', target: 'node22', alias: { sharp: './cli/sharp.ts' }, outfile: 'dist-electron/cli.mjs' });
 // clop.exe launches it with the installed Electron. The .NET Framework's compiler is part of every Windows install.
+// It is built for AnyCPU, so one clop.exe serves both the x64 and the ARM64 app: the CLR starts it as an x64 or ARM64 process to match the
+// machine (.NET Framework 4.8.1, in every Windows 11 including Windows 11 on ARM), and it does nothing but start Electron.
 if (process.platform === 'win32') {
   const csc = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
   // csc reads a leading or embedded '/' as an option switch, so both paths are given in Windows form.
-  execFileSync(csc, ['/nologo', '/target:exe', '/optimize+', '/langversion:5', `/out:${path.resolve('dist-electron', 'clop.exe')}`, path.resolve('native', 'clop.cs')], { stdio: 'inherit' });
+  execFileSync(csc, ['/nologo', '/target:exe', '/platform:anycpu', '/optimize+', '/langversion:5', `/out:${path.resolve('dist-electron', 'clop.exe')}`, path.resolve('native', 'clop.cs')], { stdio: 'inherit' });
 }
 await build({ entryPoints: ['electron/preload.ts'], bundle: true, platform: 'node', format: 'cjs', target: 'node22', external: ['electron'], outfile: 'dist-electron/preload.cjs' });
 await build({ entryPoints: ['electron/preload-batch.ts'], bundle: true, platform: 'node', format: 'cjs', target: 'node22', external: ['electron'], outfile: 'dist-electron/preload-batch.cjs' });

@@ -9,13 +9,14 @@ import sharp from 'sharp';
 import { PDFDocument } from '@cantoo/pdf-lib';
 import { WindowsBridge } from '../dist-electron/native-test.js';
 import { dragFixture, explorerFixture } from './drag-fixture.mjs';
+import { unpackedDir } from './unpacked.mjs';
 // The inspection below opens files in the temporary profile. Release their Windows handles
 // immediately so the final recursive cleanup can remove that profile after the app exits.
 sharp.cache(false);
 
 // Exercise the actual packaged app and sandboxed preload through local Chrome DevTools.
 const profile = await mkdtemp(path.join(os.tmpdir(), 'clop-desktop-'));
-const executable = path.resolve('release/win-unpacked/Clop for Windows.exe');
+const executable = path.join(unpackedDir(), 'Clop for Windows.exe');
 execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()']);
 // Software H.264, so the video size check does not depend on which hardware encoder the runner happens to have.
 // Images and videos are watched in a folder of the test profile, never the runner's real Desktop.
@@ -189,7 +190,7 @@ try {
   // Videos, PDFs and audio copied as files, as Explorer copies them (a file list and nothing else), each get a card once
   // their clipboard setting is on, and the clipboard then holds the optimised file under the same name.
   await main.evaluate('window.clop.settings({ optimiseVideoClipboard: true, optimisePDFClipboard: true, optimiseAudioClipboard: true })');
-  const ffmpeg = path.resolve('release/win-unpacked/resources/bin/ffmpeg.exe');
+  const ffmpeg = path.join(unpackedDir(), 'resources', 'bin', 'ffmpeg.exe');
   const video = path.join(profile, 'clip-über.mp4'), song = path.join(profile, 'song.mp3'), scan = path.join(profile, 'scan.pdf');
   // Near-lossless H.264 and 320 kbps MP3 leave the optimisers something to save.
   execFileSync(ffmpeg, ['-y', '-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=2', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:d=2', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '8', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', video]);

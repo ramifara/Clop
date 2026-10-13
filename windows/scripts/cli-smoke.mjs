@@ -5,12 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import sharp from 'sharp';
+import { unpackedDir } from './unpacked.mjs';
 
 // Runs the packaged clop.exe (spec step 25): headless with the app closed, then through the pipe with the app open.
 // clop.exe starts the app's own Electron in Node mode with resources\cli.mjs, so this covers the stub, the bundled CLI,
 // sharp inside app.asar and the bundled tools.
 sharp.cache(false);
-const unpacked = path.resolve('release/win-unpacked');
+const unpacked = unpackedDir();
 const clop = path.join(unpacked, 'cli', 'clop.exe');
 const profile = await mkdtemp(path.join(os.tmpdir(), 'clop-cli-smoke-'));
 const files = path.join(profile, 'files');

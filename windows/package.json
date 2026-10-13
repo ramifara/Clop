@@ -15,7 +15,7 @@
     "build": "tsc --noEmit && vite build && node scripts/build.mjs",
     "test": "tsx --test --test-timeout=300000 \"core/**/*.test.ts\" \"electron/*.test.ts\" \"cli/*.test.ts\" \"src/**/*.test.ts\" \"src/**/*.test.tsx\" \"scripts/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "dist:win": "npm run build && node scripts/fetch-tools.mjs --platform win32 --arch x64 && electron-builder --win nsis portable --x64 --publish never"
+    "dist:win": "node scripts/dist-win.mjs"
   },
   "dependencies": {
     "@cantoo/pdf-lib": "2.11.1",
@@ -43,8 +43,8 @@
     "appId": "com.clop.windows",
     "directories": { "output": "release" },
     "afterPack": "./scripts/after-pack.mjs",
-    "files": ["dist/**/*", "dist-electron/**/*", "!dist-electron/cli.mjs", "!dist-electron/clop.exe", "package.json"],
-    "extraResources": [{ "from": "native", "to": "native", "filter": ["**/*", "!clop.cs", "!installer.nsh"] }, { "from": "dist-electron/cli.mjs", "to": "cli.mjs" }, { "from": "../LICENSE", "to": "LICENSE" }, { "from": "README.md", "to": "README.md" }, { "from": ".tools/win32-x64/bin", "to": "bin" }],
+    "files": ["dist/**/*", "dist-electron/**/*", "!dist-electron/cli.mjs", "!dist-electron/clop.exe", "!node_modules/@img/sharp-win32-!(${arch})", "!node_modules/@img/sharp-win32-!(${arch})/**", "package.json"],
+    "extraResources": [{ "from": "native", "to": "native", "filter": ["**/*", "!clop.cs", "!installer.nsh"] }, { "from": "dist-electron/cli.mjs", "to": "cli.mjs" }, { "from": "../LICENSE", "to": "LICENSE" }, { "from": "README.md", "to": "README.md" }, { "from": ".tools/win32-${arch}/bin", "to": "bin" }],
     "extraFiles": [{ "from": "dist-electron/clop.exe", "to": "cli/clop.exe" }],
     "asarUnpack": ["node_modules/sharp/**/*", "node_modules/@img/**/*"],
     "electronFuses": { "runAsNode": true, "enableNodeOptionsEnvironmentVariable": false, "enableNodeCliInspectArguments": false, "enableEmbeddedAsarIntegrityValidation": true },
