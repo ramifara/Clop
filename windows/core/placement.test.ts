@@ -62,6 +62,21 @@ test('inPlace with a different format replaces the original with a file of the n
   assert.deepEqual(await readFile(placed.backup!), bytes);
 });
 
+test('a result in the original\'s format keeps the original\'s spelling of the extension', async t => {
+  const { env, source, workdir } = await setup(t, behaviour('inPlace'));
+  for (const [name, produced, expected] of [['photo.jpg', 'photo.jpeg', 'photo.jpg'], ['SHOT.JPG', 'SHOT.jpeg', 'SHOT.JPG'], ['scan.tif', 'scan.tiff', 'scan.tif'], ['logo.png', 'logo.webp', 'logo.webp']]) {
+    const original = path.join(source, name), result = path.join(workdir.temp, produced);
+    await writeFile(original, 'original'); await writeFile(result, 'smaller');
+    const placed = await placeOutput(env, { produced: result, original, type: 'image' });
+    assert.equal(placed.path, path.join(source, expected), name);
+  }
+  assert.deepEqual((await readdir(source)).sort(), ['SHOT.JPG', 'logo.webp', 'photo.jpg', 'scan.tif', 'shot.png'].sort());
+  const same = await setup(t, behaviour('sameFolder'));
+  const jpg = path.join(same.source, 'photo.jpg'), result = path.join(same.workdir.temp, 'photo.jpeg');
+  await writeFile(jpg, 'original'); await writeFile(result, 'smaller');
+  assert.equal((await placeOutput(same.env, { produced: result, original: jpg, type: 'image' })).path, path.join(same.source, 'photo-optimised.jpg'));
+});
+
 test('inPlace when the optimiser already rewrote the original reports the backup taken before', async t => {
   const { env, original, bytes, workdir } = await setup(t, behaviour('inPlace'));
   const backup = await workdir.backup(original);

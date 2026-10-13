@@ -47,6 +47,8 @@ const browser: ClopApi = {
   dismiss: async id => { await request('dismiss', { id }); },
   settings: async settings => { await request('settings', settings); },
   apps: async () => [],
+  pipelines: async () => [],
+  runPipeline: async () => { throw new Error('Pipelines run in the Clop app.'); },
   window: async action => { if (action === 'float') window.open('/?floating=1', 'clop-floating', 'width=420,height=660'); },
 };
 export const api = window.clop ?? browser;

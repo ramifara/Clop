@@ -14,8 +14,35 @@ using Accessibility;
 using System.Windows.Automation;
 
 namespace ClopWindows {
+  // Opens a file in a packaged (Store) app by its AUMID, the way Explorer's "Open with" does.
+  [ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IApplicationActivationManager {
+    [PreserveSig] int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, [MarshalAs(UnmanagedType.LPWStr)] string arguments, int options, out uint processId);
+    [PreserveSig] int ActivateForFile([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, IntPtr itemArray, [MarshalAs(UnmanagedType.LPWStr)] string verb, out uint processId);
+    [PreserveSig] int ActivateForProtocol([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, IntPtr itemArray, out uint processId);
+  }
+  [ComImport, Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")] class ApplicationActivationManager { }
+
   // Windows PowerShell 5.1 runs this helper on an STA thread. No runtime installation needed.
   public static class Bridge {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern int SHCreateItemFromParsingName(string path, IntPtr bindContext, ref Guid riid, out IntPtr item);
+    [DllImport("shell32.dll")] static extern int SHCreateShellItemArrayFromShellItem(IntPtr item, ref Guid riid, out IntPtr array);
+    static void OpenInPackagedApp(string aumid, string file) {
+      Guid shellItem = new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), itemArray = new Guid("b63ea76d-1f85-456f-a19c-48159efa858b");
+      IntPtr item = IntPtr.Zero, array = IntPtr.Zero;
+      object manager = null;
+      try {
+        Marshal.ThrowExceptionForHR(SHCreateItemFromParsingName(file, IntPtr.Zero, ref shellItem, out item));
+        Marshal.ThrowExceptionForHR(SHCreateShellItemArrayFromShellItem(item, ref itemArray, out array));
+        manager = new ApplicationActivationManager();
+        uint process;
+        Marshal.ThrowExceptionForHR(((IApplicationActivationManager)manager).ActivateForFile(aumid, array, "open", out process));
+      } finally {
+        if (manager != null) Marshal.ReleaseComObject(manager);
+        if (array != IntPtr.Zero) Marshal.Release(array);
+        if (item != IntPtr.Zero) Marshal.Release(item);
+      }
+    }
     [DllImport("user32.dll")] static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
@@ -279,6 +306,17 @@ namespace ClopWindows {
           worker.IsBackground = true; worker.SetApartmentState(ApartmentState.STA); worker.Start();
           return;
         }
+        if (type == "app-path") {
+          // The App Paths entry for a name like "photoshop.exe": the user's registry first, then the machine's. Read here rather than
+          // with reg.exe, which prints in the console's code page. GetValue expands variables in the value.
+          string exe = Convert.ToString(command["exe"]), found = null;
+          if (exe.IndexOfAny(new[] { '\\', '/' }) >= 0) throw new InvalidOperationException("An App Paths name has no folders.");
+          foreach (string hive in new[] { "HKEY_CURRENT_USER", "HKEY_LOCAL_MACHINE" }) {
+            string value = Microsoft.Win32.Registry.GetValue(hive + @"\Software\Microsoft\Windows\CurrentVersion\App Paths\" + exe, "", null) as string;
+            if (!String.IsNullOrEmpty(value)) { found = value.Trim('"'); break; }
+          }
+          Emit(new { type = "reply", id, ok = true, path = found }); return;
+        }
         if (type == "attributes") {
           // Cloud placeholders (OneDrive files-on-demand): recall on data access, recall on open, offline. Reading attributes does
           // not download them, but a network or sleeping drive can make it slow, so it runs off the mouse hook's thread too.
@@ -319,6 +357,19 @@ namespace ClopWindows {
           }
           Sequence = GetClipboardSequenceNumber();
           Emit(new { type = "reply", id, ok = true, sequence = Sequence }); return;
+        }
+        if (type == "open-with") {
+          // The app process validates both: an AUMID from the Start menu's app list, and an absolute path to an existing file.
+          // Activating a packaged app can take seconds on a cold start, and this thread pumps the mouse hook, so it runs on a
+          // thread of its own, STA for the shell's COM objects, as `apps` does.
+          string request = id, aumid = Convert.ToString(command["aumid"]), file = Convert.ToString(command["file"]);
+          var opener = new Thread(() => {
+            var json = new JavaScriptSerializer();
+            try { OpenInPackagedApp(aumid, file); EmitFrom(json, new { type = "reply", id = request, ok = true }); }
+            catch (Exception error) { EmitFrom(json, new { type = "reply", id = request, ok = false, error = error.Message }); }
+          });
+          opener.IsBackground = true; opener.SetApartmentState(ApartmentState.STA); opener.Start();
+          return;
         }
         throw new InvalidOperationException("Unknown Windows bridge command.");
       } catch (Exception error) { Emit(new { type = "reply", id, ok = false, error = error.Message }); }

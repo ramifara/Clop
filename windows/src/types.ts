@@ -13,7 +13,11 @@ export interface ItemResult {
   width: number; height: number; format: string; originalPreview: string; preview: string;
   options: ImageOptions; error?: string; unchanged?: boolean; restored?: boolean; animated: boolean; createdAt: number;
   durationMs?: number; pages?: number; progress?: number;
+  /** What attached or chosen pipelines reported: warnings, and pipelines that failed. */
+  notes?: string[];
 }
+/** A saved pipeline the card's "Run pipeline…" menu offers. */
+export interface PipelineChoice { id: string; name: string; text: string }
 export type { ClopSettings };
 /** An app the ignored-apps picker offers: a running app with a window, or a Start Menu app. `path` is an exe path, or an AUMID for a packaged app. */
 export interface AppEntry { name: string; path: string; running: boolean }
@@ -26,6 +30,8 @@ export interface ClopApi {
   drag(id: string): void; dismiss(id: string): Promise<void>; settings(settings: Partial<ClopSettings>): Promise<void>;
   /** Apps for the ignored-apps picker; empty without the Windows helper. */
   apps(): Promise<AppEntry[]>;
+  /** The saved pipelines the card can run on a result, and running one of them. */
+  pipelines(id: string): Promise<PipelineChoice[]>; runPipeline(id: string, pipelineId: string): Promise<void>;
   window(action: 'hide' | 'main' | 'float' | 'quit' | 'minimize' | 'interactive' | 'passthrough' | 'dismiss-notice'): Promise<void>;
 }
 declare global { interface Window { clop?: ClopApi } }

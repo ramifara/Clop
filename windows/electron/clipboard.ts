@@ -154,9 +154,16 @@ export interface IntakeSources {
   fingerprint: (files: string[]) => Promise<string>;
   hash: (bytes: Buffer) => string;
 }
+/** The app that copied, for `if(copiedBy:)`: its exe path or AUMID, and its name. */
+export type CopyingApp = { id?: string; name?: string };
+/** The app that owns a clipboard change: a packaged app by its AUMID and package name, another by its exe path and file name. */
+export function copyingApp({ owner, aumid }: Pick<ClipboardSnapshot, 'owner' | 'aumid'>): CopyingApp | undefined {
+  if (aumid) return { id: aumid, name: aumid.split('!')[0].split('_')[0] };
+  if (owner) return { id: owner, name: owner.split(/[\\/]/).pop()!.replace(/\.exe$/i, '') };
+}
 export type ClipboardPlan =
-  | { type: 'files'; files: string[]; sequence?: number; text?: boolean }
-  | { type: 'image'; bytes: Buffer; ext: string; sequence?: number }
+  | { type: 'files'; files: string[]; sequence?: number; text?: boolean; app?: CopyingApp }
+  | { type: 'image'; bytes: Buffer; ext: string; sequence?: number; app?: CopyingApp }
   | { type: 'url'; url: string; sequence?: number }
   /** The clipboard changed while it was read; look at the newer change instead. */
   | { type: 'retry'; change: ClipboardSnapshot }
@@ -179,6 +186,7 @@ export async function clipboardIntake(change: ClipboardSnapshot | undefined, man
     if (!manual && snapshot?.owned) return none;
   }
   const sequence = snapshot?.sequence;
+  const copier = snapshot && copyingApp(snapshot), app = copier ? { app: copier } : {};
   if (!manual && sequence !== undefined && sequence === memory.sequence) return none;
   if (sequence !== undefined) memory.sequence = sequence;
   if (!manual && snapshot && ignoredApp(snapshot, settings.clipboardIgnoredAppBundleIds)) return none;
@@ -189,7 +197,7 @@ export async function clipboardIntake(change: ClipboardSnapshot | undefined, man
       if (hash === memory.fingerprint) return none;
       memory.fingerprint = hash;
     }
-    return { type: 'files', files: listed.files, sequence };
+    return { type: 'files', files: listed.files, sequence, ...app };
   }
   if (listed.media && !manual) {
     // Another copy came between, so copying the last optimised file again optimises it again.
@@ -216,13 +224,13 @@ export async function clipboardIntake(change: ClipboardSnapshot | undefined, man
     const hash = sources.hash(bytes);
     if (!manual && (hash === memory.fingerprint || hash === memory.own || !takesFile('image', 'clipboard.png', settings, { bitmap: true }))) return none;
     memory.fingerprint = hash;
-    return { type: 'image', bytes, ext: 'png', sequence };
+    return { type: 'image', bytes, ext: 'png', sequence, ...app };
   }
   if (file) {
     if (!manual) { memory.fingerprint = pathHash; memory.own = ''; }
-    return { type: 'files', files: [file], sequence, text: true };
+    return { type: 'files', files: [file], sequence, text: true, ...app };
   }
-  if (text?.type === 'image') return { type: 'image', bytes: text.bytes, ext: text.ext, sequence };
+  if (text?.type === 'image') return { type: 'image', bytes: text.bytes, ext: text.ext, sequence, ...app };
   if (text?.type === 'url') return { type: 'url', url: text.url, sequence };
   return manual ? { type: 'none', notice: 'Copy an image, a video, a PDF or an audio file, or its path or link, then try again.' } : none;
 }

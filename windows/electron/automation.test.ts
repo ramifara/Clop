@@ -8,7 +8,7 @@ import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { needTools } from '../core/testing';
 import { Workdir } from '../core/workdir';
 import { clip } from '../core/media/video.fixtures';
-import { FolderResults, LastBatch, folderPlacement, pipelinesFor, restoreAll, type FolderEnv } from './automation';
+import { FolderResults, LastBatch, folderPlacement, restoreAll, type FolderEnv } from './automation';
 import { FolderWatcher } from './watcher';
 import { run } from '../core/run';
 import { ItemEngine, sampleImage } from './items';
@@ -111,7 +111,6 @@ test('the last batch is the results started close together, taken once', () => {
   assert.deepEqual(batch.take(), []);
   batch.add('d'); now = 6000; batch.add('e');
   assert.deepEqual(batch.take(), ['e']);
-  assert.deepEqual(pipelinesFor('image', '~/Desktop'), []);
 });
 test('a file cancelled while it is still being copied into the shelf is never optimised', async t => {
   const f = await setup(t); if (!f) return;
