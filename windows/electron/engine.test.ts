@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
+import { run } from '../core/run';
 import { needTools } from '../core/testing';
 import { defaultSettings } from '../core/settings/schema';
 import { ImageEngine, sampleImage } from './engine';
@@ -99,10 +100,32 @@ test('rejects unsupported files and invalid scale without losing existing result
   const f = await fixture(t); if (!f) return;
   const { engine } = f;
   await assert.rejects(engine.importBuffer(Buffer.from('not an image'), 'file.txt', 'drop', balanced));
-  await assert.rejects(engine.importBuffer(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"/>'), 'file.svg', 'drop', balanced), /Use PNG/);
+  await assert.rejects(engine.importBuffer(Buffer.from('not an image'), 'file.png', 'drop', balanced), /Use PNG/);
   const id = await engine.importBuffer(await sampleImage(), 'image.png', 'drop', balanced);
   assert.throws(() => engine.apply(id, { ...balanced, scale: 2 }), /10%/);
   assert.equal(engine.get(id).result.status, 'ready');
+});
+test('imports HEIC, JPEG XL, BMP and SVG with previews, and keeps the original to restore', async t => {
+  const f = await fixture(t); if (!f || !needTools(t, 'ffprobe', 'heif-enc', 'heif-dec', 'cjxl', 'djxl')) return;
+  const { engine, dir } = f;
+  const png = path.join(dir, 'source.png');
+  await sharp(await sampleImage()).resize(600, 400).png().toFile(png);
+  const encode = async (name: string, tool: string, args: string[]) => { const file = path.join(dir, name); await run(tool, [...args.map(arg => arg.replace('$in', png).replace('$out', file))]); return readFile(file); };
+  const inputs: [string, Buffer, string][] = [
+    ['photo.heic', await encode('photo.heic', 'heif-enc', ['-q', '80', '-o', '$out', '$in']), 'jpeg'],
+    ['photo.jxl', await encode('photo.jxl', 'cjxl', ['$in', '$out', '-q', '95', '--quiet']), 'jxl'],
+    ['photo.bmp', await encode('photo.bmp', 'ffmpeg', ['-v', 'error', '-i', '$in', '$out']), 'jpeg'],
+    ['shape.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><circle cx="300" cy="200" r="150" fill="#36c"/></svg>'), 'png'],
+  ];
+  for (const [name, bytes, output] of inputs) {
+    const id = await engine.importBuffer(bytes, name, 'drop', balanced), { result } = engine.get(id);
+    assert.equal(result.status, 'ready', `${name}: ${result.error}`);
+    assert.deepEqual([result.format, result.originalWidth, result.originalHeight, result.width], [output, 600, 400, 600], name);
+    assert.match(result.originalPreview, /^data:image\/png;base64,/);
+    assert.equal((await sharp(Buffer.from(result.preview.split(',')[1], 'base64')).metadata()).width, 600, name);
+    await engine.restore(id);
+    assert.deepEqual(await readFile(engine.output(id)), bytes, name);
+  }
 });
 test('serialises resize operations and serves the last requested result', async t => {
   const f = await fixture(t); if (!f) return;

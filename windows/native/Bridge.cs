@@ -61,7 +61,7 @@ namespace ClopWindows {
     static int Generation;
     static Point Start;
     static string[] DragPaths = new string[0];
-    static readonly HashSet<string> Extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".tif", ".tiff" };
+    static readonly HashSet<string> Extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".tif", ".tiff", ".heic", ".heif", ".jxl", ".bmp", ".svg" };
     static void Emit(object value) { Console.WriteLine(Json.Serialize(value)); Console.Out.Flush(); }
     static void DragDebug(string message) { if (Environment.GetEnvironmentVariable("CLOP_DEBUG_DRAG") == "1") Diagnostics.Enqueue(message); }
     public static void Run() {

@@ -49,3 +49,11 @@ export const gifFrameDropEveryNth = ({ factor }: CompressionQuality) => factor <
 export const conversionQuality = ({ factor }: CompressionQuality) => factor <= 70
   ? clamp(round(75 - factor * 0.5), 20, 90)
   : clamp(round(40 - (factor - 70) * (25 / 30)), 15, 90);
+
+/** cjxl -q, JXLCoder's quality. Factor 30 gives 60; the cap is 95 rather than 90. */
+export const jxlQuality = ({ factor }: CompressionQuality) => factor <= 70
+  ? clamp(round(75 - factor * 0.5), 20, 95)
+  : clamp(round(40 - (factor - 70) * (25 / 30)), 15, 95);
+
+/** cjxl -e, JXLCoder's effort: 7 below factor 50, 8 from 50, 9 from 70. */
+export const jxlEffort = ({ factor }: CompressionQuality) => factor >= 70 ? 9 : factor >= 50 ? 8 : 7;

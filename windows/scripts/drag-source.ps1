@@ -31,12 +31,12 @@ public static class ClopDragSource {
     SetProcessDpiAwarenessContext(new IntPtr(-4));
     var form = new Form { Text = "Clop drag regression source.png", Location = new Point(60, 60), ClientSize = new Size(520, 430), StartPosition = FormStartPosition.Manual, AutoScaleMode = AutoScaleMode.None, TopMost = true };
     var picture = new PictureBox { Location = new Point(20, 20), Size = new Size(180, 140), Image = Image.FromFile(file), SizeMode = PictureBoxSizeMode.Zoom, AccessibleRole = AccessibleRole.Graphic, AccessibleName = "source.png" };
-    var unsupported = new PictureBox { Location = new Point(230, 20), Size = new Size(180, 140), Image = picture.Image, SizeMode = PictureBoxSizeMode.Zoom, AccessibleRole = AccessibleRole.Graphic, AccessibleName = "unsupported.svg" };
+    var unsupported = new PictureBox { Location = new Point(230, 20), Size = new Size(180, 140), Image = picture.Image, SizeMode = PictureBoxSizeMode.Zoom, AccessibleRole = AccessibleRole.Graphic, AccessibleName = "unsupported.psd" };
     var text = new TextBox { Location = new Point(20, 190), Size = new Size(460, 65), Multiline = true, Text = "Select this text without opening the image drop target. source.png", AccessibleName = "source.png" };
     var textDrag = new Label { Location = new Point(20, 280), Size = new Size(400, 30), Text = "Drag plain text: source.png", AccessibleRole = AccessibleRole.Text, AccessibleName = "source.png" };
     form.Controls.AddRange(new Control[] { picture, unsupported, text, textDrag });
     var data = new DataObject(); data.SetData(DataFormats.FileDrop, new[] { file });
-    Draggable(picture, data); Draggable(unsupported, "unsupported.svg"); Draggable(textDrag, "source.png");
+    Draggable(picture, data); Draggable(unsupported, "unsupported.psd"); Draggable(textDrag, "source.png");
     form.Shown += (sender, args) => {
       form.Activate();
       var rect = form.Bounds;
