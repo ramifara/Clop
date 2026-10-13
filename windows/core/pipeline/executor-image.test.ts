@@ -24,6 +24,19 @@ test('optimise replaces the image in place, keeps the original in the backups an
   assert.deepEqual(await w.temp(), [], 'the run leaves nothing in temp');
 });
 
+test('optimise keeps the compression a step names: lossless changes no pixel, and a factor wins over the normal anchor', async t => {
+  const w = await pipelineWorkspace(t, 'pngquant'); if (!w) return;
+  const pixels = async (file: string) => (await sharp(file).raw().toBuffer()).equals(await sharp(w.file('source.png')).raw().toBuffer());
+  await photo(240, 160).png().toFile(w.file('source.png'));
+  const copy = async (name: string) => { await writeFile(w.file(name), await readFile(w.file('source.png'))); return w.file(name); };
+  const lossless = await w.run('optimise(encoder: lossless)', await copy('lossless.png'));
+  assert.equal(await pixels(lossless.file), true, 'encoder: lossless uses the lossless tier');
+  const plain = await w.run('optimise', await copy('plain.png'));
+  assert.equal(await pixels(plain.file), false, 'a plain optimise is lossy, so the check above means something');
+  const best = await w.run('optimise(compression: 5)', await copy('best.png')), smallest = await w.run('optimise(compression: 100)', await copy('smallest.png'));
+  assert.ok(await size(best.file) > await size(smallest.file), 'the factor a step names is used');
+});
+
 test('steps that run as one pass leave the original alone and place only the final file', async t => {
   const w = await pipelineWorkspace(t, 'pngquant'); if (!w) return;
   const input = w.file('photo.png');
