@@ -31,7 +31,7 @@ import { guarded, recentClipboard, toTemplate, trayMenu, trayTooltip, trayVarian
 import { allPipelineChoices, appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
 import { seedBuiltinPipelines } from '../core/pipeline/builtins';
 import { EDITOR_SETTING_KEYS } from '../core/pipeline/editor-state';
-import { draggedType, tilesFor } from '../core/pipeline/zones';
+import { tilesFor } from '../core/pipeline/zones';
 import { EditorService } from './editor';
 import { PresetReveal } from './preset-reveal';
 import { pipelinesSkipOptimisation, type PipelinesOutcome } from '../core/pipeline/triggers';
@@ -67,6 +67,7 @@ import { setupBatch } from './batch-window';
 import { expandDroppedFolders, splitFolders } from './dropped';
 import { dropRunsPipelines, planZoneDrop, zoneAutomation } from './zone-drop';
 import { AS_IS, droppedFileExtra } from './drop-placement';
+import { DragType } from './drag-type';
 import { MAX_BATCH_FILES } from '../core/batch/scan';
 import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
 import { expandHome } from '../core/settings/paths';
@@ -94,10 +95,13 @@ let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, 
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
 let altHeld = false, shiftHeld = false, dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
-/** The files being dragged, as the Windows helper reports them; Ctrl during the drag shows the preset zones in the drop zone. */
-let dragFiles: string[] = [];
 /** Whether a file is on this computer (not a cloud placeholder); set once the helper is up, so a folder read before then reads everything. */
 let scanLocal: ((file: string) => Promise<boolean>) | undefined;
+/**
+ * The type of the files being dragged, as the Windows helper reports them, looking inside dragged folders: Ctrl during the drag shows the
+ * preset zones for that type and for any type in the drop zone. A folder's type arrives once it has been looked through, and the grid follows.
+ */
+const dragType = new DragType(() => ({ kindOf: mediaKind, owns: file => workdir.owns(file), isLocal: scanLocal }), () => { syncFloating(); broadcast(); });
 const presetReveal = new PresetReveal();
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
@@ -167,7 +171,7 @@ const isReady = (id: string) => { try { return engine.get(id).result.status === 
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 const presetsRevealed = () => presetReveal.revealed(settings.onlyShowPresetZonesOnControlTapped);
 /** The preset zones for the files being dragged; they take the drop zone's place inside it, so they need no room of their own. */
-function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, draggedType(dragFiles, mediaKind)) }; }
+function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, dragType.type) }; }
 /** Whether the drop target shows now (see `dropZoneShown`); `dropActive` stays true for a drag whose target is hidden, so a drop still lands. */
 const targetShown = () => dropZoneShown({ expecting: dropActive, dragging, onlyWithAlt: settings.onlyShowDropZoneOnOption, alt: altHeld });
 // With `enableFloatingResults` off Clop runs without a result UI: results stay in the shelf, unseen.
@@ -1322,7 +1326,8 @@ else {
       bridge.on('drag-start', event => {
         if (!settings.enableDragAndDrop) return;
         dragging = true; dropActive = true; altHeld = false; shiftHeld = false; presetReveal.reset();
-        dragFiles = Array.isArray(event.paths) ? (event.paths as unknown[]).filter((file): file is string => typeof file === 'string').slice(0, 64) : [];
+        // A dragged folder is looked through in the background for the type of what it holds; the grid then shows that type's zones too.
+        void dragType.start(Array.isArray(event.paths) ? (event.paths as unknown[]).filter((file): file is string => typeof file === 'string').slice(0, 64) : []);
         floating.setIgnoreMouseEvents(false); syncFloating(); broadcast();
       });
       // The helper reads Ctrl, Alt and Shift while a drag lasts, standing in for the Mac's Control, Option and Command. Holding Ctrl shows the
@@ -1335,7 +1340,7 @@ else {
         presetReveal.update({ ctrl: event.ctrl === true, other: altHeld || shiftHeld }, settings.onlyShowPresetZonesOnControlTapped); syncFloating(); broadcast();
       });
       // The zones stay for the moment a drop on one needs to land.
-      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; altHeld = false; shiftHeld = false; dragFiles = []; presetReveal.reset(); syncFloating(); broadcast(); } }, 180); });
+      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; altHeld = false; shiftHeld = false; dragType.end(); presetReveal.reset(); syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
       bridge.on('stopped', () => { bridgeReady = false; bridgeStopped = true; pickup.cancel(); startClipboardFallback(); for (const watcher of watchers) watcher.resume(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));
