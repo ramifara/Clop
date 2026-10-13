@@ -1,5 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readdir, realpath, writeFile, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, writeFile, rm, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import os from 'node:os';
@@ -23,7 +24,9 @@ await mkdir(watched);
 // A clipboard pipeline that converts images named "to-webp" to WebP, the built-in "to WebP" behind a filter, so every other
 // copied image still takes the plain optimisation the checks below expect.
 const clipboardPipeline = { id: 'SMOKE-TO-WEBP', name: 'to WebP', steps: [], rawText: 'if(nameContains: "to-webp") -> convert(to: webp)', skipOptimisation: true, hideResult: false };
-await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ checkForUpdates: false, videoEncoder: 'libx264', imageDirs: [watched], videoDirs: [watched], pipelinesToRunOnImage: { clipboard: [clipboardPipeline] } }));
+// A preset zone for images running the built-in "to WebP" from the library (a reference, as the editor saves one), which the app seeds at startup.
+const webpZone = { id: 'SMOKE-WEBP-ZONE', name: 'Smoke to WebP', icon: 'photo', type: 'image', pipeline: { id: 'SMOKE-WEBP-REF', steps: [], skipOptimisation: false, hideResult: false, libraryID: 'builtin-image-webp' } };
+await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ checkForUpdates: false, videoEncoder: 'libx264', imageDirs: [watched], videoDirs: [watched], pipelinesToRunOnImage: { clipboard: [clipboardPipeline] }, presetZones: [webpZone] }));
 const app = spawn(executable, ['--remote-debugging-port=9227', `--user-data-dir=${profile}`], { stdio: 'pipe' });
 let output = '';
 app.stdout.on('data', chunk => { output += chunk; }); app.stderr.on('data', chunk => { output += chunk; });
@@ -286,7 +289,38 @@ try {
   } finally { batchWindow.close(); }
   await main.evaluate('window.clop.settings({ batchModeFileCountThreshold: 30 })');
   console.log('A folder dragged from Explorer onto the drop zone opened the batch window with both of its images.');
-  console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, copied video, PDF and audio files, an ignored app, a video and an image optimised in place in a watched folder, a clipboard pipeline converting to WebP, and a folder dragged from Explorer into the batch window.');
+  // A folder of two PNGs dropped on a preset zone whose pipeline converts to WebP: both files run the zone's pipeline, never the batch
+  // window or a plain optimisation, and the originals are left as they were. The drop goes through the same `runPreset` call (the
+  // `run-preset` IPC) the zone in the floating window makes; the files come from a file input that DevTools fills with the folder's
+  // path, which gives the page a File for the folder as a drop does. A real drag cannot be used: the zones show only while Ctrl is
+  // held during the drag, which the fixtures cannot do.
+  const zoneFolder = path.join(profile, 'Zone photos');
+  await mkdir(zoneFolder);
+  const zoneFiles = ['one.png', 'two.png'].map(name => path.join(zoneFolder, name));
+  for (const file of zoneFiles) await sharp({ create: { width: 640, height: 400, channels: 3, background: '#d53a7b' } }).png({ compressionLevel: 0 }).toFile(file);
+  const digest = async file => createHash('sha256').update(await readFile(file)).digest('hex');
+  const zoneOriginals = await Promise.all(zoneFiles.map(digest));
+  const zoneState = await main.evaluate('window.clop.state()');
+  assert.ok(zoneState.settings.presetZones.some(zone => zone.id === webpZone.id), 'The preset zone from the settings file should be loaded');
+  for (const item of zoneState.items) await main.evaluate(`window.clop.dismiss(${JSON.stringify(item.id)})`);
+  const input = await main.send('Runtime.evaluate', { expression: '(() => { const input = document.createElement("input"); input.type = "file"; input.multiple = true; input.style.display = "none"; document.body.append(input); return input; })()' });
+  await main.send('DOM.setFileInputFiles', { objectId: input.result.objectId, files: [zoneFolder] });
+  assert.equal(await main.evaluate('document.querySelector("input[type=file]").files.length'), 1, 'The file input should hold the folder');
+  await main.evaluate(`window.clop.runPreset(${JSON.stringify(webpZone.id)}, [...document.querySelector("input[type=file]").files])`);
+  const zoneResults = await until(async () => {
+    const items = (await main.evaluate('window.clop.state()')).items.filter(item => item.source === 'drop');
+    return items.length === 2 && items.every(item => item.status !== 'processing') && items;
+  }, 'Dropping a folder on the preset zone did not give a result for each of its images', 60000, () => appState(main));
+  console.log('Preset zone results:', JSON.stringify(zoneResults.map(({ name, status, error, format }) => ({ name, status, error, format }))));
+  assert.deepEqual(zoneResults.map(item => [item.name, item.status, item.format]).sort(), [['one.png', 'ready', 'webp'], ['two.png', 'ready', 'webp']], 'Both images should run the zone\'s WebP pipeline');
+  const batchAfterZone = await connect((await pages()).find(page => page.type === 'page' && page.url.includes('batch=1')));
+  try { assert.equal((await batchAfterZone.evaluate('window.clopBatch.state()')).files.length, 0, 'A drop on a preset zone must not go to the batch window'); } finally { batchAfterZone.close(); }
+  assert.deepEqual(await Promise.all(zoneFiles.map(digest)), zoneOriginals, 'The dropped originals must be left as they were');
+  assert.deepEqual((await readdir(zoneFolder)).sort(), ['one.png', 'two.png'], 'Nothing should be written next to the dropped originals');
+  assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'A drop on a preset zone must not show an error');
+  await main.evaluate('document.querySelector("input[type=file]").remove()');
+  console.log('A folder dropped on a preset zone converted both of its images to WebP and left the originals alone.');
+  console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, copied video, PDF and audio files, an ignored app, a video and an image optimised in place in a watched folder, a clipboard pipeline converting to WebP, a folder dragged from Explorer into the batch window, and a folder dropped on a preset zone converting to WebP.');
 } finally {
   console.log('Stopping packaged app and native test helper.');
   try { if (main) await main.send('Runtime.evaluate', { expression: 'window.clop.window("quit")' }); } catch {}
