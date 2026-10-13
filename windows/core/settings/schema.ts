@@ -225,7 +225,7 @@ export const settingsSchema = {
   showCopyClearButtons: bool(true, 'Show the Copy all and Clear all buttons under the results.'),
   enableDragAndDrop: bool(true, 'Show the drop zone while dragging files. Legacy Windows key: `explorerDrag`.'),
   onlyShowDropZoneOnOption: bool(false, 'Show the drop zone only after pressing the modifier key while dragging.'),
-  onlyShowPresetZonesOnControlTapped: bool(false, 'Show preset zones only by holding or tapping Control.'),
+  onlyShowPresetZonesOnControlTapped: bool(false, 'Show preset zones only by tapping Ctrl while dragging, instead of holding it.'),
   showCompactImages: bool(false, 'Show thumbnails in compact results.'),
   autoHideFloatingResults: bool(true, 'Hide floating results automatically.'),
   autoHideFloatingResultsAfter: int(30, 'Seconds before a file result hides; 0 never hides it.'),
@@ -268,6 +268,7 @@ export const settingsSchema = {
   persistDebugLogs: bool(false, 'Keep the app\'s debug log in `logs\\clop.log` in the app data folder. macOS keeps its logs in the system log instead; `clop logs persist` switches this.', { windowsOnly: true }),
   checkForUpdates: bool(true, 'Check GitHub Releases for a new version when Clop starts and once a day after. macOS uses Sparkle, which has no key in Settings.swift. Development and unpackaged runs never check. The portable app only tells you about a new version; it cannot install it.', { windowsOnly: true }),
   betaUpdates: bool(false, 'Also offer prereleases (beta versions) when checking for updates.', { windowsOnly: true }),
+  appearance: oneOf(['system', 'light', 'dark'], 'system', 'Light or dark windows, menus and drop zone; `system` follows Windows\' app mode. macOS Clop always follows the system.', { windowsOnly: true }),
 } satisfies Record<string, SettingSpec<any>>;
 
 export type SettingKey = keyof typeof settingsSchema;

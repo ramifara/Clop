@@ -1,0 +1,58 @@
+/*
+ * One token set per theme. Windows' light or dark mode reaches the page as `prefers-color-scheme` (the app's Appearance setting sets
+ * Electron's `nativeTheme.themeSource`, which drives it). Warm greys with a plum cast, Clop's cream and amber, and its red kept for the
+ * drop zone's ring. Every window's CSS reads these; only the result cards over thumbnails keep fixed colours, as they sit on pictures.
+ */
+:root {
+  --font: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'Cascadia Code', Consolas, monospace;
+  --bg: #f3f1ef; --bg-sunken: #ebe7e4; --surface: #fff; --surface-2: #faf8f7; --raised: #fffdfb;
+  --ink: #2b272d; --muted: #645b63; --faint: #887e87;
+  --line: #dcd6d3; --line-soft: #ebe6e3; --field-line: #cfc8c6;
+  --hover: #2b272d0d; --press: #2b272d17; --selected: #e2dcd8;
+  --accent: #4f4750; --accent-hover: #3e373f; --accent-ink: #fff; --accent-soft: #4f47501a;
+  --focus: #b5600c;
+  --danger: #a3242f; --danger-soft: #f7e4e6; --danger-line: #e1b7bb;
+  --warn: #7f4c08; --warn-soft: #fbeedb; --warn-line: #ecd2a8;
+  --good: #276d3e; --good-soft: #e2f0e6;
+  --amber: #ffc46e; --amber-ink: #8f5410; --rose: #dc3a55; --rose-ink: #b2213c;
+  --type-image: #2f6fd0; --type-video: #d0394a; --type-pdf: #ad5c0a; --type-audio: #8a4fc2;
+  --shadow: 0 1px 2px #2b1f2a14, 0 6px 18px #2b1f2a1f;
+  --shadow-pop: 0 2px 6px #2b1f2a1a, 0 14px 34px #2b1f2a2e;
+  /* The glass of the floating surfaces: a tint over the acrylic window behind it, or over the desktop where Windows has no acrylic. */
+  --glass: #f6f3f0b8; --glass-solid: #f3f0ede6; --glass-edge: #ffffffb3; --glass-line: #3a2f3824; --glass-ink: #2b272d; --glass-muted: #463e45;
+  --button-glass: #ebe5d8e0; --button-glass-hover: #fff9e9; --button-glass-ink: #4c444a;
+  /* The preset zones inside the drop zone: soft tiles a shade off the glass, and the zone under a dragged file in Clop's peach
+     (`Color.peach`) ringed in its red. "Add preset" is the stronger of the empty slots. */
+  --zone-tile: #fcfbf9e6; --zone-tile-shadow: 0 0 0 1px #3a2f3814, 0 1px 2px #2b1f2a12, 0 3px 8px #2b1f2a14; --zone-tile-shadow-flat: 0 0 0 1px #3a2f3812, 0 1px 2px #2b1f2a0d;
+  --zone-add-ink: #3a343a; --zone-empty-ink: #716872; --zone-empty-mark: #7d747f;
+  --zone-hover: #ffdca2f0; --zone-hover-line: #dc3a55a6;
+  --code-step-processing: #1d6a43; --code-step-file: #8a4b0b; --code-step-filter: #6a3d9a; --code-step-media: #0d5f8a; --code-step-action: #a02f5a;
+  --code-param: #7d6a8a; --code-value: #1f5f7a; --code-punct: #8c8290;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f1c21; --bg-sunken: #18161a; --surface: #2a262c; --surface-2: #262228; --raised: #2f2a31;
+    --ink: #ede7ef; --muted: #b0a5b2; --faint: #7f7581;
+    --line: #3a353d; --line-soft: #312c34; --field-line: #4b444e;
+    --hover: #ffffff0f; --press: #ffffff1a; --selected: #3a3440;
+    --accent: #eee2cd; --accent-hover: #fff3de; --accent-ink: #2b2530; --accent-soft: #eee2cd1f;
+    --focus: #ffc46e;
+    --danger: #ff919e; --danger-soft: #45202a; --danger-line: #77343f;
+    --warn: #f3bb6a; --warn-soft: #3d2f1e; --warn-line: #6b512c;
+    --good: #86d49e; --good-soft: #1e3828;
+    --amber-ink: #ffc46e; --rose: #ff6079; --rose-ink: #ff8c9d;
+    --type-image: #7fb1ff; --type-video: #ff8190; --type-pdf: #ffb15c; --type-audio: #c79bff;
+    --shadow: 0 1px 2px #0000004d, 0 6px 18px #00000059;
+    --shadow-pop: 0 2px 6px #00000059, 0 14px 34px #00000080;
+    --glass: #211d23b3; --glass-solid: #241f26e6; --glass-edge: #ffffff1f; --glass-line: #ffffff1a; --glass-ink: #f2ecf3; --glass-muted: #c9bfcb;
+    --button-glass: #2d2832e0; --button-glass-hover: #433c48; --button-glass-ink: #f1e8da;
+    --zone-tile: #ffffff12; --zone-tile-shadow: inset 0 1px 0 #ffffff14, 0 0 0 1px #ffffff12, 0 2px 6px #00000040; --zone-tile-shadow-flat: inset 0 1px 0 #ffffff0d, 0 0 0 1px #ffffff0d;
+    --zone-add-ink: #e4dce6; --zone-empty-ink: #a99fab; --zone-empty-mark: #968c98;
+    --zone-hover: #5a422ef0; --zone-hover-line: #ff6079a6;
+    --code-step-processing: #7fd3a2; --code-step-file: #f0b46a; --code-step-filter: #c6a2ef; --code-step-media: #79c2ec; --code-step-action: #f08cb4;
+    --code-param: #c0a9cf; --code-value: #8fd0ea; --code-punct: #8a808c;
+  }
+}
+/* The windows with a background of their own: form controls and scroll bars take the theme. The floating window stays transparent. */
+.settings-window, .editor, .batch, .view-window, .compact-list, .html-menu, .welcome-card, .corner-notice { color-scheme: light dark; }

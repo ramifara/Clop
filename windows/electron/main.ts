@@ -1,4 +1,5 @@
-import { app, BrowserWindow, clipboard, ClipboardItem, dialog, globalShortcut, ipcMain, Menu, nativeImage, protocol, screen, shell, Tray } from 'electron';
+import { app, BrowserWindow, clipboard, ClipboardItem, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, protocol, screen, shell, Tray } from 'electron';
+import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -30,7 +31,7 @@ import { guarded, recentClipboard, toTemplate, trayMenu, trayTooltip, trayVarian
 import { allPipelineChoices, appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
 import { seedBuiltinPipelines } from '../core/pipeline/builtins';
 import { EDITOR_SETTING_KEYS } from '../core/pipeline/editor-state';
-import { cellCount, draggedType, gridHeight, tilesFor, zonePipeline } from '../core/pipeline/zones';
+import { draggedType, tilesFor, zonePipeline } from '../core/pipeline/zones';
 import { EditorService } from './editor';
 import { PresetReveal } from './preset-reveal';
 import { pipelinesSkipOptimisation, type PipelinesOutcome } from '../core/pipeline/triggers';
@@ -67,19 +68,20 @@ import { expandHome } from '../core/settings/paths';
 import { menuTemplate } from './card-menu';
 import { coverArtCard, eachResult, editorLabel, editorProgram, makesNewCard, mediaFacts, openWithDialog, pageCard, readyIds, runPlan, savePages, startProgram, thenCopyBack, type CardCreation, type CardHost } from './cards';
 import { CompactMode, cardsThatFit, extraHeight } from './compact';
+import { acrylicSupported, DropBackdrop, parseDropRect, windowBackground } from './appearance';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // The crop and compare windows load the session's originals and results through this scheme, with byte ranges for video.
 protocol.registerSchemesAsPrivileged([{ scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, stream: true } }]);
-let main: BrowserWindow, floating: BrowserWindow, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray | undefined, engine: ItemEngine, media: MediaFiles;
+let main: BrowserWindow, floating: BrowserWindow, backdrop: DropBackdrop | undefined, backdropWindow: BrowserWindow | undefined, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray | undefined, engine: ItemEngine, media: MediaFiles;
 /** Open crop, compare and preview windows, by `crop:<id>`, `compare:<id>` and `preview:<id>`. */
 const views = new Map<string, BrowserWindow>();
 let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false, bridgeStopped = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
-let altHeld = false, dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
-/** The files being dragged, and whether Ctrl or Alt is held, as the Windows helper reports them: Ctrl or Alt shows the preset zone tiles. */
-let dragFiles: string[] = [], presetsLatched = false;
+let altHeld = false, shiftHeld = false, dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
+/** The files being dragged, as the Windows helper reports them; Ctrl during the drag shows the preset zones in the drop zone. */
+let dragFiles: string[] = [];
 const presetReveal = new PresetReveal();
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
@@ -148,7 +150,7 @@ const currentSequence = async () => bridgeReady ? sequenceReply(await bridge.req
 const isReady = (id: string) => { try { return engine.get(id).result.status === 'ready'; } catch { return false; } };
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 const presetsRevealed = () => presetReveal.revealed(settings.onlyShowPresetZonesOnControlTapped);
-/** The preset zone tiles for the files being dragged. */
+/** The preset zones for the files being dragged; they take the drop zone's place inside it, so they need no room of their own. */
 function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, draggedType(dragFiles, mediaKind)) }; }
 /** Whether the drop target shows now (see `dropZoneShown`); `dropActive` stays true for a drag whose target is hidden, so a drop still lands. */
 const targetShown = () => dropZoneShown({ expecting: dropActive, dragging, onlyWithAlt: settings.onlyShowDropZoneOnOption, alt: altHeld });
@@ -159,7 +161,7 @@ let choices: { saved: ClopSettings['savedPipelines']; list: ReturnType<typeof al
 const pipelineList = () => (choices?.saved === settings.savedPipelines ? choices : choices = { saved: settings.savedPipelines, list: allPipelineChoices(settings) }).list;
 /** How many full cards fit the screen last time the shelf was laid out. */
 let cardFit = 3;
-const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, dropActive: targetShown(), notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList(), ...(settings.finishedOnboarding ? {} : { welcome: true as const }) });
+const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, ...(backdrop ? { glass: 'acrylic' as const } : {}), dropActive: targetShown(), ...(dragging && shiftHeld ? { aggressiveHeld: true as const } : {}), notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList(), ...(settings.finishedOnboarding ? {} : { welcome: true as const }) });
 function broadcast() {
   refreshTrayIcon();
   for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
@@ -205,9 +207,7 @@ function syncFloating() {
   const target = targetShown() || settings.keepDropZoneVisible;
   const area = floatingArea();
   const items = visible();
-  // Room for the tiles stays once they were shown, until the drag ends: a tile under the pointer must not lose its window when Ctrl is let go.
-  const tiles = target && (presetsLatched || presetsRevealed()) ? gridHeight(cellCount(presets())) + 8 : 0;
-  const extra = extraHeight({ tiles, notice: !!notice, welcome: !settings.finishedOnboarding });
+  const extra = extraHeight({ notice: !!notice, welcome: !settings.finishedOnboarding });
   cardFit = cardsThatFit(area.height, target, 170, 60 + extra);
   const compact = compactMode.update(items.map(item => ({ id: item.id, running: item.status === 'processing' })));
   const count = Math.min(cardFit, items.length);
@@ -329,7 +329,7 @@ async function openView(view: 'crop' | 'compare' | 'preview', id: unknown) {
   if (view === 'crop' && result.kind === 'audio') throw new Error('Audio files have nothing to crop.');
   if (open && !open.isDestroyed()) { open.show(); open.focus(); return; }
   const size = view === 'crop' ? { width: 1020, height: 660, minWidth: 780, minHeight: 520 } : view === 'preview' ? { width: 900, height: 700, minWidth: 420, minHeight: 320 } : { width: 1100, height: 760, minWidth: 600, minHeight: 460 };
-  const window = new BrowserWindow({ ...size, show: false, title: `${{ crop: 'Crop', compare: 'Compare', preview: 'Preview' }[view]}: ${result.name}`, backgroundColor: '#211d23', autoHideMenuBar: true, webPreferences: webPreferences() });
+  const window = new BrowserWindow({ ...size, show: false, title: `${{ crop: 'Crop', compare: 'Compare', preview: 'Preview' }[view]}: ${result.name}`, backgroundColor: background(), autoHideMenuBar: true, webPreferences: webPreferences() });
   views.set(key, window);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
@@ -355,7 +355,7 @@ async function openEditor(tab?: 'zones') {
   if (editorLoading) await editorLoading.done;
   let window = editorWindow && !editorWindow.isDestroyed() ? editorWindow : undefined;
   if (!window) {
-    window = new BrowserWindow({ width: 1060, height: 720, minWidth: 780, minHeight: 500, show: false, backgroundColor: '#f3f1ef', title: 'Clop pipelines', autoHideMenuBar: true, webPreferences: webPreferences() });
+    window = new BrowserWindow({ width: 1060, height: 720, minWidth: 780, minHeight: 500, show: false, backgroundColor: background(), title: 'Clop pipelines', autoHideMenuBar: true, webPreferences: webPreferences() });
     configure(window);
     window.on('closed', syncNative);
     const created = window, done = load(created, { editor: '1', ...(tab ? { tab } : {}) }).then(() => { editorWindow = created; syncNative(); }, (error: unknown) => { created.destroy(); throw error; });
@@ -364,11 +364,37 @@ async function openEditor(tab?: 'zones') {
   } else if (tab) window.webContents.send('clop:editor-tab', tab);
   window.show(); window.focus();
 }
+/** The colour a window shows before its page paints: the theme's, so a dark window never flashes white. */
+const background = () => windowBackground(nativeTheme.shouldUseDarkColors);
+/** Appearance (`appearance`): Electron's theme source sets the pages' `prefers-color-scheme`, the native menus and dialogs, and the windows' backdrop. */
+function applyAppearance() {
+  if (nativeTheme.themeSource !== settings.appearance) nativeTheme.themeSource = settings.appearance;
+}
+/** The acrylic window under the drop zone (see `DropBackdrop`): frameless, never focused, showing only the material. */
+function createBackdrop() {
+  const window = new BrowserWindow({
+    width: 196, height: 148, show: false, frame: false, resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false, focusable: false, skipTaskbar: true,
+    alwaysOnTop: settings.floatingResultsAlwaysOnTop, backgroundMaterial: 'acrylic', backgroundColor: '#00000000', title: 'Clop drop zone', webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, javascript: false },
+  });
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-navigate', event => event.preventDefault());
+  void window.loadURL('about:blank');
+  backdropWindow = window; syncNative();
+  return window;
+}
 async function createWindows() {
   const windowPreferences = webPreferences();
-  main = new BrowserWindow({ width: 920, height: 660, minWidth: 720, minHeight: 480, show: false, backgroundColor: '#f3f1ef', title: 'Clop settings', autoHideMenuBar: true, webPreferences: windowPreferences });
+  applyAppearance();
+  nativeTheme.on('updated', () => { for (const window of BrowserWindow.getAllWindows()) if (window !== floating && window !== backdropWindow && !window.isDestroyed()) window.setBackgroundColor(background()); });
+  main = new BrowserWindow({ width: 920, height: 660, minWidth: 720, minHeight: 480, show: false, backgroundColor: background(), title: 'Clop settings', autoHideMenuBar: true, webPreferences: windowPreferences });
   floating = new BrowserWindow({ width: 236, height: 206, frame: false, resizable: false, transparent: true, show: false, skipTaskbar: true, alwaysOnTop: settings.floatingResultsAlwaysOnTop, backgroundColor: '#00000000', webPreferences: windowPreferences });
   configure(main); configure(floating);
+  // Windows 11 draws acrylic behind a whole window only; the transparent floating window would get it everywhere, so the drop zone's glass is a window of its own.
+  if (acrylicSupported(process.platform, os.release())) {
+    backdrop = new DropBackdrop(floating, createBackdrop);
+    const follow = () => backdrop?.sync();
+    floating.on('move', follow).on('resize', follow).on('show', follow).on('hide', follow);
+  }
   // Windows asks before it signs out or shuts down: while a result is taking an original's place, Clop asks it to wait. A forced end is repaired at the next start.
   main.on('query-session-end', event => { if (placing()) event.preventDefault(); });
   protectFromCapture(floating, settings.allowClopToAppearInScreenshots);
@@ -539,7 +565,7 @@ const dropExtra = (zone?: unknown): ImportExtra => ({
  */
 async function importFiles(files: unknown, source: ItemResult['source'], aggressive = false, zone?: unknown) {
   const sequence = await currentSequence();
-  // Pipelines attached to the drop zone (or a preset zone's pipeline) run on drops, but not on a ⌘-drop's explicit aggressive optimisation (`wantsPipelineLookup`).
+  // Pipelines attached to the drop zone (or a preset zone's pipeline) run on drops, but not on a Shift-drop's explicit aggressive optimisation (⌘ on macOS, `wantsPipelineLookup`).
   const extra = source !== 'drop' || aggressive ? undefined : () => dropExtra(zone);
   const ids = await importPaths(files, source, { aggressive, extra });
   if (settings.autoCopyToClipboard && ids.length) await copy(ids, sequence);
@@ -832,7 +858,8 @@ async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
   settings = saved;
   if (settings.mcpEnabled !== wasEnabled && app.isPackaged) void mcp.writeCard().catch(error => console.warn(`Could not write the MCP server card: ${message(error)}`));
   if (!settings.enableClipboardOptimiser || paused()) pickup.cancel();
-  floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop);
+  floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop); backdrop?.sync();
+  applyAppearance();
   syncCursorFollower(); rescheduleHides();
   syncFloating();
   if (process.platform === 'win32') syncLoginItem(app, settings.launchAtLogin, loginExecutable());
@@ -844,6 +871,7 @@ async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
 function applyWindowSettings() {
   syncShortcuts();
   protectFromCapture(floating, settings.allowClopToAppearInScreenshots);
+  backdrop?.protect(!settings.allowClopToAppearInScreenshots);
 }
 let lastShortcutProblem: string | undefined;
 /** Registers what the settings ask for. A conflict is announced once, all together, and not again at later launches; unusable trigger keys (set from a file) are said once. */
@@ -857,7 +885,7 @@ function syncShortcuts() {
 }
 /** Presses inside Clop's own windows, the crop and compare windows too, never start a drag. */
 function nativeSettings() {
-  return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating, editorWindow, ...views.values(), batch?.window()].filter((window): window is BrowserWindow => !!window && !window.isDestroyed()).map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
+  return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating, backdropWindow, editorWindow, ...views.values(), batch?.window()].filter((window): window is BrowserWindow => !!window && !window.isDestroyed()).map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
 }
 function syncNative() { if (bridgeReady) bridge.request(nativeSettings()).catch(error => inform(message(error))); }
 // Card actions (spec steps 30 and 31): the right-click menu, the corner buttons and the keys all arrive as one validated invocation
@@ -1063,6 +1091,8 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
         case 'presets': await openEditor('zones'); break;
         case 'float': showLatest(); break;
         case 'interactive': hovered = true; floating.setIgnoreMouseEvents(false); break;
+        // The floating window says where its drop zone is, so the acrylic window can sit under it.
+        case 'drop-zone': if (event.sender !== floating.webContents) throw new Error('Only the floating window has a drop zone.'); backdrop?.place(parseDropRect(args[1])); break;
         case 'select': selecting = true; break;
         case 'unselect': selecting = false; break;
         case 'passthrough': hovered = false; if (!dropActive) floating.setIgnoreMouseEvents(true, { forward: true }); break;
@@ -1191,11 +1221,12 @@ else {
     store.on('change', (next, changed) => {
       settings = next; for (const watcher of watchers) void watcher.update();
       if (changed.includes('pauseAutomaticOptimisations')) shortcutRunner.pauseChanged();
+      if (changed.includes('appearance')) applyAppearance();
       if (changed.some(key => ['keyComboModifiers', 'enabledKeys', 'quickResizeKeys', 'allowClopToAppearInScreenshots'].includes(key))) applyWindowSettings();
       // A change made outside the app (the settings file, the CLI) shows or hides the tray icon and updates its menu and icon too.
       if (changed.some(key => ['enableFloatingResults', 'followCursorScreen', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter', 'autoHideClipboardResultAfter'].includes(key))) { syncCursorFollower(); rescheduleHides(); syncFloating(); broadcast(); }
       if (changed.some(key => ['showMenubarIcon', 'pauseAutomaticOptimisations', 'enableClipboardOptimiser', 'keepDropZoneVisible'].includes(key))) updateTray();
-      // Pipelines, attachments and preset zones show in the editor and, as tiles, on the drop target.
+      // Pipelines, attachments and preset zones show in the editor, and the preset zones in the drop zone.
       if (changed.some(key => (EDITOR_SETTING_KEYS as readonly string[]).includes(key))) { syncFloating(); broadcast(); for (const window of [editorWindow, editorLoading?.window]) if (window && !window.isDestroyed()) window.webContents.send('clop:editor-changed'); }
     });
     for (const watcher of watchers) void watcher.update();
@@ -1216,19 +1247,21 @@ else {
       bridge.on('foreground', event => pickup.focus(Number(event.process)));
       bridge.on('drag-start', event => {
         if (!settings.enableDragAndDrop) return;
-        dragging = true; dropActive = true; altHeld = false; presetReveal.reset(); presetsLatched = false;
+        dragging = true; dropActive = true; altHeld = false; shiftHeld = false; presetReveal.reset();
         dragFiles = Array.isArray(event.paths) ? (event.paths as unknown[]).filter((file): file is string => typeof file === 'string').slice(0, 64) : [];
         floating.setIgnoreMouseEvents(false); syncFloating(); broadcast();
       });
-      // The helper reads Ctrl and Alt while a drag lasts; holding either shows the preset zone tiles, or tapping it with `onlyShowPresetZonesOnControlTapped`.
+      // The helper reads Ctrl, Alt and Shift while a drag lasts, standing in for the Mac's Control, Option and Command. Holding Ctrl shows the
+      // preset zones in the drop zone and a tap pins them, or only a tap toggles them with `onlyShowPresetZonesOnControlTapped`; their grid sits
+      // inside the drop zone, so the floating window keeps its size. Alt shows the drop zone with `onlyShowDropZoneOnOption`. Shift asks for
+      // aggressive optimisation, which the drop itself carries (its `shiftKey`); the state only lights the hint up.
       bridge.on('drag-modifiers', event => {
         if (!dragging) return;
-        altHeld = event.alt === true;
-        // With `onlyShowDropZoneOnOption` Alt shows the drop target, so only Ctrl reveals the tiles.
-        presetReveal.update({ ctrl: event.ctrl === true, alt: event.alt === true && !settings.onlyShowDropZoneOnOption }, settings.onlyShowPresetZonesOnControlTapped); presetsLatched ||= presetsRevealed(); syncFloating(); broadcast();
+        altHeld = event.alt === true; shiftHeld = event.shift === true;
+        presetReveal.update({ ctrl: event.ctrl === true, other: altHeld || shiftHeld }, settings.onlyShowPresetZonesOnControlTapped); syncFloating(); broadcast();
       });
-      // The tiles stay for the moment a drop on one needs to land.
-      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; altHeld = false; dragFiles = []; presetReveal.reset(); presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
+      // The zones stay for the moment a drop on one needs to land.
+      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; altHeld = false; shiftHeld = false; dragFiles = []; presetReveal.reset(); syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
       bridge.on('stopped', () => { bridgeReady = false; bridgeStopped = true; pickup.cancel(); startClipboardFallback(); for (const watcher of watchers) watcher.resume(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));

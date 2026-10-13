@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { ACTION_KINDS, itemMenu, submenu, batchMenu, SHORTCUTS, type Invocation, type MenuNode } from '../core/cards/actions';
 import { api, errorText } from './api';
 import { ResultCard, type OpenMenu } from './Cards';
@@ -8,10 +8,11 @@ import { factsFor, toastFor, type Run } from './results';
 import { Icon } from './icons';
 import { SettingsWindow } from './SettingsWindow';
 import { Welcome } from './Welcome';
-import { TILE, cellCount, gridHeight, tileAt, tileOrigin } from '../core/pipeline/zones';
+import { slotsFor, tileAt } from '../core/pipeline/zones';
 import { glyph } from './editor/glyphs';
+import { acceptAsCopy, aggressiveDrop, zonesKey } from './drag-keys';
 import { MenuPopup, MenuView } from './Menu';
-import type { AppState, PresetTiles } from './types';
+import type { AppState, ClopSettings, PresetTiles } from './types';
 
 const preferences = new URLSearchParams(location.search).has('preferences');
 
@@ -21,12 +22,27 @@ export function App() {
   const [message, setMessage] = useState('');
   const [localDrag, setLocalDrag] = useState(false);
   const [selected, setSelected] = useState<string>();
-  // Ctrl or Alt held over a drag inside this window, for the browser preview: the app learns it from the Windows helper instead.
-  const [heldKeys, setHeldKeys] = useState(false), [pinned, setPinned] = useState(false);
+  // Ctrl (the preset zones) and Shift (aggressive) held over a drag inside this window, for the browser preview: the app learns them from the Windows helper instead.
+  const [heldKeys, setHeldKeys] = useState(false), [shiftHeld, setShiftHeld] = useState(false);
   const [selection, setSelection] = useState<string[]>([]);
   const [popup, setPopup] = useState<{ nodes: MenuNode[]; ids: string[]; x: number; y: number }>();
   const notification = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const interactive = useRef(false);
+  const dropTarget = useRef<HTMLDivElement>(null), sentBox = useRef('');
+  const glass = state?.glass === 'acrylic' && !preferences;
+  // With acrylic, a window of its own draws the drop zone's glass; it follows the zone's box, measured after every layout.
+  useLayoutEffect(() => {
+    if (!glass) return;
+    const report = () => {
+      const box = dropTarget.current?.getBoundingClientRect();
+      const next = box ? { x: box.x, y: box.y, width: box.width, height: box.height, pageWidth: innerWidth, pageHeight: innerHeight } : null, key = JSON.stringify(next);
+      if (key !== sentBox.current) { sentBox.current = key; api.dropZone(next).catch(() => { sentBox.current = ''; }); }
+    };
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(document.documentElement); if (dropTarget.current) observer.observe(dropTarget.current);
+    return () => observer.disconnect();
+  });
   useEffect(() => {
     api.state().then(setState).catch(error => setError(error.message));
     return api.subscribe(setState);
@@ -34,8 +50,7 @@ export function App() {
   useEffect(() => { document.documentElement.classList.toggle('browser-preview', state?.native === false); }, [state?.native]);
   useEffect(() => { if (state?.native && !state.dropActive && !state.settings.keepDropZoneVisible) setLocalDrag(false); }, [state?.native, state?.dropActive, state?.settings.keepDropZoneVisible]);
   const targetShown = Boolean(state && (state.dropActive || state.settings.keepDropZoneVisible || localDrag));
-  // The tiles stay once the pointer is on them, so letting go of Ctrl or Alt to drop does not take them away.
-  useEffect(() => { if (!targetShown) { setPinned(false); setHeldKeys(false); } }, [targetShown]);
+  useEffect(() => { if (!targetShown) { setHeldKeys(false); setShiftHeld(false); } }, [targetShown]);
   useEffect(() => () => { if (notification.current) clearTimeout(notification.current); }, []);
   // A selection in the compact list holds back clearing it, and goes with the results it named.
   useEffect(() => { if (state && selection.some(id => !state.items.some(item => item.id === id))) setSelection(selection.filter(id => state.items.some(item => item.id === id))); }, [state, selection]);
@@ -76,7 +91,7 @@ export function App() {
   useEffect(() => {
     if (!state?.native || preferences) return;
     const move = (event: MouseEvent) => {
-      const hit = document.elementFromPoint(event.clientX, event.clientY)?.closest('.corner-card,.drop-target,.preset-grid,.corner-notice,.welcome-card,.stack-actions,.compact-list,.menu-popup');
+      const hit = document.elementFromPoint(event.clientX, event.clientY)?.closest('.corner-card,.drop-target,.corner-notice,.welcome-card,.stack-actions,.compact-list,.menu-popup');
       if (Boolean(hit) !== interactive.current) { interactive.current = Boolean(hit); void api.window(hit ? 'interactive' : 'passthrough'); }
     };
     document.addEventListener('mousemove', move); return () => document.removeEventListener('mousemove', move);
@@ -84,12 +99,13 @@ export function App() {
   if (!state) return null;
   if (preferences) return <SettingsWindow state={state} refresh={async () => setState(await api.state())}/>;
   function drop(event: DragEvent) {
-    event.preventDefault(); setLocalDrag(false);
-    const files = Array.from(event.dataTransfer.files);
-    if (files.length) void run(() => api.importFiles(files, event.ctrlKey));
+    acceptAsCopy(event); setLocalDrag(false);
+    if (zonesShown) return;
+    const files = Array.from(event.dataTransfer.files), aggressive = aggressiveDrop(event);
+    if (files.length) void run(() => api.importFiles(files, aggressive));
     else {
       const url = (event.dataTransfer.getData('text/uri-list') || event.dataTransfer.getData('text/plain')).split('\n').find(line => /^https?:\/\//i.test(line.trim()));
-      if (url) void run(() => api.importUrl(url.trim(), event.ctrlKey));
+      if (url) void run(() => api.importUrl(url.trim(), aggressive));
     }
   }
   function imageDrag(event: DragEvent) {
@@ -110,13 +126,13 @@ export function App() {
     setPopup({ nodes, ids, ...at });
   };
   const invoke = (invocation: Invocation) => { const ids = popup?.ids ?? []; setPopup(undefined); setSelection([]); void run(() => api.cardAction(ids, invocation), toastFor(invocation.action)); };
-  const revealed = targetShown && (pinned || (state.native ? Boolean(state.presets?.revealed) : heldKeys)) && state.presets;
-  const tiles = revealed ? <PresetGrid presets={state.presets!} run={run} onPin={setPinned}/> : null, tilesFirst = state.settings.floatingResultsCorner.startsWith('bottom');
-  return <div className={`corner-surface ${state.settings.floatingResultsCorner} ${compact ? 'compact' : ''}`} onDragOver={event => { setHeldKeys(event.ctrlKey || event.altKey); if (imageDrag(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }} onDragEnter={event => { if (imageDrag(event)) { event.preventDefault(); setLocalDrag(true); } }} onDrop={drop}>
+  // The preset zones take the drop zone's place inside it while their key is down or pinned (`draggingOutsideView`); then only they take a drop.
+  const zonesShown = Boolean(targetShown && state.presets && (state.native ? state.presets.revealed : heldKeys));
+  return <div className={`corner-surface ${state.settings.floatingResultsCorner} ${compact ? 'compact' : ''} ${glass ? 'acrylic' : ''}`} onDragOver={event => { setHeldKeys(zonesKey(event)); setShiftHeld(aggressiveDrop(event)); if (!zonesShown && imageDrag(event)) acceptAsCopy(event); }} onDragEnter={event => { if (imageDrag(event)) { acceptAsCopy(event); setLocalDrag(true); } }} onDrop={drop}>
     <div className="corner-stack">
-      {tilesFirst && tiles}
-      {targetShown && <div className={`drop-target ${localDrag ? 'receiving' : ''}`} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setLocalDrag(false); }}><strong>Drop to optimise</strong><div className="drop-ring"><span/><span/><span/></div><small>Images, videos, PDFs, audio</small><small>Originals stay safe</small><small>Ctrl: smaller file</small></div>}
-      {!tilesFirst && tiles}
+      {targetShown && <div ref={dropTarget} className={`drop-target${localDrag ? ' receiving' : ''}${zonesShown ? ' zones' : ''}`} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setLocalDrag(false); }}>
+        {zonesShown ? <PresetGrid presets={state.presets!} run={run}/> : <><strong>Drop to optimise</strong><div className="drop-ring" aria-hidden="true"/><div className="drop-hints">{dropHints(state.settings, Boolean(state.native ? state.aggressiveHeld : shiftHeld))}</div></>}
+      </div>}
       {compact ? <CompactList state={state} run={run} selection={selection} onSelection={setSelection} onMenu={openMenu} onSelect={setSelected}/>
         : cards.map(item => <ResultCard key={item.id} item={item} state={state} run={run} onSelect={() => setSelected(item.id)} onMenu={openMenu}/>)}
       {state.welcome && <Welcome settings={state.settings} onDismiss={() => void api.window('finish-welcome')}/>}
@@ -129,30 +145,56 @@ export function App() {
 }
 
 /**
- * The preset zone tiles (`DropZonePresetsView`): a file dropped on one is optimised and then runs that zone's pipeline. The grid reads the
- * pointer itself and asks `tileAt` which tile is under it, so the gaps between tiles never lose a drag.
+ * The key hints under the ring (`draggingOutsideView`), with the Windows keys for the Mac's: Ctrl shows the preset zones (Control), Alt
+ * shows the drop zone when `onlyShowDropZoneOnOption` asks for it (Option), and Shift at the drop optimises aggressively (Command). The
+ * aggressive line turns red while Shift is down, as the Mac's does for Command.
  */
-function PresetGrid({ presets, run, onPin }: { presets: PresetTiles; run: Run; onPin: (pinned: boolean) => void }) {
+function dropHints(settings: ClopSettings, aggressive: boolean): ReactNode[] {
+  return [
+    <small key="zones">{settings.onlyShowPresetZonesOnControlTapped ? 'Tap ' : ''}<kbd>Ctrl</kbd>: show preset zones</small>,
+    settings.onlyShowDropZoneOnOption && !settings.keepDropZoneVisible && <small key="alt">Let go of <kbd>Alt</kbd>: hide drop zone</small>,
+    <small key="aggressive" className={aggressive ? 'held' : undefined}><kbd>Shift</kbd>: use aggressive optimisation</small>,
+  ].filter(Boolean);
+}
+
+/**
+ * The preset zones, a two-by-two grid filling the drop zone (`DropZonePresetsView`): a file dropped on a zone is optimised and then runs
+ * that zone's pipeline, a drop on "Add preset" opens the preset zones, and an empty slot takes nothing. The grid reads the pointer itself
+ * and asks `tileAt` which slot is under it, so the gaps between slots never lose a drag.
+ */
+function PresetGrid({ presets, run }: { presets: PresetTiles; run: Run }) {
   const box = useRef<HTMLDivElement>(null), [hover, setHover] = useState<number>();
-  const cells = cellCount(presets), under = (event: DragEvent) => { const rect = box.current!.getBoundingClientRect(); return tileAt(event.clientX - rect.left, event.clientY - rect.top, cells); };
-  const names = [...presets.tiles.map(tile => tile.name), 'Add preset'];
-  return <div ref={box} className="preset-grid" role="group" aria-label="Preset zones" style={{ width: TILE.columns * (TILE.width + TILE.gap) - TILE.gap, height: gridHeight(cells) }}
-    onDragEnter={() => onPin(true)} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) { setHover(undefined); onPin(false); } }}
-    onDragOver={event => { const index = under(event); setHover(index); if (index !== undefined) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; } }}
+  const slots = slotsFor(presets);
+  const under = (event: DragEvent) => {
+    const rect = box.current!.getBoundingClientRect(), index = tileAt(event.clientX - rect.left, event.clientY - rect.top, rect.width, rect.height);
+    return index === undefined || slots[index].kind === 'empty' ? undefined : index;
+  };
+  return <div ref={box} className="preset-grid" role="group" aria-label="Preset zones"
+    onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setHover(undefined); }}
+    onDragOver={event => { const index = under(event); setHover(index); if (index !== undefined) acceptAsCopy(event); }}
     onDrop={event => {
-      const index = under(event), tile = index === undefined ? undefined : presets.tiles[index];
-      event.preventDefault(); event.stopPropagation(); setHover(undefined); onPin(false);
-      // A drop on the "Add preset" tile or an empty cell runs nothing; it opens the preset zones, as the tile does on a click.
-      if (!tile) { if (index !== undefined) void run(() => api.window('presets')); return; }
-      const files = Array.from(event.dataTransfer.files);
+      const index = under(event), slot = index === undefined ? undefined : slots[index];
+      acceptAsCopy(event); event.stopPropagation(); setHover(undefined);
+      if (slot?.kind === 'add') { void run(() => api.window('presets')); return; }
+      if (slot?.kind !== 'zone') return;
+      const files = Array.from(event.dataTransfer.files), { tile } = slot;
       if (files.length) void run(() => api.runPreset(tile.id, files), `Running ${tile.name}`); else void run(async () => { throw new Error('Drop files on a preset zone.'); });
     }}>
-    {names.slice(0, cells).map((name, index) => {
-      const add = index === presets.tiles.length, { x, y } = tileOrigin(index), tile = presets.tiles[index];
-      return <button key={tile?.id ?? 'add'} type="button" className={`preset-tile${add ? ' add' : ''}${hover === index ? ' over' : ''}`} style={{ left: x, top: y, width: TILE.width, height: TILE.height }}
-        title={add ? 'Add a preset zone' : `Drop on this tile to run ${name}`} onClick={() => void run(() => api.window('presets'))}>
-        <span className="preset-icon" aria-hidden="true">{add ? '+' : glyph(tile.icon)}</span><span className="preset-name">{name}</span>
+    {slots.map((slot, index) => {
+      if (slot.kind === 'empty') return <div key={`empty-${index}`} className="preset-slot empty" aria-hidden="true"><span className="preset-icon"><SlotMark/></span><span className="preset-name">No preset</span></div>;
+      const add = slot.kind === 'add', name = add ? 'Add preset' : slot.tile.name;
+      return <button key={add ? 'add' : slot.tile.id} type="button" className={`preset-slot${add ? ' add' : ''}${hover === index ? ' over' : ''}`}
+        title={add ? 'Add a preset zone' : `Drop here to run ${name}`} onClick={() => void run(() => api.window('presets'))}>
+        <span className="preset-icon" aria-hidden="true">{add ? <SlotMark add/> : glyph(slot.tile.icon)}</span><span className="preset-name">{name}</span>
       </button>;
     })}
   </div>;
+}
+
+/** The dashed square of an empty slot, with a plus on the one that adds a zone (`square.dashed`, `plus.square.dashed`). */
+function SlotMark({ add = false }: { add?: boolean }) {
+  return <svg className="slot-mark" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
+    <rect x="1.75" y="1.75" width="16.5" height="16.5" rx="4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3.4 2.4" strokeDashoffset="1.4"/>
+    {add && <path d="M10 6.2v7.6M6.2 10h7.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>}
+  </svg>;
 }

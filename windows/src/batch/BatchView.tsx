@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactNode } from 'react';
 import type { BatchItem } from '../../core/batch/engine';
 import type { MediaKind } from '../../core/media/types';
+import { acceptAsCopy } from '../drag-keys';
 import { Icon } from '../icons';
 import { batchApi as api } from './api';
 import { ParamCards } from './ParamCards';
@@ -50,8 +51,8 @@ export function BatchView() {
   if (!state) return error ? <div className="batch"><p className="batch-error" role="alert">{error}</p></div> : null;
   const running = state.batch?.phase === 'running' || state.batch?.phase === 'reverting';
   const accepts = (event: DragEvent) => !running && event.dataTransfer.types.includes('Files');
-  const drop = (event: DragEvent) => { event.preventDefault(); setDropping(false); const files = Array.from(event.dataTransfer.files); if (files.length && !running) void run(() => api.add(files)); };
-  return <div className={`batch ${dropping ? 'dropping' : ''}`} onDragOver={event => { if (accepts(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }} onDragEnter={event => { if (accepts(event)) setDropping(true); }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropping(false); }} onDrop={drop}>
+  const drop = (event: DragEvent) => { acceptAsCopy(event); setDropping(false); const files = Array.from(event.dataTransfer.files); if (files.length && !running) void run(() => api.add(files)); };
+  return <div className={`batch ${dropping ? 'dropping' : ''}`} onDragOver={event => { if (accepts(event)) acceptAsCopy(event); }} onDragEnter={event => { if (accepts(event)) { acceptAsCopy(event); setDropping(true); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropping(false); }} onDrop={drop}>
     {!state.native && <div className="preview-banner">Browser preview with sample files. Run Clop to optimise real files.</div>}
     {state.batch ? <Results key={state.batch.id} batch={state.batch} run={run}/> : <Prepare state={state} run={run}/>}
     {state.pendingAdd !== undefined && <Sheet label="Start a new batch?" onClose={() => void run(() => api.cancelAdd())}>

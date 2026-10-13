@@ -6,6 +6,7 @@ import { CompareWindow } from './CompareWindow';
 import { CropWindow } from './CropWindow';
 import { Editor } from './Editor';
 import { PreviewWindow } from './PreviewWindow';
+import './theme.css';
 import './style.css';
 import './cards.css';
 const query = new URLSearchParams(location.search), crop = query.get('crop'), compare = query.get('compare'), preview = query.get('preview'), batch = query.has('batch');

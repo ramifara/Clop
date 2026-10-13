@@ -99,7 +99,9 @@ function localImagePreview(): Plugin {
             }
           }
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify(reply ?? { items: engine.list(), settings, native: false, platform: 'preview', presets: { revealed: false, ...tilesFor(settings.presetZones, settings.savedPipelines, 'image') } }));
+          // The compact list shows when `alwaysShowCompactResults` asks for it; CLOP_PREVIEW_WELCOME=1 shows the first-run card, for screenshots.
+          const extra = { ...(settings.alwaysShowCompactResults ? { layout: { compact: true, cards: 3 } } : {}), ...(process.env.CLOP_PREVIEW_WELCOME ? { welcome: true } : {}) };
+          res.end(JSON.stringify(reply ?? { items: engine.list(), settings, native: false, platform: 'preview', presets: { revealed: false, ...tilesFor(settings.presetZones, settings.savedPipelines, 'image') }, ...extra }));
         } catch (error) { res.statusCode = 400; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: message(error) })); }
       });
     },

@@ -62,6 +62,7 @@ const browser: ClopApi = {
   mcp: async () => ({ clients: [], missing: 'Installing the MCP server into agents works in the desktop app.' }),
   runPreset: async () => { throw new Error('Preset zones run in the Clop app.'); },
   editor: { state: () => request<EditorState>('editor-state'), command: command => request<EditorReply>('editor-command', command), subscribe: () => () => {} },
+  dropZone: async () => {},
   window: async action => { if (action === 'float') window.open('/?floating=1', 'clop-floating', 'width=420,height=660'); else if (action === 'close' && window.opener) window.close(); },
   openCrop: async id => { window.open(`/?crop=${encodeURIComponent(id)}`, `clop-crop-${id}`, 'width=1020,height=660'); },
   openCompare: async id => { window.open(`/?compare=${encodeURIComponent(id)}`, `clop-compare-${id}`, 'width=1100,height=760'); },

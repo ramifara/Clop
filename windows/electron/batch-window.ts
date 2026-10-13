@@ -1,6 +1,7 @@
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron';
 import path from 'node:path';
 import { BatchHost, type BatchHostOptions } from './batch';
+import { windowBackground } from './appearance';
 
 // BatchWindow.swift: the batch optimiser's window, the same renderer bundle as the other windows with `?batch=1`, sandboxed,
 // with its own narrow preload. Requests on `clop:batch` are accepted from this window only.
@@ -23,7 +24,7 @@ export function setupBatch(options: BatchWindowOptions) {
   function show() {
     if (window && !window.isDestroyed()) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); return; }
     window = new BrowserWindow({
-      width: 1140, height: 720, minWidth: 900, minHeight: 520, show: false, title: 'Batch optimisation', backgroundColor: '#f3f1ef', autoHideMenuBar: true,
+      width: 1140, height: 720, minWidth: 900, minHeight: 520, show: false, title: 'Batch optimisation', backgroundColor: windowBackground(nativeTheme.shouldUseDarkColors), autoHideMenuBar: true,
       webPreferences: { ...options.webPreferences(), preload: path.join(options.here, 'preload-batch.cjs') },
     });
     options.created?.();

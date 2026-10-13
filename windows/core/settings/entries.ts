@@ -51,6 +51,7 @@ const rows: Row[] = [
 
   // general › main
   { id: 'general.main.showMenubarIcon', keys: ['showMenubarIcon'], title: 'Tray icon', subtitle: 'Show the Clop icon in the notification area', keywords: ['tray', 'notification area', 'taskbar', 'system tray', 'hide', 'hidden', 'icon', 'missing', 'disappeared'], tab: 'general', section: '', ui: { control: 'toggle' } },
+  { id: 'general.main.appearance', keys: ['appearance'], title: 'Appearance', subtitle: 'Light or dark windows, menus and drop zone', keywords: ['theme', 'dark mode', 'light mode', 'dark', 'light', 'colour', 'color', 'night', 'system theme'], tab: 'general', section: '', ui: { control: 'select', labels: [['system', 'Same as Windows'], ['light', 'Light'], ['dark', 'Dark']] } },
   { id: 'general.main.launchAtLogin', keys: ['launchAtLogin'], title: 'Start with Windows', subtitle: 'Start Clop when you sign in', keywords: ['startup', 'login', 'boot', 'autostart', 'sign in', 'run at startup'], tab: 'general', section: '' },
   { id: 'general.main.defaultLinkExpiration', keys: ['defaultLinkExpiration'], title: 'Shared links expire after', subtitle: 'How long a link made by sending a file stays alive', keywords: [], tab: 'general', section: '', ui: { pending: 'shared links come with a later change', control: 'select', labels: [['3600', '1 hour'], ['21600', '6 hours'], ['86400', '1 day'], ['259200', '3 days'], ['604800', '1 week'], ['2592000', '1 month'], ['0', 'Never']] } },
   { id: 'general.main.pauseAutomaticOptimisations', keys: ['pauseAutomaticOptimisations'], title: 'Pause automatic optimisations', subtitle: '', keywords: ['resume', 'stop', 'disable', 'snooze', 'watcher', 'watched folders', 'clipboard', 'nothing happens', 'not working', 'temporarily', 'off'], tab: 'general', section: '' },
@@ -218,7 +219,7 @@ const rows: Row[] = [
   { id: 'dropzone.automation.dropZoneAutomation', keys: [], title: 'Drop zone automation', subtitle: 'Run actions on files dropped here: convert, crop, copy, rename and more', keywords: ['pipeline', 'pipelines', 'automation', 'drop', 'actions'], tab: 'dropzone', section: 'Automation', ui: { control: 'sourceAutomation', source: 'dropZone' } },
 
   // presetZones › Showing preset zones
-  { id: 'presetZones.showingpresetzones.onlyShowPresetZonesOnControlTapped', keys: ['onlyShowPresetZonesOnControlTapped'], title: 'Show preset zones by holding or tapping Control', subtitle: 'Hold reveals them while the key is down; tap leaves them up', keywords: [], tab: 'presetZones', section: 'Showing preset zones' },
+  { id: 'presetZones.showingpresetzones.onlyShowPresetZonesOnControlTapped', keys: ['onlyShowPresetZonesOnControlTapped'], title: 'Show preset zones by holding or tapping Ctrl', subtitle: 'Hold reveals them while the key is down; tap leaves them up', keywords: ['ctrl', 'control', 'modifier', 'tap', 'hold'], tab: 'presetZones', section: 'Showing preset zones' },
 
   // presetZones › Preset zones
   { id: 'presetZones.presetzones.presetZones', keys: ['presetZones'], title: 'Preset zones', subtitle: 'Click a zone to assign or create a pipeline. Drag files onto a zone to run its actions.', keywords: ['drop target', 'quadrant', 'corner', 'control key', 'image', 'video', 'audio', 'pdf', 'automation'], tab: 'presetZones', section: 'Preset zones', ui: { control: 'presetZones' } },

@@ -11,8 +11,8 @@ export function cardsThatFit(height: number, dropTarget = false, cardHeight = 17
   return Math.max(1, Math.min(5, Math.floor((height - reserved - (dropTarget ? 160 : 0)) / cardHeight)));
 }
 
-/** The height of what shows besides the cards and the drop target: the preset tiles, a notice and the welcome card. Cards that fit leave room for it. */
-export const extraHeight = ({ tiles, notice, welcome }: { tiles: number; notice: boolean; welcome: boolean }) => tiles + (notice ? 85 : 0) + (welcome ? 220 : 0);
+/** The height of what shows besides the cards and the drop target: a notice and the welcome card. Cards that fit leave room for it. */
+export const extraHeight = ({ notice, welcome }: { notice: boolean; welcome: boolean }) => (notice ? 85 : 0) + (welcome ? 220 : 0);
 
 export interface CompactOptions {
   always: () => boolean;

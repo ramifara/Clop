@@ -95,11 +95,13 @@ export function Library({ state, send, onDirty }: { state: EditorState; send: Se
       <div className="list-head"><input type="search" aria-label="Filter pipelines" placeholder="Filter" value={filter} onChange={event => setFilter(event.target.value)}/><button type="button" className="primary" onClick={() => open(NEW, blank())}>New</button></div>
       <ul aria-label="Saved pipelines">
         {shown.map(candidate => <li key={candidate.key}><button type="button" className={candidate.key === selected ? 'row active' : 'row'} aria-current={candidate.key === selected} onClick={() => open(candidate.key)}>
-          <span className="glyph" aria-hidden="true">{glyph(candidate.readable ? candidate.icon : undefined)}</span>
+          <span className="glyph tile" aria-hidden="true">{candidate.readable ? glyph(candidate.icon) : '⚠'}</span>
           <span className="row-name">{candidate.readable ? candidate.name || 'Unnamed pipeline' : candidate.id ?? 'Unreadable pipeline'}</span>
-          {candidate.readable && candidate.fileType && <span className="chip">{TYPE_NAMES[candidate.fileType]}</span>}
-          {candidate.readable && candidate.builtin && <span className="badge builtin">Built-in</span>}
-          {!candidate.readable && <span className="badge warn">Unreadable</span>}
+          <span className="row-meta">
+            {candidate.readable && candidate.builtin && <span className="badge builtin">Built-in</span>}
+            {candidate.readable && candidate.fileType && <span className={`chip ${candidate.fileType}`}>{TYPE_NAMES[candidate.fileType]}</span>}
+            {!candidate.readable && <span className="badge warn">Unreadable</span>}
+          </span>
         </button></li>)}
         {!shown.length && <li className="empty">{state.library.length ? 'No pipeline matches.' : 'No saved pipelines yet.'}</li>}
       </ul>

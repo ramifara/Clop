@@ -62,13 +62,19 @@ export interface CompareSources { item: ItemResult; original: CompareSide; resul
 /** An app the ignored-apps picker offers: a running app with a window, or a Start Menu app. `path` is an exe path, or an AUMID for a packaged app. */
 export interface AppEntry { name: string; path: string; running: boolean }
 /** The preset zone tiles for the drag in progress. They show while `revealed` (Ctrl or Alt held); `add` is the "new preset" tile after them. */
-export interface PresetTiles { revealed: boolean; tiles: PresetTile[]; add: boolean }
+/** The preset zones for the drag under way, and whether they show in the drop zone now. */
+export interface PresetTiles { revealed: boolean; tiles: PresetTile[] }
 /** Where the Settings window was last asked to open (a tray item or `clop://settings/…` link); `nonce` changes with each request so the same target can be asked for again. */
 export interface SettingsRequest { tab: SettingsTab; row?: string; nonce: number }
 export type { EditorCommand, EditorReply, EditorState, PipelineIssue, PresetTile };
 /** `compact` is the results layout showing (the list, or full cards) and `cards` how many full cards fit. */
 export interface AppState {
-  items: ItemResult[]; settings: ClopSettings; native: boolean; platform: string; dropActive?: boolean; notice?: string; presets?: PresetTiles; settingsRequest?: SettingsRequest;
+  items: ItemResult[]; settings: ClopSettings; native: boolean; platform: string;
+  /** `acrylic` while an acrylic window draws the drop zone's glass (Windows 11); otherwise the zone tints itself. */
+  glass?: 'acrylic';
+  dropActive?: boolean; notice?: string; presets?: PresetTiles; settingsRequest?: SettingsRequest;
+  /** Shift is down during a drag: a drop on the drop zone now optimises aggressively. */
+  aggressiveHeld?: true;
   layout?: { compact: boolean; cards: number };
   /** Every saved pipeline a card button or menu can run, for the buttons set to run one. */
   pipelines?: PipelineChoice[];
@@ -87,6 +93,8 @@ export interface ClopApi {
   pipelines(id: string): Promise<PipelineChoice[]>; runPipeline(id: string, pipelineId: string): Promise<void>;
   mcp(request: McpRequest): Promise<McpState>;
   window(action: 'hide' | 'close' | 'main' | 'float' | 'quit' | 'minimize' | 'interactive' | 'passthrough' | 'dismiss-notice' | 'finish-welcome' | 'editor' | 'presets' | 'select' | 'unselect'): Promise<void>;
+  /** Where the floating window's drop zone is in its page (or `null` once it hides), so the acrylic window behind it can follow. */
+  dropZone(box: { x: number; y: number; width: number; height: number; pageWidth: number; pageHeight: number } | null): Promise<void>;
   /** Opens (or brings forward) a result's crop, compare or preview window. */
   openCrop(id: string): Promise<void>; openCompare(id: string): Promise<void>; openPreview(id: string): Promise<void>;
   /** Pops up the right-click menu of results (the batch menu for several), or one of its submenus by name, at the pointer. */
