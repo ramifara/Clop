@@ -73,6 +73,8 @@ export interface AppState {
   /** `acrylic` while an acrylic window draws the drop zone's glass (Windows 11); otherwise the zone tints itself. */
   glass?: 'acrylic';
   dropActive?: boolean; notice?: string; presets?: PresetTiles; settingsRequest?: SettingsRequest;
+  /** Shift is down during a drag: a drop on the drop zone now optimises aggressively. */
+  aggressiveHeld?: true;
   layout?: { compact: boolean; cards: number };
   /** Every saved pipeline a card button or menu can run, for the buttons set to run one. */
   pipelines?: PipelineChoice[];

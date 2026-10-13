@@ -10,6 +10,7 @@ import { SettingsWindow } from './SettingsWindow';
 import { Welcome } from './Welcome';
 import { slotsFor, tileAt } from '../core/pipeline/zones';
 import { glyph } from './editor/glyphs';
+import { acceptAsCopy, aggressiveDrop, zonesKey } from './drag-keys';
 import { MenuPopup, MenuView } from './Menu';
 import type { AppState, ClopSettings, PresetTiles } from './types';
 
@@ -21,8 +22,8 @@ export function App() {
   const [message, setMessage] = useState('');
   const [localDrag, setLocalDrag] = useState(false);
   const [selected, setSelected] = useState<string>();
-  // Ctrl or Alt held over a drag inside this window, for the browser preview: the app learns it from the Windows helper instead.
-  const [heldKeys, setHeldKeys] = useState(false);
+  // Ctrl (the preset zones) and Shift (aggressive) held over a drag inside this window, for the browser preview: the app learns them from the Windows helper instead.
+  const [heldKeys, setHeldKeys] = useState(false), [shiftHeld, setShiftHeld] = useState(false);
   const [selection, setSelection] = useState<string[]>([]);
   const [popup, setPopup] = useState<{ nodes: MenuNode[]; ids: string[]; x: number; y: number }>();
   const notification = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -49,7 +50,7 @@ export function App() {
   useEffect(() => { document.documentElement.classList.toggle('browser-preview', state?.native === false); }, [state?.native]);
   useEffect(() => { if (state?.native && !state.dropActive && !state.settings.keepDropZoneVisible) setLocalDrag(false); }, [state?.native, state?.dropActive, state?.settings.keepDropZoneVisible]);
   const targetShown = Boolean(state && (state.dropActive || state.settings.keepDropZoneVisible || localDrag));
-  useEffect(() => { if (!targetShown) setHeldKeys(false); }, [targetShown]);
+  useEffect(() => { if (!targetShown) { setHeldKeys(false); setShiftHeld(false); } }, [targetShown]);
   useEffect(() => () => { if (notification.current) clearTimeout(notification.current); }, []);
   // A selection in the compact list holds back clearing it, and goes with the results it named.
   useEffect(() => { if (state && selection.some(id => !state.items.some(item => item.id === id))) setSelection(selection.filter(id => state.items.some(item => item.id === id))); }, [state, selection]);
@@ -98,13 +99,13 @@ export function App() {
   if (!state) return null;
   if (preferences) return <SettingsWindow state={state} refresh={async () => setState(await api.state())}/>;
   function drop(event: DragEvent) {
-    event.preventDefault(); setLocalDrag(false);
+    acceptAsCopy(event); setLocalDrag(false);
     if (zonesShown) return;
-    const files = Array.from(event.dataTransfer.files);
-    if (files.length) void run(() => api.importFiles(files, event.ctrlKey));
+    const files = Array.from(event.dataTransfer.files), aggressive = aggressiveDrop(event);
+    if (files.length) void run(() => api.importFiles(files, aggressive));
     else {
       const url = (event.dataTransfer.getData('text/uri-list') || event.dataTransfer.getData('text/plain')).split('\n').find(line => /^https?:\/\//i.test(line.trim()));
-      if (url) void run(() => api.importUrl(url.trim(), event.ctrlKey));
+      if (url) void run(() => api.importUrl(url.trim(), aggressive));
     }
   }
   function imageDrag(event: DragEvent) {
@@ -127,10 +128,10 @@ export function App() {
   const invoke = (invocation: Invocation) => { const ids = popup?.ids ?? []; setPopup(undefined); setSelection([]); void run(() => api.cardAction(ids, invocation), toastFor(invocation.action)); };
   // The preset zones take the drop zone's place inside it while their key is down or pinned (`draggingOutsideView`); then only they take a drop.
   const zonesShown = Boolean(targetShown && state.presets && (state.native ? state.presets.revealed : heldKeys));
-  return <div className={`corner-surface ${state.settings.floatingResultsCorner} ${compact ? 'compact' : ''} ${glass ? 'acrylic' : ''}`} onDragOver={event => { setHeldKeys(event.ctrlKey || event.altKey); if (!zonesShown && imageDrag(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }} onDragEnter={event => { if (imageDrag(event)) { event.preventDefault(); setLocalDrag(true); } }} onDrop={drop}>
+  return <div className={`corner-surface ${state.settings.floatingResultsCorner} ${compact ? 'compact' : ''} ${glass ? 'acrylic' : ''}`} onDragOver={event => { setHeldKeys(zonesKey(event)); setShiftHeld(aggressiveDrop(event)); if (!zonesShown && imageDrag(event)) acceptAsCopy(event); }} onDragEnter={event => { if (imageDrag(event)) { acceptAsCopy(event); setLocalDrag(true); } }} onDrop={drop}>
     <div className="corner-stack">
       {targetShown && <div ref={dropTarget} className={`drop-target${localDrag ? ' receiving' : ''}${zonesShown ? ' zones' : ''}`} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setLocalDrag(false); }}>
-        {zonesShown ? <PresetGrid presets={state.presets!} run={run}/> : <><strong>Drop to optimise</strong><div className="drop-ring" aria-hidden="true"/><div className="drop-hints">{dropHints(state.settings)}</div></>}
+        {zonesShown ? <PresetGrid presets={state.presets!} run={run}/> : <><strong>Drop to optimise</strong><div className="drop-ring" aria-hidden="true"/><div className="drop-hints">{dropHints(state.settings, Boolean(state.native ? state.aggressiveHeld : shiftHeld))}</div></>}
       </div>}
       {compact ? <CompactList state={state} run={run} selection={selection} onSelection={setSelection} onMenu={openMenu} onSelect={setSelected}/>
         : cards.map(item => <ResultCard key={item.id} item={item} state={state} run={run} onSelect={() => setSelected(item.id)} onMenu={openMenu}/>)}
@@ -144,17 +145,15 @@ export function App() {
 }
 
 /**
- * The key hints under the ring (`draggingOutsideView`), saying what the keys do here. Ctrl and Alt both show the preset zones, unless
- * Alt is the key that shows the drop zone (`onlyShowDropZoneOnOption`). Ctrl at the drop asks for aggressive optimisation, but holding
- * Ctrl shows the zones in the drop zone's place, so that only works while a tap, not a hold, shows them.
+ * The key hints under the ring (`draggingOutsideView`), with the Windows keys for the Mac's: Ctrl shows the preset zones (Control), Alt
+ * shows the drop zone when `onlyShowDropZoneOnOption` asks for it (Option), and Shift at the drop optimises aggressively (Command). The
+ * aggressive line turns red while Shift is down, as the Mac's does for Command.
  */
-function dropHints(settings: ClopSettings): ReactNode[] {
-  const tapOnly = settings.onlyShowPresetZonesOnControlTapped, altShowsZone = settings.onlyShowDropZoneOnOption;
-  const keys = altShowsZone ? <kbd>Ctrl</kbd> : <><kbd>Ctrl</kbd> or <kbd>Alt</kbd></>;
+function dropHints(settings: ClopSettings, aggressive: boolean): ReactNode[] {
   return [
-    <small key="zones">{tapOnly ? <>Tap {keys}</> : keys}: show preset zones</small>,
-    altShowsZone && !settings.keepDropZoneVisible && <small key="alt">Let go of <kbd>Alt</kbd>: hide drop zone</small>,
-    tapOnly && <small key="aggressive"><kbd>Ctrl</kbd>: use aggressive optimisation</small>,
+    <small key="zones">{settings.onlyShowPresetZonesOnControlTapped ? 'Tap ' : ''}<kbd>Ctrl</kbd>: show preset zones</small>,
+    settings.onlyShowDropZoneOnOption && !settings.keepDropZoneVisible && <small key="alt">Let go of <kbd>Alt</kbd>: hide drop zone</small>,
+    <small key="aggressive" className={aggressive ? 'held' : undefined}><kbd>Shift</kbd>: use aggressive optimisation</small>,
   ].filter(Boolean);
 }
 
@@ -172,10 +171,10 @@ function PresetGrid({ presets, run }: { presets: PresetTiles; run: Run }) {
   };
   return <div ref={box} className="preset-grid" role="group" aria-label="Preset zones"
     onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setHover(undefined); }}
-    onDragOver={event => { const index = under(event); setHover(index); if (index !== undefined) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }}
+    onDragOver={event => { const index = under(event); setHover(index); if (index !== undefined) acceptAsCopy(event); }}
     onDrop={event => {
       const index = under(event), slot = index === undefined ? undefined : slots[index];
-      event.preventDefault(); event.stopPropagation(); setHover(undefined);
+      acceptAsCopy(event); event.stopPropagation(); setHover(undefined);
       if (slot?.kind === 'add') { void run(() => api.window('presets')); return; }
       if (slot?.kind !== 'zone') return;
       const files = Array.from(event.dataTransfer.files), { tile } = slot;

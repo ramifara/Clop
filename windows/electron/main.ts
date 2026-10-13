@@ -79,8 +79,8 @@ const views = new Map<string, BrowserWindow>();
 let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false, bridgeStopped = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
-let altHeld = false, dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
-/** The files being dragged, as the Windows helper reports them, and the Ctrl and Alt state that shows the preset zones in the drop zone. */
+let altHeld = false, shiftHeld = false, dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
+/** The files being dragged, as the Windows helper reports them; Ctrl during the drag shows the preset zones in the drop zone. */
 let dragFiles: string[] = [];
 const presetReveal = new PresetReveal();
 const hidden = new Set<string>();
@@ -161,7 +161,7 @@ let choices: { saved: ClopSettings['savedPipelines']; list: ReturnType<typeof al
 const pipelineList = () => (choices?.saved === settings.savedPipelines ? choices : choices = { saved: settings.savedPipelines, list: allPipelineChoices(settings) }).list;
 /** How many full cards fit the screen last time the shelf was laid out. */
 let cardFit = 3;
-const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, ...(backdrop ? { glass: 'acrylic' as const } : {}), dropActive: targetShown(), notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList(), ...(settings.finishedOnboarding ? {} : { welcome: true as const }) });
+const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, ...(backdrop ? { glass: 'acrylic' as const } : {}), dropActive: targetShown(), ...(dragging && shiftHeld ? { aggressiveHeld: true as const } : {}), notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList(), ...(settings.finishedOnboarding ? {} : { welcome: true as const }) });
 function broadcast() {
   refreshTrayIcon();
   for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
@@ -565,7 +565,7 @@ const dropExtra = (zone?: unknown): ImportExtra => ({
  */
 async function importFiles(files: unknown, source: ItemResult['source'], aggressive = false, zone?: unknown) {
   const sequence = await currentSequence();
-  // Pipelines attached to the drop zone (or a preset zone's pipeline) run on drops, but not on a ⌘-drop's explicit aggressive optimisation (`wantsPipelineLookup`).
+  // Pipelines attached to the drop zone (or a preset zone's pipeline) run on drops, but not on a Shift-drop's explicit aggressive optimisation (⌘ on macOS, `wantsPipelineLookup`).
   const extra = source !== 'drop' || aggressive ? undefined : () => dropExtra(zone);
   const ids = await importPaths(files, source, { aggressive, extra });
   if (settings.autoCopyToClipboard && ids.length) await copy(ids, sequence);
@@ -1247,20 +1247,21 @@ else {
       bridge.on('foreground', event => pickup.focus(Number(event.process)));
       bridge.on('drag-start', event => {
         if (!settings.enableDragAndDrop) return;
-        dragging = true; dropActive = true; altHeld = false; presetReveal.reset();
+        dragging = true; dropActive = true; altHeld = false; shiftHeld = false; presetReveal.reset();
         dragFiles = Array.isArray(event.paths) ? (event.paths as unknown[]).filter((file): file is string => typeof file === 'string').slice(0, 64) : [];
         floating.setIgnoreMouseEvents(false); syncFloating(); broadcast();
       });
-      // The helper reads Ctrl and Alt while a drag lasts; holding either shows the preset zones in the drop zone and a tap pins them, or only a tap
-      // toggles them with `onlyShowPresetZonesOnControlTapped`. Their grid sits inside the drop zone, so the floating window keeps its size.
+      // The helper reads Ctrl, Alt and Shift while a drag lasts, standing in for the Mac's Control, Option and Command. Holding Ctrl shows the
+      // preset zones in the drop zone and a tap pins them, or only a tap toggles them with `onlyShowPresetZonesOnControlTapped`; their grid sits
+      // inside the drop zone, so the floating window keeps its size. Alt shows the drop zone with `onlyShowDropZoneOnOption`. Shift asks for
+      // aggressive optimisation, which the drop itself carries (its `shiftKey`); the state only lights the hint up.
       bridge.on('drag-modifiers', event => {
         if (!dragging) return;
-        altHeld = event.alt === true;
-        // With `onlyShowDropZoneOnOption` Alt shows the drop target, so only Ctrl reveals the zones.
-        presetReveal.update({ ctrl: event.ctrl === true, alt: event.alt === true && !settings.onlyShowDropZoneOnOption }, settings.onlyShowPresetZonesOnControlTapped); syncFloating(); broadcast();
+        altHeld = event.alt === true; shiftHeld = event.shift === true;
+        presetReveal.update({ ctrl: event.ctrl === true, other: altHeld || shiftHeld }, settings.onlyShowPresetZonesOnControlTapped); syncFloating(); broadcast();
       });
       // The zones stay for the moment a drop on one needs to land.
-      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; altHeld = false; dragFiles = []; presetReveal.reset(); syncFloating(); broadcast(); } }, 180); });
+      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; altHeld = false; shiftHeld = false; dragFiles = []; presetReveal.reset(); syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
       bridge.on('stopped', () => { bridgeReady = false; bridgeStopped = true; pickup.cancel(); startClipboardFallback(); for (const watcher of watchers) watcher.resume(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));

@@ -90,7 +90,7 @@ namespace ClopWindows {
     static string ForegroundApp = "";
     static readonly string ClipboardOwner = Guid.NewGuid().ToString("N");
     static bool Announced, Eligible, DetectDrag = true;
-    // Ctrl (bit 1) and Alt (bit 2) as last reported during a drag, or -1 before the first report. Read on their own timer: the
+    // Ctrl (bit 1), Alt (bit 2) and Shift (bit 4) as last reported during a drag, or -1 before the first report. Read on their own timer: the
     // mouse hook only queues presses, and the key state is never asked from inside it.
     static int Modifiers = -1;
     static System.Windows.Forms.Timer ModifierTimer;
@@ -169,7 +169,8 @@ namespace ClopWindows {
       // client bounds and queues coordinates; COM work stays outside the input callback.
       var mouseHook = SetWindowsHookEx(14, MouseEvents, GetModuleHandle(null), 0);
       var hook = SetWinEventHook(0x000F, 0x000F, IntPtr.Zero, DragEvents, 0, 0, 2);
-      // While a drag is announced, Ctrl and Alt reveal the app's preset zones: a faster tick than the main one keeps the tiles close to the key.
+      // While a drag is announced, Ctrl shows the app's preset zones, Alt its drop zone and Shift asks for aggressive optimisation: a faster
+      // tick than the main one keeps the zones close to the key.
       ModifierTimer = new System.Windows.Forms.Timer { Interval = 40 };
       ModifierTimer.Tick += (sender, args) => ReportModifiers();
       timer.Start(); Emit(new { type = "ready", sequence = Sequence }); Application.Run(); timer.Dispose(); ModifierTimer.Dispose();
@@ -446,10 +447,10 @@ namespace ClopWindows {
       return CallNextHookEx(IntPtr.Zero, code, message, data);
     }
     static void ReportModifiers() {
-      int now = ((GetAsyncKeyState(0x11) & 0x8000) != 0 ? 1 : 0) | ((GetAsyncKeyState(0x12) & 0x8000) != 0 ? 2 : 0);
+      int now = ((GetAsyncKeyState(0x11) & 0x8000) != 0 ? 1 : 0) | ((GetAsyncKeyState(0x12) & 0x8000) != 0 ? 2 : 0) | ((GetAsyncKeyState(0x10) & 0x8000) != 0 ? 4 : 0);
       if (now == Modifiers) return;
       Modifiers = now;
-      Emit(new { type = "drag-modifiers", ctrl = (now & 1) != 0, alt = (now & 2) != 0 });
+      Emit(new { type = "drag-modifiers", ctrl = (now & 1) != 0, alt = (now & 2) != 0, shift = (now & 4) != 0 });
     }
     static void FinishDrag() {
       Generation++;

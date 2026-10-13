@@ -9,7 +9,7 @@ import type { Send } from './types';
 const serves = (pipeline: PipelineView, type: ClopFileType | undefined) => !pipeline.fileType || pipeline.fileType === type;
 
 /**
- * The preset zones: while Ctrl or Alt is held during a drag they take the drop zone's place, in a grid of four inside it, each running
+ * The preset zones: while Ctrl is held during a drag (or after a tap) they take the drop zone's place, in a grid of four inside it, each running
  * one library pipeline on what is dropped on it (`PresetZones.swift`). The zones for the dragged type show first, then those for any type.
  */
 export function Zones({ state, send }: { state: EditorState; send: Send }) {
@@ -18,7 +18,7 @@ export function Zones({ state, send }: { state: EditorState; send: Send }) {
   const type = adding.type || undefined, options = library.filter(entry => serves(entry, type));
   const pipelineId = options.some(entry => entry.key === adding.pipelineId) ? adding.pipelineId : options[0]?.key ?? '';
   return <div className="zones">
-    <p className="explain">Drag a file and hold <kbd>Ctrl</kbd> or <kbd>Alt</kbd>, or tap it to keep them up: these zones take the drop zone's place. Drop the file on a zone to optimise it and run that zone's pipeline. The drop zone has room for four: the zones for the dragged file's type first, then those for any file.</p>
+    <p className="explain">Drag a file and hold <kbd>Ctrl</kbd>, or tap it to keep them up: these zones take the drop zone's place. Drop the file on a zone to optimise it and run that zone's pipeline. The drop zone has room for four: the zones for the dragged file's type first, then those for any file.</p>
     <ul className="zone-list" aria-label="Preset zones">
       {state.zones.map((zone, index) => <ZoneRow key={zoneRowKey(zone)} zone={zone} index={index} count={state.zones.length} library={library} send={send}/>)}
       {!state.zones.length && <li className="empty">No preset zones yet.</li>}

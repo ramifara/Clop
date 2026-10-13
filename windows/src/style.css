@@ -53,6 +53,8 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .drop-target strong{font-size:14px;font-weight:800;letter-spacing:-.01em}
 .drop-target small{font-size:9.5px;font-weight:500;line-height:1.35;color:var(--glass-muted)}
 .drop-target small kbd{font:inherit;font-weight:700;color:var(--glass-ink)}
+/* Shift is down: the drop will be aggressive, so its line turns red, as macOS reddens its ⌘ line. */
+.drop-target small.held,.drop-target small.held kbd{color:var(--rose-ink)}
 .drop-ring{position:relative;width:38px;height:38px;margin:6px 0 7px;border-radius:50%;background:conic-gradient(from 210deg,var(--rose),var(--amber) 55%,var(--rose));-webkit-mask:radial-gradient(circle,#000 0 4.5px,transparent 5px 9px,#000 9.5px 12px,transparent 12.5px 15.5px,#000 16px 19px,transparent 19.5px);mask:radial-gradient(circle,#000 0 4.5px,transparent 5px 9px,#000 9.5px 12px,transparent 12.5px 15.5px,#000 16px 19px,transparent 19.5px)}
 .drop-target.receiving{border-color:color-mix(in srgb,var(--rose) 45%,var(--glass-line))}
 .drop-target.receiving .drop-ring{animation:spin 4s linear infinite}
