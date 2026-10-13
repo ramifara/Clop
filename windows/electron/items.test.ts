@@ -309,3 +309,59 @@ test('dismissing is immediate, safe to repeat and stops a running job', async t 
   await assert.rejects(stat(folder(running)), { code: 'ENOENT' });
   await engine.dismiss(running);
 });
+test('stopping ends running and queued jobs, which can then run again', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine, dir } = f;
+  const first = await clip(path.join(dir, 'first.mp4'), { width: 640, height: 360, seconds: 4 }), second = await clip(path.join(dir, 'second.mp4'), { width: 640, height: 360, seconds: 1 });
+  const jobs = [engine.importPath(first, 'drop', balanced), engine.importPath(second, 'drop', balanced)];
+  while (engine.list().length < 2) await new Promise(resolve => setTimeout(resolve, 10));
+  engine.stop();
+  const ids = await Promise.all(jobs);
+  for (const id of ids) assert.deepEqual([engine.get(id).result.status, engine.get(id).result.error], ['error', 'Stopped.']);
+  // Stopping is not quitting: the stopped result can be restored, and new imports run.
+  await engine.restore(ids[0]);
+  assert.equal(engine.get(ids[0]).result.status, 'ready');
+  const id = await engine.importBuffer(await sampleImage(), 'after.png', 'drop', balanced);
+  assert.equal(engine.get(id).result.status, 'ready');
+  engine.stop([id]);
+  assert.equal(engine.get(id).result.status, 'ready', 'stopping a finished result changes nothing');
+});
+test('a dismissed result can be brought back as the newest', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine } = f;
+  const a = await engine.importBuffer(await sampleImage(), 'a.png', 'drop', balanced), b = await engine.importBuffer(await sampleImage(), 'b.png', 'drop', balanced);
+  await engine.dismiss(a); await engine.dismiss(b);
+  assert.deepEqual(engine.list(), []);
+  assert.equal(engine.bringBack(a), a);
+  assert.equal(engine.bringBack(), b);
+  assert.deepEqual(engine.list().map(item => item.name), ['b.png', 'a.png']);
+  assert.equal(engine.bringBack(), undefined);
+  assert.equal(engine.bringBack('unknown'), undefined);
+});
+test('a result dismissed while it is placed is placed in full and can still be brought back and restored', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine, dir } = f;
+  const file = path.join(dir, 'source.png'); await writeFile(file, await sampleImage());
+  let release!: () => void, placing!: () => void;
+  const started = new Promise<void>(resolve => { placing = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const calls: string[] = [];
+  const placement = {
+    place: async () => { calls.push('place'); placing(); await gate; return file; },
+    restore: async () => { calls.push('restore'); return file; },
+  };
+  let id = '';
+  const done = engine.importPath(file, 'folder', balanced, undefined, { placement, staged: staged => { id = staged; } });
+  await started;
+  await engine.dismiss(id);
+  release();
+  await done;
+  assert.equal(engine.has(id), false);
+  assert.equal(engine.bringBack(id), id, 'a placed result stays restorable');
+  await engine.restore(id);
+  assert.deepEqual(calls, ['place', 'restore']);
+  // A placement that fails while dismissed leaves nothing to bring back.
+  const failing = { place: async () => { await engine.dismiss(other); throw new Error('disk full'); }, restore: async () => undefined };
+  let other = '';
+  await engine.importPath(file, 'folder', balanced, undefined, { placement: failing, staged: staged => { other = staged; } });
+  assert.equal(engine.bringBack(other), undefined);
+});

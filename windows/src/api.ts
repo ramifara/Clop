@@ -46,6 +46,7 @@ const browser: ClopApi = {
   save: async id => download(id), reveal: async id => download(id), drag: () => {},
   dismiss: async id => { await request('dismiss', { id }); },
   settings: async settings => { await request('settings', settings); },
+  apps: async () => [],
   window: async action => { if (action === 'float') window.open('/?floating=1', 'clop-floating', 'width=420,height=660'); },
 };
 export const api = window.clop ?? browser;

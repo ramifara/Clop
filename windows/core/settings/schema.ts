@@ -103,7 +103,7 @@ export const settingsSchema = {
   optimiseTIFF: bool(true, 'Optimise copied TIFF data.'),
   optimiseHEICAVIFClipboard: bool(false, 'Optimise copied HEIC and AVIF data.'),
   enableClipboardOptimiser: bool(true, 'Watch the clipboard and optimise copied data automatically. Legacy Windows key: `clipboard`.'),
-  clipboardIgnoredAppBundleIds: list([], 'Apps whose clipboard copies are ignored. macOS: `Set<String>` of bundle IDs.', { unique: true, encoding: 'Executable paths or AUMIDs instead of bundle IDs.' }),
+  clipboardIgnoredAppBundleIds: list([], 'Apps whose clipboard copies are ignored. macOS: `Set<String>` of bundle IDs.', { unique: true, encoding: 'Executable paths (`C:\\Program Files\\App\\app.exe`), executable names (`app.exe`) or AUMIDs of packaged apps instead of bundle IDs, matched against the app that owns the clipboard without regard to case.' }),
   optimiseVideoClipboard: bool(false, 'Optimise copied video files.'),
   optimiseAudioClipboard: bool(false, 'Optimise copied audio files.'),
   optimisePDFClipboard: bool(false, 'Optimise copied PDF files.'),

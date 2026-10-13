@@ -5,6 +5,7 @@ import type { MediaKind } from '../core/media/types';
 import type { ClopSettings } from '../core/settings/schema';
 import type { ItemResult } from '../src/types';
 import type { ClipboardChange } from './pickup';
+import { ignoredApp } from './apps';
 
 /** `DEFAULT_NAME_TEMPLATE` in SettingsView.swift, for clipboard images when the custom template is empty. */
 export const DEFAULT_NAME_TEMPLATE = 'clop_%y-%m-%d_%i';
@@ -19,11 +20,13 @@ const format = (ext: string) => { ext = ext.toLowerCase().replace(/^\./, ''); re
 const TEMPORARY = /^\.clop-.*\.tmp$/i;
 
 export const mediaKind = (file: string) => KIND.get(path.extname(file).slice(1).toLowerCase());
-export type ClipboardSettings = Pick<ClopSettings, 'optimiseVideoClipboard' | 'optimisePDFClipboard' | 'optimiseAudioClipboard' | 'optimiseImagePathClipboard' | 'imageFormatsToSkip' | 'videoFormatsToSkip' | 'audioFormatsToSkip'>;
+/** Whether `file`'s format is in a `…FormatsToSkip` list, under any of its extensions. */
+export const skipsFormat = (list: readonly string[], file: string) => list.some(item => format(item) === format(path.extname(file)));
+export type ClipboardSettings = Pick<ClopSettings, 'optimiseVideoClipboard' | 'optimisePDFClipboard' | 'optimiseAudioClipboard' | 'optimiseImagePathClipboard' | 'imageFormatsToSkip' | 'videoFormatsToSkip' | 'audioFormatsToSkip' | 'clipboardIgnoredAppBundleIds'>;
 
 /** Whether an automatic clipboard optimisation takes a file of this kind, by the per-type clipboard settings (`handleClipboardChange` in ClopApp.swift). */
 export function takesFile(kind: MediaKind, file: string, settings: ClipboardSettings, { bitmap = false } = {}) {
-  const skips = (list: readonly string[]) => list.some(item => format(item) === format(path.extname(file)));
+  const skips = (list: readonly string[]) => skipsFormat(list, file);
   switch (kind) {
     // A copied image file with no image data beside it is only a reference, as Explorer copies it (`optimiseImagePathClipboard`).
     case 'image': return (bitmap || settings.optimiseImagePathClipboard) && !skips(settings.imageFormatsToSkip);
@@ -113,9 +116,11 @@ export function clipboardChange(event: unknown): ClipboardSnapshot | undefined {
   if (!['image', 'bitmap', 'text', 'owned', 'transient'].every(flag)) return;
   if (e.process !== undefined && !Number.isSafeInteger(e.process)) return;
   if (e.app !== undefined && typeof e.app !== 'string') return;
+  if (![e.owner, e.aumid].every(value => value === undefined || (typeof value === 'string' && value.length <= MAX_PATH))) return;
   return {
     sequence: e.sequence as number, paths: e.paths as string[], image: e.image === true, bitmap: e.bitmap === true, text: e.text === true,
     ...(e.process === undefined ? {} : { process: e.process as number }), ...(e.app === undefined ? {} : { app: e.app as string }),
+    ...(e.owner ? { owner: e.owner as string } : {}), ...(e.aumid ? { aumid: e.aumid as string } : {}),
     ...(e.owned === undefined ? {} : { owned: e.owned as boolean }), ...(e.transient === undefined ? {} : { transient: e.transient as boolean }),
   };
 }
@@ -161,7 +166,8 @@ const pathSettings = (s: ClipboardSettings) => s.optimiseImagePathClipboard || s
 /**
  * Decides what to optimise from the clipboard, in the order of `handleClipboardChange` (ClopApp.swift): files of each
  * type the settings allow, then image data, then a copied path. A manual optimisation takes any media file and also
- * copied data-URL images and links. Settings are checked before a copied path is looked up.
+ * copied data-URL images and links. Settings are checked before a copied path is looked up. An automatic optimisation
+ * leaves alone what an app in `clipboardIgnoredAppBundleIds` copied.
  */
 export async function clipboardIntake(change: ClipboardSnapshot | undefined, manual: boolean, memory: ClipboardMemory, sources: IntakeSources): Promise<ClipboardPlan> {
   const { settings, owns } = sources, none = { type: 'none' } as const;
@@ -175,6 +181,7 @@ export async function clipboardIntake(change: ClipboardSnapshot | undefined, man
   const sequence = snapshot?.sequence;
   if (!manual && sequence !== undefined && sequence === memory.sequence) return none;
   if (sequence !== undefined) memory.sequence = sequence;
+  if (!manual && snapshot && ignoredApp(snapshot, settings.clipboardIgnoredAppBundleIds)) return none;
   const listed = clipboardFiles(snapshot?.paths ?? [], { manual, bitmap: !!snapshot?.bitmap, settings, owns, platform: sources.platform });
   if (listed.files.length) {
     if (!manual) {

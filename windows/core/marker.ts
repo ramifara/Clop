@@ -10,6 +10,8 @@ import { defaultPaths } from './settings/paths';
 
 const DAY = 86400000;
 const STREAM = 'clop.optimisation.status';
+/** The file's size when it was marked, so the hint can tell a renamed file from an edited one. */
+const SIZE_STREAM = 'clop.optimisation.size';
 interface Entry { size: number; mtimeMs: number; at: number }
 export interface MarkerOptions {
   /** Entries older than this are dropped when the cache loads. */
@@ -98,9 +100,18 @@ export class OptimisedMarker {
     try { return (await readFile(`${file}:${STREAM}`, 'utf8')) === 'true'; } catch { return undefined; }
   }
 
+  /**
+   * Whether the stream hint says `file` was optimised and its size is still the size it was marked at. Streams move with a
+   * renamed or moved file, which the cache keyed by path cannot follow; an edit that changes the size clears it.
+   */
+  async hintMatches(file: string): Promise<boolean> {
+    if (await this.hint(file) !== true) return false;
+    try { return Number(await readFile(`${file}:${SIZE_STREAM}`, 'utf8')) === (await stat(file)).size; } catch { return false; }
+  }
+
   private async writeHint(file: string) {
     if (this.platform !== 'win32') return;
-    try { await writeFile(`${file}:${STREAM}`, 'true'); } catch {}
+    try { await writeFile(`${file}:${STREAM}`, 'true'); await writeFile(`${file}:${SIZE_STREAM}`, String((await stat(file)).size)); } catch {}
   }
 
   /** Writes are coalesced: callers that arrive during a write share the next one. */

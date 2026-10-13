@@ -27,6 +27,11 @@ try {
   assert.equal(skipped.skipped, true);
   const copied = await bridge.request({ type: 'copy', file: png, png }); assert.equal(copied.ok, true);
   const snapshot = await bridge.request({ type: 'read' }); assert.deepEqual(snapshot.paths, [png]);
+  // The helper itself copied, so the clipboard owner is its Windows PowerShell process.
+  assert.match(String(snapshot.owner), /\\powershell\.exe$/i, `The clipboard owner should be the copying app, not ${snapshot.owner}`);
+  const { apps } = await bridge.request({ type: 'apps' });
+  assert.ok(Array.isArray(apps) && apps.length > 0 && apps.every(app => typeof app.name === 'string' && typeof app.path === 'string'), 'The ignored-apps picker should list running and Start Menu apps');
+  console.log(`Clipboard owner ${snapshot.owner}; ${apps.length} apps for the ignored-apps picker.`);
   const inspection = execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', 'Add-Type -AssemblyName System.Windows.Forms; $d = [System.Windows.Forms.Clipboard]::GetDataObject(); @{ image = $d.GetDataPresent([System.Windows.Forms.DataFormats]::Bitmap); png = $d.GetDataPresent("PNG"); files = $d.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop) } | ConvertTo-Json -Compress'], { encoding: 'utf8' });
   assert.deepEqual(JSON.parse(inspection), { image: true, png: true, files: true });
   await bridge.request({ type: 'settings', explorerDrag: true });
@@ -71,5 +76,5 @@ try {
     events.length = 0; await fixture.gesture(kind); await pause(250);
     assert.deepEqual(events, [], `Explorer ${kind} must not announce a drag, even with an image selected`);
   }
-  console.log('Windows native smoke passed: clipboard formats, sequence protection, real image/Explorer drags, release/Escape and suppression of text, unsupported images, empty space, window movement and resizing.');
+  console.log('Windows native smoke passed: clipboard formats, sequence protection, the clipboard owner and the app list, real image/Explorer drags, release/Escape and suppression of text, unsupported images, empty space, window movement and resizing.');
 } finally { await fixture?.stop(); bridge.stop(); await rm(dir, { recursive: true, force: true }); }
