@@ -23,7 +23,7 @@ await mkdir(watched);
 // A clipboard pipeline that converts images named "to-webp" to WebP, the built-in "to WebP" behind a filter, so every other
 // copied image still takes the plain optimisation the checks below expect.
 const clipboardPipeline = { id: 'SMOKE-TO-WEBP', name: 'to WebP', steps: [], rawText: 'if(nameContains: "to-webp") -> convert(to: webp)', skipOptimisation: true, hideResult: false };
-await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ videoEncoder: 'libx264', imageDirs: [watched], videoDirs: [watched], pipelinesToRunOnImage: { clipboard: [clipboardPipeline] } }));
+await writeFile(path.join(profile, 'settings.json'), JSON.stringify({ checkForUpdates: false, videoEncoder: 'libx264', imageDirs: [watched], videoDirs: [watched], pipelinesToRunOnImage: { clipboard: [clipboardPipeline] } }));
 const app = spawn(executable, ['--remote-debugging-port=9227', `--user-data-dir=${profile}`], { stdio: 'pipe' });
 let output = '';
 app.stdout.on('data', chunk => { output += chunk; }); app.stderr.on('data', chunk => { output += chunk; });
@@ -67,6 +67,12 @@ try {
   await until(() => main.evaluate('Boolean(window.clop && document.querySelector(".settings-window"))'), 'Sandboxed preload did not load');
   const initial = await main.evaluate('window.clop.state()'); assert.equal(initial.native, true); assert.equal(initial.platform, 'win32');
   assert.equal(initial.items.length, 0, 'The app should start quietly, with no sample or workbench');
+  // A first run shows the welcome card until it is dismissed, and dismissing it is remembered.
+  assert.equal(initial.welcome, true, 'A first run shows the welcome card');
+  await main.evaluate("window.clop.window('finish-welcome')");
+  const welcomed = await main.evaluate('window.clop.state()');
+  assert.equal(welcomed.welcome, undefined, 'The welcome card is gone once dismissed');
+  assert.equal(welcomed.settings.finishedOnboarding, true);
   const ready = once(externalClipboard, 'ready');
   externalClipboard.start(path.resolve('native/bridge.ps1')); await ready;
   await externalClipboard.request({ type: 'settings', explorerDrag: false });
@@ -227,6 +233,18 @@ try {
   assert.equal(converted.format, 'webp', 'The attached pipeline should convert the copied image to WebP');
   const pipelineCopy = await until(async () => { const [result] = (await externalClipboard.request({ type: 'read' })).paths; return result?.endsWith('.webp') && result; }, 'The clipboard did not get the pipeline\'s WebP');
   assert.equal((await sharp(pipelineCopy).metadata()).format, 'webp');
+  // Explorer's right-click verbs (spec step 39): Explorer starts the app once per selected file. Every launch reaches the running app,
+  // which gathers them and optimises them in place; the files may be named like options, and no other process does the work.
+  const verbFiles = [];
+  for (const name of ['--clop-downscale first.png', 'second verb.png']) {
+    const file = path.join(profile, name);
+    await sharp({ create: { width: 900, height: 600, channels: 3, background: '#3a7bd5' } }).composite([{ input: Buffer.from('<svg width="900" height="600"><circle cx="450" cy="300" r="250" fill="#f5a623"/></svg>') }]).png({ compressionLevel: 0 }).toFile(file);
+    verbFiles.push([file, (await stat(file)).size]);
+  }
+  for (const [file] of verbFiles) spawn(executable, [`--user-data-dir=${profile}`, '--clop-optimise', '--', file], { stdio: 'ignore' }).unref();
+  for (const [file, before] of verbFiles) await until(async () => (await stat(file)).size < before, `The Explorer verb did not optimise ${path.basename(file)}`, 60000);
+  assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'An Explorer verb must not show an error');
+  console.log('Explorer verb launches reached the running app and optimised both files.');
   console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, copied video, PDF and audio files, an ignored app, a video and an image optimised in place in a watched folder, and a clipboard pipeline converting to WebP.');
 } finally {
   console.log('Stopping packaged app and native test helper.');

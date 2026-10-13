@@ -61,7 +61,7 @@ test('a value the setting cannot hold is refused instead of silently ignored', (
 test('the window can write only what agents may write, plus these Windows-side keys, so a new row cannot widen the IPC surface unnoticed', () => {
   const beyondAgents = RENDERER_SETTINGS.filter(key => !MCP_WRITABLE.has(key)).sort();
   // None of these chooses a program, script or folder. Add a key here only after deciding that of it.
-  assert.deepEqual(beyondAgents, ['adaptiveVideoSize', 'audioFormat', 'audioFormatsToSkip', 'defaultLinkExpiration', 'enabledKeys', 'formatsToConvertToOutputAudio', 'keyComboModifiers', 'quickResizeKeys', 'videoEncoder', 'workdirCleanupInterval']);
+  assert.deepEqual(beyondAgents, ['adaptiveVideoSize', 'audioFormat', 'audioFormatsToSkip', 'betaUpdates', 'checkForUpdates', 'defaultLinkExpiration', 'enabledKeys', 'formatsToConvertToOutputAudio', 'keyComboModifiers', 'quickResizeKeys', 'videoEncoder', 'workdirCleanupInterval']);
 });
 test('card options accept an extra compression and the HEIC and JPEG XL formats, and nothing else', () => {
   assert.deepEqual(parseOptions({ mode: 'balanced', format: 'heic', scale: 1, compression: { tier: 'custom', factor: 40, extra: 1 } }), { mode: 'balanced', format: 'heic', scale: 1, compression: { tier: 'custom', factor: 40 } });

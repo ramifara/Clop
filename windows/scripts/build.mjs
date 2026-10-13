@@ -5,7 +5,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { trayIcons } from './tray-icons.mjs';
 await mkdir('dist-electron', { recursive: true });
-await build({ entryPoints: ['electron/main.ts'], bundle: true, platform: 'node', format: 'esm', target: 'node22', external: ['electron', 'sharp'], outdir: 'dist-electron' });
+await build({ entryPoints: ['electron/main.ts'], bundle: true, platform: 'node', format: 'esm', target: 'node22', external: ['electron', 'sharp', 'electron-updater'], outdir: 'dist-electron' });
 await build({ entryPoints: ['electron/native.ts'], bundle: true, platform: 'node', format: 'esm', target: 'node22', outfile: 'dist-electron/native-test.js' });
 // The CLI ships beside app.asar in resources; cli/sharp.ts finds sharp inside the archive.
 await build({ entryPoints: ['cli/index.ts'], bundle: true, platform: 'node', format: 'esm', target: 'node22', alias: { sharp: './cli/sharp.ts' }, outfile: 'dist-electron/cli.mjs' });

@@ -72,17 +72,20 @@ function useVersion() {
 }
 
 export function Updates() {
-  const { prefs } = useSettings();
+  const { prefs, native } = useSettings();
   const version = useVersion();
   return <div className="list">
     <p className="about-line"><strong>Clop for Windows {version?.name ?? ''}</strong></p>
-    <small>Clop for Windows is free software under the GPLv3, so there is no licence to enter. New versions are published as releases on GitHub; download the installer or portable build there. The app does not check for updates by itself.</small>
-    <Links><button className="button" onClick={() => void prefs({ action: 'open', target: 'releases' })}>Open the releases page</button></Links>
+    <small>Clop for Windows is free software under the GPLv3, so there is no licence to enter. New versions are published as releases on GitHub; the installed app can download and install one for you, and the portable app points you to the download. Builds are not code-signed yet, so Windows SmartScreen may warn about a download from the releases page: choose More info, then Run anyway.</small>
+    <Links>
+      {native && <button className="button" onClick={() => void prefs({ action: 'check-updates' })}>Check for updates now</button>}
+      <button className="button" onClick={() => void prefs({ action: 'open', target: 'releases' })}>Open the releases page</button>
+    </Links>
   </div>;
 }
 
 export function About() {
-  const { prefs } = useSettings();
+  const { prefs, native } = useSettings();
   const version = useVersion();
   return <div className="list about">
     <h3>Clop</h3>
@@ -92,6 +95,8 @@ export function About() {
       <button className="button" onClick={() => void prefs({ action: 'open', target: 'source' })}>Source code</button>
       <button className="button" onClick={() => void prefs({ action: 'open', target: 'upstream' })}>Clop for Mac</button>
       <button className="button" onClick={() => void prefs({ action: 'open', target: 'issues' })}>Report a problem</button>
+      {native && <button className="button" onClick={() => void prefs({ action: 'debug-dump' })}>Save debug dump</button>}
     </Links>
+    {native && <small>The debug dump is a zip of Clop's settings, logs and tool report, saved on this PC and shown in Explorer. Attach it to a bug report; nothing is sent anywhere.</small>}
   </div>;
 }

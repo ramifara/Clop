@@ -66,6 +66,8 @@ export interface AppState {
   layout?: { compact: boolean; cards: number };
   /** Every saved pipeline a card button or menu can run, for the buttons set to run one. */
   pipelines?: PipelineChoice[];
+  /** The first-run card is showing: set until the user dismisses it (`finishedOnboarding`). */
+  welcome?: true;
 }
 export interface ClopApi {
   state(): Promise<AppState>; subscribe(callback: (state: AppState) => void): () => void;
@@ -78,7 +80,7 @@ export interface ClopApi {
   /** The saved pipelines the card can run on a result, and running one of them. */
   pipelines(id: string): Promise<PipelineChoice[]>; runPipeline(id: string, pipelineId: string): Promise<void>;
   mcp(request: McpRequest): Promise<McpState>;
-  window(action: 'hide' | 'close' | 'main' | 'float' | 'quit' | 'minimize' | 'interactive' | 'passthrough' | 'dismiss-notice' | 'editor' | 'presets' | 'select' | 'unselect'): Promise<void>;
+  window(action: 'hide' | 'close' | 'main' | 'float' | 'quit' | 'minimize' | 'interactive' | 'passthrough' | 'dismiss-notice' | 'finish-welcome' | 'editor' | 'presets' | 'select' | 'unselect'): Promise<void>;
   /** Opens (or brings forward) a result's crop, compare or preview window. */
   openCrop(id: string): Promise<void>; openCompare(id: string): Promise<void>; openPreview(id: string): Promise<void>;
   /** Pops up the right-click menu of results (the batch menu for several), or one of its submenus by name, at the pointer. */
@@ -122,7 +124,10 @@ export type PrefsRequest =
   /** Opens the pipeline editor window, on its preset zones when `tab` is `zones`. */
   | { action: 'pipeline-editor'; tab?: 'zones' }
   | { action: 'open'; target: 'releases' | 'source' | 'upstream' | 'issues' }
-  | { action: 'version' };
+  | { action: 'version' }
+  /** Looks for a new version now (a dialog offers one), and saves the debug dump and shows it in Explorer. */
+  | { action: 'check-updates' }
+  | { action: 'debug-dump' };
 export interface PrefsReply {
   /** Said to the user: what changed, or why nothing did. */
   message?: string;

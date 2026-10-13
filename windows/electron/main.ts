@@ -36,11 +36,18 @@ import { spawn } from 'node:child_process';
 import type { AppEntry, AppState, ImageOptions, ItemResult, PresetTiles, SettingsRequest } from '../src/types';
 import { settingsTarget } from '../core/settings/entries';
 import type { SettingsTab } from '../core/settings/tabs';
-import { createPrefs } from './prefs';
+import { createPrefs, LINKS } from './prefs';
 import { publishPipe, startPipeServer, type PipeServer } from './pipe-server';
 import { clopURLs, type ClopURL } from './clop-url';
 import { installPortableCLI, isPortable, portableCLIDir, portableCLIInstalled, refreshPortableCLI, removePortableCLI } from './cli-install';
 import { mcpSettings } from './mcp';
+import { setupDebugDump, setupUpdates, setupWatchdog } from './support';
+import { FileCollector } from './file-collector';
+import { pipelineMenu } from './pipeline-menu';
+import { installVerbs, portablePaths, removeVerbs, verbsStatus } from './explorer';
+import { explorerVerb, type VerbId } from '../core/shell-verbs';
+import { stripExifFile } from '../core/media/strip-copy';
+import { explorerRequest, skippedNote, stripAll, stripSummary, usableFiles } from './verbs';
 import { mirrorConsoleToFile } from './debug-log';
 import { newPipePath, type OptimisationRequest } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
@@ -102,6 +109,17 @@ const pickup = new ClipboardPickup(change => { if (!shortcutRunner.consumePauseN
 let clipboardWrites: Promise<void> = Promise.resolve();
 const bridge = new WindowsBridge();
 let pipe: PipeServer | undefined, withdrawPipe: (() => void) | undefined, cliInstalled = false, askingMCP = false;
+let service: ClopService | undefined, updates: ReturnType<typeof setupUpdates>, saveDump: ReturnType<typeof setupDebugDump>, stopUpdates: (() => void) | undefined, explorerInstalled = false;
+/** The files of Explorer's right-click verbs: one launch arrives per selected file, so each verb's files are gathered before the app acts. While the app is still starting they wait. */
+const verbCollectors = new Map<VerbId, FileCollector>();
+function collectVerb(verb: VerbId, files: string[]) {
+  let collector = verbCollectors.get(verb);
+  if (!collector) {
+    collector = new FileCollector(all => { if (!service) collector!.add(all); else void runVerb(verb, all).catch(error => inform(message(error))); });
+    verbCollectors.set(verb, collector);
+  }
+  collector.add(files);
+}
 const devUrl = process.env.CLOP_DEV_URL;
 const fingerprint = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 /** Files are recognised by path, size and modification time: hashing a large video's bytes on every copy would take too long. */
@@ -124,7 +142,7 @@ let choices: { saved: ClopSettings['savedPipelines']; list: ReturnType<typeof al
 const pipelineList = () => (choices?.saved === settings.savedPipelines ? choices : choices = { saved: settings.savedPipelines, list: allPipelineChoices(settings) }).list;
 /** How many full cards fit the screen last time the shelf was laid out. */
 let cardFit = 3;
-const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, dropActive, notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList() });
+const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, dropActive, notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList(), ...(settings.finishedOnboarding ? {} : { welcome: true as const }) });
 function broadcast() {
   refreshTrayIcon();
   for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
@@ -154,10 +172,10 @@ function syncFloating() {
   const count = Math.min(cardFit, items.length);
   // Room for the tiles stays once they were shown, until the drag ends: a tile under the pointer must not lose its window when Ctrl is let go.
   const tiles = presetsLatched || presetsRevealed() ? gridHeight(cellCount(presets())) + 8 : 0;
-  const height = (compact ? compactHeight(items.length) : count * 166 + Math.max(0, count - 1) * 4 + (count > 1 ? 28 : 0)) + (target ? 160 : 0) + tiles + (notice ? 85 : 0) + 40;
+  const height = (compact ? compactHeight(items.length) : count * 166 + Math.max(0, count - 1) * 4 + (count > 1 ? 28 : 0)) + (target ? 160 : 0) + tiles + (notice ? 85 : 0) + (settings.finishedOnboarding ? 0 : 220) + 40;
   floating.setSize(compact ? 320 : 236, Math.min(height, area.height));
   positionFloating();
-  if (items.length || target || notice || importsRunning) showFloating(); else floating.hide();
+  if (items.length || target || notice || importsRunning || !settings.finishedOnboarding) showFloating(); else floating.hide();
 }
 function showLatest() {
   for (const item of engine.list().slice(0, 3)) hidden.delete(item.id);
@@ -577,11 +595,11 @@ async function optimiseWithCard(file: string, kind: MediaKind, req: Optimisation
 async function serveCLI(userData: string) {
   const files = shellEffects();
   // The same effects as pipelines run from the app, per request: an agent without the permission for script steps cannot open a program by path.
-  const service = new ClopService({
+  service = new ClopService({
     store: { get: () => store.get(), update: async change => { const wasEnabled = settings.mcpEnabled, reply = await store.update(change); await settingsChanged(reply.settings, wasEnabled); return reply; } },
     workdir, marker, effects: options => pipelineEffects(options), copyFiles: list => files.copyFiles(list), home: app.getPath('home'), withCard: optimiseWithCard,
   });
-  pipe = await startPipeServer(newPipePath(), (request, emit) => { console.log(`CLI request: ${request.kind}`); return service.handle(request, emit); });
+  pipe = await startPipeServer(newPipePath(), (request, emit) => { console.log(`CLI request: ${request.kind}`); return service!.handle(request, emit); });
   withdrawPipe = await publishPipe(userData, pipe);
 }
 /** `clop://settings/…` opens Settings on a tab and row and `clop://mcp/start|stop` flips the MCP switch; start asks first. */
@@ -612,6 +630,45 @@ function toggleCLI() {
   (cliInstalled ? removePortableCLI(process.resourcesPath, appDir) : installPortableCLI(process.resourcesPath, appDir))
     .then(() => { cliInstalled = !cliInstalled; updateTray(); void mcp.writeCard().catch(() => {}); inform(cliInstalled ? 'Open a new terminal to use the clop command.' : 'The clop command is removed.'); })
     .catch(error => inform(message(error)));
+}
+/** The portable app's switch for Explorer's right-click entries (the installer adds its own). They run the exe the user started, so the app has to stay where it is. */
+async function toggleExplorer() {
+  if (explorerInstalled) { await removeVerbs(portablePaths()); explorerInstalled = false; updateTray(); inform('The Explorer menu entries are removed.'); return; }
+  await installVerbs(portablePaths());
+  explorerInstalled = true; updateTray();
+  inform('Right-click a file in Explorer (under Show more options on Windows 11) to use Clop. Keep the portable app where it is.');
+}
+/** What each Explorer verb does once its launches are gathered. All of it happens in this one app: nothing else is started. */
+async function runVerb(verb: VerbId, files: string[]) {
+  if (verb === 'run-pipeline') return choosePipeline(files);
+  const { use, skipped } = usableFiles(verb, files);
+  if (!use.length) { inform(skippedNote(skipped)); return; }
+  if (verb === 'strip-exif') { inform(stripSummary(await stripAll(use, stripExifFile), skipped)); return; }
+  const failures: string[] = [];
+  await service!.optimise(explorerRequest(verb, use, randomUUID()), reply => { if (reply.kind === 'error') failures.push(`${path.basename(reply.error.forURL)}: ${reply.error.error}`); });
+  const notes = [...failures.slice(0, 3), ...(failures.length > 3 ? [`${failures.length - 3} more failed.`] : []), ...(skipped ? [skippedNote(skipped)] : [])];
+  if (notes.length) inform(notes.join('\n'));
+}
+/** "Run pipeline..." from Explorer: asks which saved pipeline with a menu at the pointer, then runs it on the files that pipeline works on. */
+async function choosePipeline(files: string[]) {
+  const supported = files.filter(file => mediaKind(file));
+  if (!supported.length) { inform('Clop cannot run a pipeline on those files.'); return; }
+  const menu = pipelineMenu(allPipelineChoices(settings), supported.map(mediaKind), supported.length, id => {
+    const pipeline = allPipelineChoices(settings).find(choice => choice.id === id);
+    const usable = supported.filter(file => !pipeline?.fileType || mediaKind(file) === pipeline.fileType);
+    if (usable.length < supported.length) inform(`${pipeline?.name ?? 'That pipeline'} works on ${pipeline?.fileType} files, so ${supported.length - usable.length} other file${supported.length - usable.length === 1 ? ' was' : 's were'} left out.`);
+    void (async () => {
+      // importPaths takes up to 20 files at a time; a larger selection goes in turns.
+      for (let at = 0; at < usable.length; at += 20) {
+        await importPaths(usable.slice(at, at + 20), 'drop', { extra: file => { const kind = mediaKind(file) ?? 'image'; return sourceAutomation(kind, 'dropZone', 'drop', undefined, [chosenPipeline(settings, kind, id)]); } });
+      }
+    })().catch(error => inform(message(error)));
+  });
+  if (!menu.length) { inform('No saved pipeline works on those files. Add one in the pipeline editor.'); return; }
+  const built = Menu.buildFromTemplate(menu);
+  // A launch from Explorer does not own the foreground, and a menu popped up without it never closes when clicked away from.
+  app.focus({ steal: true });
+  if (tray) tray.popUpContextMenu(built); else { main.show(); built.popup({ window: main }); }
 }
 /** Opens the Settings window, on a tab and row when asked. The request travels with the state, so a window that has not finished loading still gets it. */
 function showSettings(tab?: SettingsTab, row?: string) {
@@ -658,7 +715,10 @@ const trayActions: TrayActions = {
   },
   openBackups: () => openFolder(workdir.backups), openWorkdir: () => openFolder(workdir.root),
   forceClean: async () => { const removed = await workdir.forceClean(); inform(removed ? `Working directory cleaned: ${removed} item${removed === 1 ? '' : 's'} removed.` : 'The working directory is already clean.'); },
-  revert: revertLast, bringBack: bringBackLast, stopAll: () => engine.stop(), set: updateSettings, toggleCLI, quit: () => app.quit(),
+  revert: revertLast, bringBack: bringBackLast, stopAll: () => engine.stop(), set: updateSettings, toggleCLI, toggleExplorer,
+  checkForUpdates: async () => { const text = await updates.check(); if (text) inform(text); },
+  saveDebugDump: async () => { inform(`Debug dump saved: ${path.basename(await saveDump())}`); },
+  quit: () => app.quit(),
 };
 /** The menu for the app as it is now, read each time it opens. */
 function trayItems() {
@@ -666,7 +726,7 @@ function trayItems() {
   return trayMenu({
     settings, shortcuts: shortcutsFor(settings), recent: recentClipboard(engine.list()), canRevert: lastBatch.size > 0, canBringBack: removedOrder.length > 0,
     copier: copier?.id && copier.name ? { id: copier.id, name: copier.name, ignored: ignoredApp(lastCopier!, settings.clipboardIgnoredAppBundleIds) } : undefined,
-    cli: isPortable() ? { installed: cliInstalled } : undefined, version: app.getVersion(),
+    cli: isPortable() ? { installed: cliInstalled } : undefined, explorer: isPortable() ? { installed: explorerInstalled } : undefined, version: app.getVersion(),
   }, trayActions);
 }
 const trayMenuNow = () => Menu.buildFromTemplate(toTemplate(trayItems(), reportFailure));
@@ -925,6 +985,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
         case 'unselect': selecting = false; break;
         case 'passthrough': hovered = false; if (!dropActive) floating.setIgnoreMouseEvents(true, { forward: true }); break;
         case 'dismiss-notice': notice = undefined; syncFloating(); broadcast(); break;
+        case 'finish-welcome': await updateSettings({ finishedOnboarding: true }); break;
         case 'quit': app.quit(); break;
         default: throw new Error('Unknown window action.');
       } break;
@@ -955,6 +1016,9 @@ ipcMain.on('clop:drag', (event, id: string) => {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', (_event, argv) => {
+    // Explorer's right-click verbs: one launch per selected file, answered once the selection is complete.
+    const picked = explorerVerb(argv);
+    if (picked) { collectVerb(picked.verb, picked.files); return; }
     const links = clopURLs(argv);
     if (links.length) { if (engine) for (const link of links) void openClopURL(link).catch(error => inform(message(error))); return; }
     // Without the tray icon there is no menu to open, so another launch opens Settings.
@@ -963,6 +1027,7 @@ else {
     if (files.length) void importFiles(files, 'file').catch(error => inform(message(error)));
   });
   app.whenReady().then(async () => {
+    setupWatchdog();
     Menu.setApplicationMenu(null);
     const userData = app.getPath('userData');
     store = new SettingsStore(path.join(userData, 'settings.json'), { home: app.getPath('home'), desktop: app.getPath('desktop'), userData });
@@ -975,6 +1040,8 @@ else {
     if (!settingsError) settings = await store.update(current => ({ patch: seedBuiltinPipelines(current.savedPipelines, current.builtinPipelinesSeededVersion), result: undefined })).then(reply => reply.settings, error => { settingsError = error; return settings; });
     mirrorConsoleToFile(path.join(userData, 'logs', 'clop.log'), () => settings.persistDebugLogs);
     const paths = { home: app.getPath('home'), desktop: app.getPath('desktop'), userData };
+    updates = setupUpdates({ settings: () => settings, portable: isPortable(), releases: () => shell.openExternal(LINKS.releases), inform });
+    saveDump = setupDebugDump({ settings: () => settings, userData, workdir: () => workdir?.root ?? settings.workdir, portable: isPortable() });
     prefs = createPrefs({
       settings: () => settings, defaults: () => defaultSettings(paths), set: async partial => { await updateSettings(partial); }, home: paths.home,
       chooseFolder: async (title, defaultPath) => { const picked = await dialog.showOpenDialog(main, { title, defaultPath, properties: ['openDirectory', 'createDirectory'] }); return picked.canceled ? undefined : picked.filePaths[0]; },
@@ -982,6 +1049,7 @@ else {
       apps: async () => bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [],
       openEditor: tab => openEditor(tab),
       openExternal: url => shell.openExternal(url), version: () => ({ name: app.getVersion(), platform: process.platform }),
+      checkUpdates: () => updates.check(), saveDebugDump: () => saveDump(),
     });
     mcp = mcpSettings({
       userData, home: app.getPath('home'), cliPath: mcpServerPath(), missing: mcpServerMissing(), version: app.getVersion(), appPath: process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath,
@@ -1075,10 +1143,22 @@ else {
     }
     if (isPortable() && (cliInstalled = await portableCLIInstalled())) { updateTray(); void refreshPortableCLI(process.resourcesPath, path.dirname(process.execPath)).catch(error => inform(message(error))); }
     for (const link of clopURLs(process.argv.slice(1))) void openClopURL(link).catch(error => inform(message(error)));
-    const files = process.argv.slice(1).filter(arg => path.isAbsolute(arg) && mediaKind(arg));
-    if (files.length) await importFiles(files, 'file');
+    const picked = explorerVerb(process.argv.slice(1));
+    if (picked) collectVerb(picked.verb, picked.files);
+    else {
+      const files = process.argv.slice(1).filter(arg => path.isAbsolute(arg) && mediaKind(arg));
+      if (files.length) await importFiles(files, 'file');
+    }
+    // The portable app may have been moved since the entries were added: they are written again, but only then, and never over the installer's.
+    if (isPortable()) {
+      const status = await verbsStatus(portablePaths());
+      explorerInstalled = status !== 'none';
+      if (status === 'moved') void installVerbs(portablePaths()).catch(error => console.warn(`Could not refresh the Explorer menu entries: ${message(error)}`));
+      if (explorerInstalled) updateTray();
+    }
+    if (app.isPackaged) stopUpdates = updates.start();
   }).catch(error => { dialog.showErrorBox('Clop could not start', message(error)); app.quit(); });
-  app.on('before-quit', () => { quitting = true; withdrawPipe?.(); void pipe?.close(); engine?.abort(); batch?.host.stop(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
+  app.on('before-quit', () => { quitting = true; stopUpdates?.(); for (const collector of verbCollectors.values()) collector.cancel(); withdrawPipe?.(); void pipe?.close(); engine?.abort(); batch?.host.stop(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });
   app.on('activate', () => { if (engine) showLatest(); });
 }

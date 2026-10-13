@@ -22,6 +22,10 @@ export interface PrefsHost {
   openEditor(tab?: 'zones'): void | Promise<void>;
   openExternal(url: string): Promise<void>;
   version(): { name: string; platform: string };
+  /** Checks for updates now and gives the message for the Settings window, or nothing when a dialog took over (a new version). */
+  checkUpdates(): Promise<string | undefined>;
+  /** Writes the debug dump and shows it in Explorer; gives the file. */
+  saveDebugDump(): Promise<string>;
   home: string;
   platform?: NodeJS.Platform;
 }
@@ -163,6 +167,8 @@ export function createPrefs(host: PrefsHost) {
       case 'pipeline-editor': await host.openEditor(request.tab === undefined ? undefined : oneOf(request.tab, ['zones'] as const, 'a pipeline editor tab')); return {};
       case 'open': await host.openExternal(LINKS[oneOf(request.target, Object.keys(LINKS) as (keyof typeof LINKS)[], 'a link')]); return {};
       case 'version': return { version: host.version() };
+      case 'check-updates': { const message = await host.checkUpdates(); return message ? { message } : {}; }
+      case 'debug-dump': return { message: `Saved ${path.basename(await host.saveDebugDump())} and showed it in Explorer. Attach it when you report a problem.` };
       default: throw new Error('Unknown settings action.');
     }
   };

@@ -40,6 +40,7 @@ function localImagePreview(): Plugin {
   const prefs = createPrefs({
     settings: () => settings, defaults: () => defaultSettings(), set: async partial => { settings = parseSettings(partial, settings); }, home: os.homedir(),
     chooseFolder: desktopOnly, chooseProgram: desktopOnly, apps: async () => [], openEditor: async () => { throw new Error('The pipeline editor opens in the desktop app.'); }, openExternal: desktopOnly, version: () => ({ name: 'preview', platform: 'preview' }),
+    checkUpdates: async () => 'Updates are checked by the desktop app.', saveDebugDump: async () => { throw new Error('The debug dump is saved by the desktop app.'); },
   });
   return {
     name: 'clop-local-image-preview',
