@@ -4,11 +4,11 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { Updates, updateGate, type UpdateDriver, type UpdateEnv } from './updates';
+import { isPrerelease, Updates, updateGate, type UpdateDriver, type UpdateEnv } from './updates';
 
 const allowed: UpdateEnv & { beta: boolean } = { packaged: true, platform: 'win32', enabled: true, beta: false };
 
-function setup(env: Partial<typeof allowed> = {}, answer: Awaited<ReturnType<UpdateDriver['checkForUpdates']>> | Error = { isUpdateAvailable: true, updateInfo: { version: '0.3.0' } }) {
+function setup(env: Partial<typeof allowed> = {}, answer: Awaited<ReturnType<UpdateDriver['checkForUpdates']>> | Error = { isUpdateAvailable: true, updateInfo: { version: '0.3.0' } }, version = '0.2.0') {
   const state = { ...allowed, ...env }, calls = { load: 0, check: 0, download: 0, install: 0 }, logs: string[] = [];
   const driver: UpdateDriver = {
     autoDownload: true, autoInstallOnAppQuit: true, allowPrerelease: false, allowDowngrade: true,
@@ -16,7 +16,7 @@ function setup(env: Partial<typeof allowed> = {}, answer: Awaited<ReturnType<Upd
     async downloadUpdate() { calls.download++; },
     quitAndInstall() { calls.install++; },
   };
-  const updates = new Updates({ env: () => state, load: async () => { calls.load++; return driver; }, version: '0.2.0', log: text => logs.push(text) });
+  const updates = new Updates({ env: () => state, load: async () => { calls.load++; return driver; }, version, log: text => logs.push(text) });
   return { updates, state, calls, driver, logs };
 }
 
@@ -65,6 +65,16 @@ test('a check only looks: nothing is downloaded or installed, and the channel fo
   beta.state.beta = false;
   await beta.updates.check();
   assert.equal(beta.driver.allowPrerelease, false, 'the channel is read at each check');
+});
+
+test('a beta build follows the betas whatever the setting says; a stable build takes them only with it', async () => {
+  assert.deepEqual(['1.0.0-beta.1', '1.0.0', '1.0.0+build.5', '1.0.0-rc.2+build.5'].map(isPrerelease), [true, false, false, true]);
+  const beta = setup({ beta: false }, undefined, '1.0.0-beta.1');
+  await beta.updates.check();
+  assert.equal(beta.driver.allowPrerelease, true);
+  const stable = setup({ beta: false }, undefined, '1.0.0');
+  await stable.updates.check();
+  assert.equal(stable.driver.allowPrerelease, false);
 });
 
 test('the result says current, available or failed, and a failure is logged in full but shown plainly', async () => {
