@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent } from 'react';
 import { ACTION_KINDS, itemMenu, submenu, batchMenu, SHORTCUTS, type Invocation, type MenuNode } from '../core/cards/actions';
 import { api, errorText } from './api';
 import { ResultCard, type OpenMenu } from './Cards';
@@ -27,6 +27,21 @@ export function App() {
   const [popup, setPopup] = useState<{ nodes: MenuNode[]; ids: string[]; x: number; y: number }>();
   const notification = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const interactive = useRef(false);
+  const dropTarget = useRef<HTMLDivElement>(null), sentBox = useRef('');
+  const glass = state?.glass === 'acrylic' && !preferences;
+  // With acrylic, a window of its own draws the drop zone's glass; it follows the zone's box, measured after every layout.
+  useLayoutEffect(() => {
+    if (!glass) return;
+    const report = () => {
+      const box = dropTarget.current?.getBoundingClientRect();
+      const next = box ? { x: box.x, y: box.y, width: box.width, height: box.height, pageWidth: innerWidth, pageHeight: innerHeight } : null, key = JSON.stringify(next);
+      if (key !== sentBox.current) { sentBox.current = key; api.dropZone(next).catch(() => { sentBox.current = ''; }); }
+    };
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(document.documentElement); if (dropTarget.current) observer.observe(dropTarget.current);
+    return () => observer.disconnect();
+  });
   useEffect(() => {
     api.state().then(setState).catch(error => setError(error.message));
     return api.subscribe(setState);
@@ -112,10 +127,10 @@ export function App() {
   const invoke = (invocation: Invocation) => { const ids = popup?.ids ?? []; setPopup(undefined); setSelection([]); void run(() => api.cardAction(ids, invocation), toastFor(invocation.action)); };
   const revealed = targetShown && (pinned || (state.native ? Boolean(state.presets?.revealed) : heldKeys)) && state.presets;
   const tiles = revealed ? <PresetGrid presets={state.presets!} run={run} onPin={setPinned}/> : null, tilesFirst = state.settings.floatingResultsCorner.startsWith('bottom');
-  return <div className={`corner-surface ${state.settings.floatingResultsCorner} ${compact ? 'compact' : ''}`} onDragOver={event => { setHeldKeys(event.ctrlKey || event.altKey); if (imageDrag(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }} onDragEnter={event => { if (imageDrag(event)) { event.preventDefault(); setLocalDrag(true); } }} onDrop={drop}>
+  return <div className={`corner-surface ${state.settings.floatingResultsCorner} ${compact ? 'compact' : ''} ${glass ? 'acrylic' : ''}`} onDragOver={event => { setHeldKeys(event.ctrlKey || event.altKey); if (imageDrag(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }} onDragEnter={event => { if (imageDrag(event)) { event.preventDefault(); setLocalDrag(true); } }} onDrop={drop}>
     <div className="corner-stack">
       {tilesFirst && tiles}
-      {targetShown && <div className={`drop-target ${localDrag ? 'receiving' : ''}`} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setLocalDrag(false); }}><strong>Drop to optimise</strong><div className="drop-ring" aria-hidden="true"/><small>Images, videos, PDFs, audio</small><small>Originals stay safe</small><small><kbd>Ctrl</kbd> for a smaller file</small></div>}
+      {targetShown && <div ref={dropTarget} className={`drop-target ${localDrag ? 'receiving' : ''}`} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setLocalDrag(false); }}><strong>Drop to optimise</strong><div className="drop-ring" aria-hidden="true"/><small>Images, videos, PDFs, audio</small><small>Originals stay safe</small><small><kbd>Ctrl</kbd> for a smaller file</small></div>}
       {!tilesFirst && tiles}
       {compact ? <CompactList state={state} run={run} selection={selection} onSelection={setSelection} onMenu={openMenu} onSelect={setSelected}/>
         : cards.map(item => <ResultCard key={item.id} item={item} state={state} run={run} onSelect={() => setSelected(item.id)} onMenu={openMenu}/>)}

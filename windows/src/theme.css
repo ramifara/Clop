@@ -20,7 +20,7 @@
   --shadow: 0 1px 2px #2b1f2a14, 0 6px 18px #2b1f2a1f;
   --shadow-pop: 0 2px 6px #2b1f2a1a, 0 14px 34px #2b1f2a2e;
   /* The glass of the floating surfaces: a tint over the acrylic window behind it, or over the desktop where Windows has no acrylic. */
-  --glass: #f6f3f0b8; --glass-solid: #f3f0edf2; --glass-edge: #ffffffb3; --glass-line: #3a2f3824; --glass-ink: #2b272d; --glass-muted: #463e45;
+  --glass: #f6f3f0b8; --glass-solid: #f3f0ede6; --glass-edge: #ffffffb3; --glass-line: #3a2f3824; --glass-ink: #2b272d; --glass-muted: #463e45;
   --button-glass: #ebe5d8e0; --button-glass-hover: #fff9e9; --button-glass-ink: #4c444a;
   --code-step-processing: #1d6a43; --code-step-file: #8a4b0b; --code-step-filter: #6a3d9a; --code-step-media: #0d5f8a; --code-step-action: #a02f5a;
   --code-param: #7d6a8a; --code-value: #1f5f7a; --code-punct: #8c8290;
@@ -40,7 +40,7 @@
     --type-image: #7fb1ff; --type-video: #ff8190; --type-pdf: #ffb15c; --type-audio: #c79bff;
     --shadow: 0 1px 2px #0000004d, 0 6px 18px #00000059;
     --shadow-pop: 0 2px 6px #00000059, 0 14px 34px #00000080;
-    --glass: #211d23b3; --glass-solid: #241f26ee; --glass-edge: #ffffff1f; --glass-line: #ffffff1a; --glass-ink: #f2ecf3; --glass-muted: #c9bfcb;
+    --glass: #211d23b3; --glass-solid: #241f26e6; --glass-edge: #ffffff1f; --glass-line: #ffffff1a; --glass-ink: #f2ecf3; --glass-muted: #c9bfcb;
     --button-glass: #2d2832e0; --button-glass-hover: #433c48; --button-glass-ink: #f1e8da;
     --code-step-processing: #7fd3a2; --code-step-file: #f0b46a; --code-step-filter: #c6a2ef; --code-step-media: #79c2ec; --code-step-action: #f08cb4;
     --code-param: #c0a9cf; --code-value: #8fd0ea; --code-punct: #8a808c;

@@ -1,4 +1,5 @@
-import { app, BrowserWindow, clipboard, ClipboardItem, dialog, globalShortcut, ipcMain, Menu, nativeImage, protocol, screen, shell, Tray } from 'electron';
+import { app, BrowserWindow, clipboard, ClipboardItem, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, protocol, screen, shell, Tray } from 'electron';
+import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -67,11 +68,12 @@ import { expandHome } from '../core/settings/paths';
 import { menuTemplate } from './card-menu';
 import { coverArtCard, eachResult, editorLabel, editorProgram, makesNewCard, mediaFacts, openWithDialog, pageCard, readyIds, runPlan, savePages, startProgram, thenCopyBack, type CardCreation, type CardHost } from './cards';
 import { CompactMode, cardsThatFit, extraHeight } from './compact';
+import { acrylicSupported, DropBackdrop, parseDropRect, windowBackground } from './appearance';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // The crop and compare windows load the session's originals and results through this scheme, with byte ranges for video.
 protocol.registerSchemesAsPrivileged([{ scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, stream: true } }]);
-let main: BrowserWindow, floating: BrowserWindow, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray | undefined, engine: ItemEngine, media: MediaFiles;
+let main: BrowserWindow, floating: BrowserWindow, backdrop: DropBackdrop | undefined, backdropWindow: BrowserWindow | undefined, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray | undefined, engine: ItemEngine, media: MediaFiles;
 /** Open crop, compare and preview windows, by `crop:<id>`, `compare:<id>` and `preview:<id>`. */
 const views = new Map<string, BrowserWindow>();
 let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false, bridgeStopped = false;
@@ -159,7 +161,7 @@ let choices: { saved: ClopSettings['savedPipelines']; list: ReturnType<typeof al
 const pipelineList = () => (choices?.saved === settings.savedPipelines ? choices : choices = { saved: settings.savedPipelines, list: allPipelineChoices(settings) }).list;
 /** How many full cards fit the screen last time the shelf was laid out. */
 let cardFit = 3;
-const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, dropActive: targetShown(), notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList(), ...(settings.finishedOnboarding ? {} : { welcome: true as const }) });
+const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, ...(backdrop ? { glass: 'acrylic' as const } : {}), dropActive: targetShown(), notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList(), ...(settings.finishedOnboarding ? {} : { welcome: true as const }) });
 function broadcast() {
   refreshTrayIcon();
   for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
@@ -329,7 +331,7 @@ async function openView(view: 'crop' | 'compare' | 'preview', id: unknown) {
   if (view === 'crop' && result.kind === 'audio') throw new Error('Audio files have nothing to crop.');
   if (open && !open.isDestroyed()) { open.show(); open.focus(); return; }
   const size = view === 'crop' ? { width: 1020, height: 660, minWidth: 780, minHeight: 520 } : view === 'preview' ? { width: 900, height: 700, minWidth: 420, minHeight: 320 } : { width: 1100, height: 760, minWidth: 600, minHeight: 460 };
-  const window = new BrowserWindow({ ...size, show: false, title: `${{ crop: 'Crop', compare: 'Compare', preview: 'Preview' }[view]}: ${result.name}`, backgroundColor: '#211d23', autoHideMenuBar: true, webPreferences: webPreferences() });
+  const window = new BrowserWindow({ ...size, show: false, title: `${{ crop: 'Crop', compare: 'Compare', preview: 'Preview' }[view]}: ${result.name}`, backgroundColor: background(), autoHideMenuBar: true, webPreferences: webPreferences() });
   views.set(key, window);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
@@ -355,7 +357,7 @@ async function openEditor(tab?: 'zones') {
   if (editorLoading) await editorLoading.done;
   let window = editorWindow && !editorWindow.isDestroyed() ? editorWindow : undefined;
   if (!window) {
-    window = new BrowserWindow({ width: 1060, height: 720, minWidth: 780, minHeight: 500, show: false, backgroundColor: '#f3f1ef', title: 'Clop pipelines', autoHideMenuBar: true, webPreferences: webPreferences() });
+    window = new BrowserWindow({ width: 1060, height: 720, minWidth: 780, minHeight: 500, show: false, backgroundColor: background(), title: 'Clop pipelines', autoHideMenuBar: true, webPreferences: webPreferences() });
     configure(window);
     window.on('closed', syncNative);
     const created = window, done = load(created, { editor: '1', ...(tab ? { tab } : {}) }).then(() => { editorWindow = created; syncNative(); }, (error: unknown) => { created.destroy(); throw error; });
@@ -364,11 +366,37 @@ async function openEditor(tab?: 'zones') {
   } else if (tab) window.webContents.send('clop:editor-tab', tab);
   window.show(); window.focus();
 }
+/** The colour a window shows before its page paints: the theme's, so a dark window never flashes white. */
+const background = () => windowBackground(nativeTheme.shouldUseDarkColors);
+/** Appearance (`appearance`): Electron's theme source sets the pages' `prefers-color-scheme`, the native menus and dialogs, and the windows' backdrop. */
+function applyAppearance() {
+  if (nativeTheme.themeSource !== settings.appearance) nativeTheme.themeSource = settings.appearance;
+}
+/** The acrylic window under the drop zone (see `DropBackdrop`): frameless, never focused, showing only the material. */
+function createBackdrop() {
+  const window = new BrowserWindow({
+    width: 196, height: 148, show: false, frame: false, resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false, focusable: false, skipTaskbar: true,
+    alwaysOnTop: settings.floatingResultsAlwaysOnTop, backgroundMaterial: 'acrylic', backgroundColor: '#00000000', title: 'Clop drop zone', webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, javascript: false },
+  });
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-navigate', event => event.preventDefault());
+  void window.loadURL('about:blank');
+  backdropWindow = window; syncNative();
+  return window;
+}
 async function createWindows() {
   const windowPreferences = webPreferences();
-  main = new BrowserWindow({ width: 920, height: 660, minWidth: 720, minHeight: 480, show: false, backgroundColor: '#f3f1ef', title: 'Clop settings', autoHideMenuBar: true, webPreferences: windowPreferences });
+  applyAppearance();
+  nativeTheme.on('updated', () => { for (const window of BrowserWindow.getAllWindows()) if (window !== floating && window !== backdropWindow && !window.isDestroyed()) window.setBackgroundColor(background()); });
+  main = new BrowserWindow({ width: 920, height: 660, minWidth: 720, minHeight: 480, show: false, backgroundColor: background(), title: 'Clop settings', autoHideMenuBar: true, webPreferences: windowPreferences });
   floating = new BrowserWindow({ width: 236, height: 206, frame: false, resizable: false, transparent: true, show: false, skipTaskbar: true, alwaysOnTop: settings.floatingResultsAlwaysOnTop, backgroundColor: '#00000000', webPreferences: windowPreferences });
   configure(main); configure(floating);
+  // Windows 11 draws acrylic behind a whole window only; the transparent floating window would get it everywhere, so the drop zone's glass is a window of its own.
+  if (acrylicSupported(process.platform, os.release())) {
+    backdrop = new DropBackdrop(floating, createBackdrop);
+    const follow = () => backdrop?.sync();
+    floating.on('move', follow).on('resize', follow).on('show', follow).on('hide', follow);
+  }
   // Windows asks before it signs out or shuts down: while a result is taking an original's place, Clop asks it to wait. A forced end is repaired at the next start.
   main.on('query-session-end', event => { if (placing()) event.preventDefault(); });
   protectFromCapture(floating, settings.allowClopToAppearInScreenshots);
@@ -832,7 +860,8 @@ async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
   settings = saved;
   if (settings.mcpEnabled !== wasEnabled && app.isPackaged) void mcp.writeCard().catch(error => console.warn(`Could not write the MCP server card: ${message(error)}`));
   if (!settings.enableClipboardOptimiser || paused()) pickup.cancel();
-  floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop);
+  floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop); backdrop?.sync();
+  applyAppearance();
   syncCursorFollower(); rescheduleHides();
   syncFloating();
   if (process.platform === 'win32') syncLoginItem(app, settings.launchAtLogin, loginExecutable());
@@ -844,6 +873,7 @@ async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
 function applyWindowSettings() {
   syncShortcuts();
   protectFromCapture(floating, settings.allowClopToAppearInScreenshots);
+  backdrop?.protect(!settings.allowClopToAppearInScreenshots);
 }
 let lastShortcutProblem: string | undefined;
 /** Registers what the settings ask for. A conflict is announced once, all together, and not again at later launches; unusable trigger keys (set from a file) are said once. */
@@ -857,7 +887,7 @@ function syncShortcuts() {
 }
 /** Presses inside Clop's own windows, the crop and compare windows too, never start a drag. */
 function nativeSettings() {
-  return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating, editorWindow, ...views.values(), batch?.window()].filter((window): window is BrowserWindow => !!window && !window.isDestroyed()).map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
+  return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating, backdropWindow, editorWindow, ...views.values(), batch?.window()].filter((window): window is BrowserWindow => !!window && !window.isDestroyed()).map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
 }
 function syncNative() { if (bridgeReady) bridge.request(nativeSettings()).catch(error => inform(message(error))); }
 // Card actions (spec steps 30 and 31): the right-click menu, the corner buttons and the keys all arrive as one validated invocation
@@ -1063,6 +1093,8 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
         case 'presets': await openEditor('zones'); break;
         case 'float': showLatest(); break;
         case 'interactive': hovered = true; floating.setIgnoreMouseEvents(false); break;
+        // The floating window says where its drop zone is, so the acrylic window can sit under it.
+        case 'drop-zone': if (event.sender !== floating.webContents) throw new Error('Only the floating window has a drop zone.'); backdrop?.place(parseDropRect(args[1])); break;
         case 'select': selecting = true; break;
         case 'unselect': selecting = false; break;
         case 'passthrough': hovered = false; if (!dropActive) floating.setIgnoreMouseEvents(true, { forward: true }); break;
@@ -1191,6 +1223,7 @@ else {
     store.on('change', (next, changed) => {
       settings = next; for (const watcher of watchers) void watcher.update();
       if (changed.includes('pauseAutomaticOptimisations')) shortcutRunner.pauseChanged();
+      if (changed.includes('appearance')) applyAppearance();
       if (changed.some(key => ['keyComboModifiers', 'enabledKeys', 'quickResizeKeys', 'allowClopToAppearInScreenshots'].includes(key))) applyWindowSettings();
       // A change made outside the app (the settings file, the CLI) shows or hides the tray icon and updates its menu and icon too.
       if (changed.some(key => ['enableFloatingResults', 'followCursorScreen', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter', 'autoHideClipboardResultAfter'].includes(key))) { syncCursorFollower(); rescheduleHides(); syncFloating(); broadcast(); }

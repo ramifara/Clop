@@ -68,7 +68,10 @@ export interface SettingsRequest { tab: SettingsTab; row?: string; nonce: number
 export type { EditorCommand, EditorReply, EditorState, PipelineIssue, PresetTile };
 /** `compact` is the results layout showing (the list, or full cards) and `cards` how many full cards fit. */
 export interface AppState {
-  items: ItemResult[]; settings: ClopSettings; native: boolean; platform: string; dropActive?: boolean; notice?: string; presets?: PresetTiles; settingsRequest?: SettingsRequest;
+  items: ItemResult[]; settings: ClopSettings; native: boolean; platform: string;
+  /** `acrylic` while an acrylic window draws the drop zone's glass (Windows 11); otherwise the zone tints itself. */
+  glass?: 'acrylic';
+  dropActive?: boolean; notice?: string; presets?: PresetTiles; settingsRequest?: SettingsRequest;
   layout?: { compact: boolean; cards: number };
   /** Every saved pipeline a card button or menu can run, for the buttons set to run one. */
   pipelines?: PipelineChoice[];
@@ -87,6 +90,8 @@ export interface ClopApi {
   pipelines(id: string): Promise<PipelineChoice[]>; runPipeline(id: string, pipelineId: string): Promise<void>;
   mcp(request: McpRequest): Promise<McpState>;
   window(action: 'hide' | 'close' | 'main' | 'float' | 'quit' | 'minimize' | 'interactive' | 'passthrough' | 'dismiss-notice' | 'finish-welcome' | 'editor' | 'presets' | 'select' | 'unselect'): Promise<void>;
+  /** Where the floating window's drop zone is in its page (or `null` once it hides), so the acrylic window behind it can follow. */
+  dropZone(box: { x: number; y: number; width: number; height: number; pageWidth: number; pageHeight: number } | null): Promise<void>;
   /** Opens (or brings forward) a result's crop, compare or preview window. */
   openCrop(id: string): Promise<void>; openCompare(id: string): Promise<void>; openPreview(id: string): Promise<void>;
   /** Pops up the right-click menu of results (the batch menu for several), or one of its submenus by name, at the pointer. */

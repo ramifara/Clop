@@ -14,7 +14,7 @@ const api: ClopApi = {
   apply: (id, options) => invoke('apply', id, options), restore: id => invoke('restore', id),
   copy: id => invoke('copy', id), save: id => invoke('save', id), reveal: id => invoke('reveal', id),
   drag: id => ipcRenderer.send('clop:drag', id), dismiss: id => invoke('dismiss', id),
-  settings: settings => invoke('settings', settings), window: action => invoke('window', action), apps: () => invoke('apps'), mcp: request => invoke('mcp', request), prefs: request => invoke('prefs', request),
+  settings: settings => invoke('settings', settings), window: action => invoke('window', action), dropZone: box => invoke('window', 'drop-zone', box), apps: () => invoke('apps'), mcp: request => invoke('mcp', request), prefs: request => invoke('prefs', request),
   pipelines: id => invoke('pipelines', id), runPipeline: (id, pipelineId) => invoke('run-pipeline', id, pipelineId),
   openCrop: id => invoke('open-crop', id), openCompare: id => invoke('open-compare', id), openPreview: id => invoke('open-preview', id),
   cardMenu: (ids, menu) => invoke('card-menu', ids, menu), cardAction: (ids, invocation) => invoke('card-action', ids, invocation),
