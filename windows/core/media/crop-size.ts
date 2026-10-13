@@ -18,7 +18,7 @@ export function centreRect(width: number, height: number, target: { width: numbe
 }
 
 /** Swift's `evenInt`: rounded, then odd values up to the next even one. */
-const even = (value: number) => { const x = Math.round(value); return x + (x % 2); };
+export const even = (value: number) => { const x = Math.round(value); return x + (x % 2); };
 
 /**
  * The geometry `Image.resize(toSize:)` gives a CropSize: a relative `cropRect` is cut out and scaled
@@ -37,12 +37,17 @@ export function cropGeometry(size: CropSpec, width: number, height: number): Geo
   return geometry;
 }
 
-const isFullFrame = (r: NonNullable<CropSpec['cropRect']>) => r.x <= 0.005 && r.y <= 0.005 && r.width >= 0.995 && r.height >= 0.995;
+export const isFullFrame = (r: NonNullable<CropSpec['cropRect']>) => r.x <= 0.005 && r.y <= 0.005 && r.width >= 0.995 && r.height >= 0.995;
+
+/** `CropRect.clamped()`: at least 0.1 % wide and high, and inside the frame. */
+export function clampRect(rect: NonNullable<CropSpec['cropRect']>) {
+  const width = Math.min(Math.max(rect.width, 0.001), 1), height = Math.min(Math.max(rect.height, 0.001), 1);
+  return { x: Math.min(Math.max(rect.x, 0), 1 - width), y: Math.min(Math.max(rect.y, 0), 1 - height), width, height };
+}
 
 /** `CropRect.pixelRect(in:)`: the clamped relative rectangle in whole pixels, at least one pixel wide and inside the image. */
 export function pixelRect(rect: NonNullable<CropSpec['cropRect']>, width: number, height: number): Rect {
-  const w = Math.min(Math.max(rect.width, 0.001), 1), h = Math.min(Math.max(rect.height, 0.001), 1);
-  const rx = Math.min(Math.max(rect.x, 0), 1 - w), ry = Math.min(Math.max(rect.y, 0), 1 - h);
+  const { x: rx, y: ry, width: w, height: h } = clampRect(rect);
   const left = Math.min(Math.max(Math.round(rx * width), 0), Math.max(width - 1, 0)), top = Math.min(Math.max(Math.round(ry * height), 0), Math.max(height - 1, 0));
   return { left, top, width: Math.min(Math.max(Math.round(w * width), 1), width - left), height: Math.min(Math.max(Math.round(h * height), 1), height - top) };
 }
