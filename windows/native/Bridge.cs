@@ -147,6 +147,9 @@ namespace ClopWindows {
         if (next != Sequence) {
           Sequence = next;
           try {
+            // Who copied is asked first: the owner is a window of the process that copied, and a program that copies and exits
+            // takes it along, leaving only the app in front to go by. Reading the contents (a large image) first widens that gap.
+            string owner, aumid; ClipboardSource(out owner, out aumid);
             var contents = Clipboard.GetDataObject();
             // OLE can bump the sequence again when delayed clipboard formats render. Tag ownership
             // explicitly rather than relying only on the sequence captured by SetDataObject.
@@ -159,7 +162,6 @@ namespace ClopWindows {
             string data = ImageDataKind(contents);
             bool image = bitmap || data != null || paths.Exists(file => Extensions.Contains(Path.GetExtension(file)));
             bool text = contents != null && contents.GetDataPresent(DataFormats.UnicodeText);
-            string owner, aumid; ClipboardSource(out owner, out aumid);
             Emit(new { type = "clipboard", sequence = next, paths = paths.ToArray(), image, bitmap, data, text, process = ForegroundProcess, app = ForegroundApp, owner, aumid });
           } catch { /* A different app may temporarily hold the clipboard. Retry on its next change. */ }
         }
