@@ -17,6 +17,7 @@
     "dist:win": "npm run build && node scripts/fetch-tools.mjs --platform win32 --arch x64 && electron-builder --win nsis portable --x64 --publish never"
   },
   "dependencies": {
+    "@cantoo/pdf-lib": "2.11.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "sharp": "0.35.5"

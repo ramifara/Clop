@@ -82,7 +82,8 @@ export type Limiter = <T>(task: () => Promise<T>) => Promise<T>;
 const CONCURRENCY: Record<QueueKind, number> = { image: 2, video: 1, pdf: 2, audio: 2 };
 const limiters = new Map<QueueKind, Limiter>();
 
-function limiter(max: number): Limiter {
+/** Runs at most `max` tasks at once; the rest wait in order. */
+export function limiter(max: number): Limiter {
   let active = 0;
   const waiting: (() => void)[] = [];
   // A finishing task hands its slot straight to the next waiter, so the count never exceeds max.
