@@ -58,8 +58,10 @@ test('the CLI finds the running app and round-trips an optimise request over the
   const size = (await stat(queued)).size;
   assert.equal(await a.cli('optimise', '--async', 'queued.png'), 0, a.err.join(''));
   assert.match(a.err.join(''), /Queued 1 items for optimisation\nUse the `--gui` flag to see progress/);
-  for (let i = 0; i < 100 && (await stat(queued)).size === size; i++) await new Promise(resolve => setTimeout(resolve, 100));
-  assert.ok((await stat(queued)).size < size);
+  // In place, the original moves to the backups before the result is copied in, so the file can be missing for a moment.
+  const now = () => stat(queued).then(info => info.size, () => size);
+  for (let i = 0; i < 100 && await now() === size; i++) await new Promise(resolve => setTimeout(resolve, 100));
+  assert.ok(await now() < size);
 });
 
 test('settings go through the app, which applies and saves them', async t => {

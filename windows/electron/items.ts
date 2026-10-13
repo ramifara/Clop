@@ -50,7 +50,13 @@ export interface ItemAutomation {
   run(input: ItemPipelineRun): Promise<ItemPipelineOutcome>;
 }
 /** `original` is the shelf's copy of the source, which a pipeline must never change: `fresh` gives a copy of it to work on. */
-export interface ItemPipelineRun { optimised?: string; original: string; fresh: () => Promise<string>; signal: AbortSignal }
+export interface ItemPipelineRun {
+  optimised?: string; original: string; fresh: () => Promise<string>; signal: AbortSignal;
+  /** A new empty folder in the item's own, for a result to be written to. */
+  scratch: () => Promise<string>;
+  /** Shows how far the run is, from 0 to 1. */
+  progress: (fraction: number) => void;
+}
 /**
  * `cancel` stops this item's running job when it is dismissed; `running` says a job is under way, `shown` that a result was ever ready to paste.
  * `jobs` holds one controller per scheduled job, so stopping also stops jobs still waiting in the queue.
@@ -224,7 +230,7 @@ export class ItemEngine extends EventEmitter {
         const cropSize = options.crop && (geometry?.crop ? { ...options.crop, width, height } : { width, height, name: options.crop.name, longEdge: false, smartCrop: options.crop.smartCrop });
         const settings = this.settings();
         output = await optimiseImage(e.originalPath, outputDir, {
-          ...imageCompression(options.mode, settings.imageCompression), format: options.format === 'auto' ? undefined : options.format, ...(cropSize ? { cropSize } : { width, height }),
+          ...(options.compression ? { compression: options.compression } : imageCompression(options.mode, settings.imageCompression)), format: options.format === 'auto' ? undefined : options.format, ...(cropSize ? { cropSize } : { width, height }),
           stripMetadata: settings.stripMetadata, preserveColorMetadata: settings.preserveColorMetadata, gifFrameDropBehaviour: settings.gifFrameDropBehaviour, name, signal,
         });
       } else output = await this.optimiseMedia(r.kind, e.originalPath, outputDir, { aggressive: options.mode === 'aggressive', name, signal, onProgress: this.progress(r), crop: options.crop });
@@ -270,7 +276,12 @@ export class ItemEngine extends EventEmitter {
   /** What a pipeline run gets: the optimised result to work on, or a fresh copy of the source in a folder of its own. */
   private pipelineRun(e: Entry, optimised: string | undefined, signal: AbortSignal): ItemPipelineRun {
     return {
-      optimised, original: e.originalPath, signal,
+      optimised, original: e.originalPath, signal, progress: this.progress(e.result),
+      scratch: async () => {
+        const dir = path.join(e.directory, `edit-${randomUUID().slice(0, 8)}`);
+        await mkdir(dir, { recursive: true });
+        return dir;
+      },
       fresh: async () => {
         const dir = path.join(e.directory, `pipeline-${randomUUID().slice(0, 8)}`);
         await mkdir(dir, { recursive: true });
@@ -364,7 +375,7 @@ export class ItemEngine extends EventEmitter {
     e.placedPath = e.placement ? await e.placement.restore() : undefined;
     e.outputPath = e.originalPath;
     Object.assign(e.result, { status: 'ready', width: e.result.originalWidth, height: e.result.originalHeight, outputBytes: e.result.originalBytes,
-      format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, maxEdge: undefined, format: 'auto', crop: undefined }, restored: true, unchanged: true, error: undefined, notes: undefined });
+      format: e.inputFormat, preview: e.result.originalPreview, options: { ...e.result.options, scale: 1, maxEdge: undefined, format: 'auto', crop: undefined, compression: undefined }, restored: true, unchanged: true, error: undefined, notes: undefined });
     e.shown = true; this.changed(); this.emit('ready', id);
   }); }
   /**

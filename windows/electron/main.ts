@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { ItemEngine, message, type ImportExtra, type ItemAutomation } from './items';
 import { clipboardPNG } from '../core/media/image-codecs';
 import { imageDefaults, rendererSettings } from './settings';
-import { defaultSettings } from '../core/settings/schema';
+import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { SettingsStore } from '../core/settings/store';
 import { Workdir } from '../core/workdir';
 import { expandTemplate, type Counter } from '../core/template';
@@ -19,7 +19,7 @@ import { FolderWatcher } from './watcher';
 import { enabledKey, placeholderReply } from './watch-rules';
 import { FolderResults, LastBatch, restoreAll } from './automation';
 import { appsReply } from './apps';
-import { appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
+import { allPipelineChoices, appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
 import { seedBuiltinPipelines } from '../core/pipeline/builtins';
 import { EDITOR_SETTING_KEYS } from '../core/pipeline/editor-state';
 import { cellCount, draggedType, gridHeight, tilesFor, zonePipeline } from '../core/pipeline/zones';
@@ -44,21 +44,31 @@ import { MEDIA_SCHEME, MediaFiles } from './media-files';
 import { applyCrop, cropSource, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
 import { compareSources, parseCompareView } from './compare';
 import { setupBatch } from './batch-window';
+import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
+import { expandHome } from '../core/settings/paths';
+import { menuTemplate } from './card-menu';
+import { coverArtCard, editorProgram, isEditorPath, makesNewCard, mediaFacts, openWithDialog, pageCard, runPlan, savePages, startProgram, type CardCreation, type CardHost } from './cards';
+import { CompactMode, cardsThatFit } from './compact';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // The crop and compare windows load the session's originals and results through this scheme, with byte ranges for video.
 protocol.registerSchemesAsPrivileged([{ scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, stream: true } }]);
 let main: BrowserWindow, floating: BrowserWindow, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray, engine: ItemEngine, media: MediaFiles;
-/** Open crop and compare windows, by `crop:<id>` and `compare:<id>`. */
+/** Open crop, compare and preview windows, by `crop:<id>`, `compare:<id>` and `preview:<id>`. */
 const views = new Map<string, BrowserWindow>();
 let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
-let dropActive = false, dragging = false, importsRunning = 0, hovered = false;
+let dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
 /** The files being dragged, and whether Ctrl or Alt is held, as the Windows helper reports them: Ctrl or Alt shows the preset zone tiles. */
 let dragFiles: string[] = [], dragModifiers = { ctrl: false, alt: false }, presetsLatched = false;
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
+const compactMode = new CompactMode({
+  always: () => settings.alwaysShowCompactResults, seconds: () => settings.autoClearAllCompactResultsAfter, fit: () => cardFit, clear: ids => hideResults(ids),
+  paused: () => hovered || dragging || selecting,
+  switched: compact => { if (compact) { for (const timer of hideTimers.values()) clearTimeout(timer); hideTimers.clear(); } },
+});
 let clipboardTimer: NodeJS.Timeout | undefined;
 const memory: ClipboardMemory = { fingerprint: '', own: '' };
 let nameCounter: Counter | undefined;
@@ -98,7 +108,13 @@ const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 const presetsRevealed = () => dragModifiers.ctrl || dragModifiers.alt;
 /** The preset zone tiles for the files being dragged. */
 function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, draggedType(dragFiles, mediaKind)) }; }
-const state = (): AppState => ({ items: engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id)), settings, native: true, platform: process.platform, dropActive, notice, presets: presets(), settingsRequest });
+const visible = () => engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id));
+let choices: { saved: ClopSettings['savedPipelines']; list: ReturnType<typeof allPipelineChoices> } | undefined;
+/** The saved pipelines, kept until the library changes: the state is sent on every progress step. */
+const pipelineList = () => (choices?.saved === settings.savedPipelines ? choices : choices = { saved: settings.savedPipelines, list: allPipelineChoices(settings) }).list;
+/** How many full cards fit the screen last time the shelf was laid out. */
+let cardFit = 3;
+const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, dropActive, notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList() });
 function broadcast() {
   for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
   // The crop and compare windows follow their result even after its card hid, so they get every result.
@@ -115,34 +131,50 @@ function showFloating(focus = false, reposition = false) {
   if (reposition && !floating.isVisible()) positionFloating();
   if (focus) floating.show(); else floating.showInactive();
 }
+/** Compact rows are 34 px tall, 58 with a thumbnail; the list adds a header. */
+const compactHeight = (rows: number) => 38 + rows * (settings.showCompactImages ? 58 : 34);
 function syncFloating() {
   if (!floating || floating.isDestroyed()) return;
   const target = dropActive || settings.keepDropZoneVisible;
-  const count = Math.min(target ? 2 : 3, state().items.length);
+  const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+  const items = visible();
+  cardFit = cardsThatFit(area.height, target);
+  const compact = compactMode.update(items.map(item => ({ id: item.id, running: item.status === 'processing' })));
+  const count = Math.min(cardFit, items.length);
   // Room for the tiles stays once they were shown, until the drag ends: a tile under the pointer must not lose its window when Ctrl is let go.
   const tiles = presetsLatched || presetsRevealed() ? gridHeight(cellCount(presets())) + 8 : 0;
-  const height = count * 166 + Math.max(0, count - 1) * 4 + (target ? 160 : 0) + tiles + (count > 1 ? 28 : 0) + (notice ? 85 : 0) + 40;
-  const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
-  floating.setSize(236, Math.min(height, area.height));
+  const height = (compact ? compactHeight(items.length) : count * 166 + Math.max(0, count - 1) * 4 + (count > 1 ? 28 : 0)) + (target ? 160 : 0) + tiles + (notice ? 85 : 0) + 40;
+  floating.setSize(compact ? 320 : 236, Math.min(height, area.height));
   positionFloating();
-  if (count || target || notice || importsRunning) showFloating(); else floating.hide();
+  if (items.length || target || notice || importsRunning) showFloating(); else floating.hide();
 }
 function showLatest() {
   for (const item of engine.list().slice(0, 3)) hidden.delete(item.id);
   dropActive = !engine.list().length;
   syncFloating(); broadcast();
 }
+/** Hides results the way an expired card hides: they stay in the shelf and can be brought back. */
+function hideResults(ids: string[]) {
+  for (const id of ids) {
+    if (!engine.has(id)) continue;
+    const timer = hideTimers.get(id); if (timer) clearTimeout(timer);
+    hideTimers.delete(id); hidden.add(id); removed(id);
+  }
+  syncFloating(); broadcast();
+}
 function scheduleHide(id: string) {
   const existing = hideTimers.get(id); if (existing) clearTimeout(existing);
+  // The compact list clears every result together instead (CompactMode).
+  if (compactMode.compact) return;
   const check = () => {
     if (hovered || dragging) { hideTimers.set(id, setTimeout(check, 1000)); return; }
-    hidden.add(id); hideTimers.delete(id); removed(id); syncFloating(); broadcast();
+    hideResults([id]);
   };
   hideTimers.set(id, setTimeout(check, engine.get(id).result.source === 'clipboard' ? 10000 : 30000));
 }
 async function dismiss(id: string) {
   const timer = hideTimers.get(id); if (timer) clearTimeout(timer);
-  for (const view of ['crop', 'compare']) views.get(`${view}:${id}`)?.close();
+  for (const view of ['crop', 'compare', 'preview']) views.get(`${view}:${id}`)?.close();
   if (engine.has(id)) media?.revoke(engine.get(id).directory);
   hideTimers.delete(id); hidden.delete(id); await engine.dismiss(id);
   if (!quiet.delete(id)) removed(id);
@@ -209,15 +241,15 @@ const webPreferences = () => ({ preload: path.join(here, 'preload.cjs'), context
 async function load(window: BrowserWindow, query: Record<string, string>) {
   if (devUrl) await window.loadURL(`${devUrl}/?${new URLSearchParams(query)}`); else await window.loadFile(path.join(here, '../dist/index.html'), { query });
 }
-/** Opens a result's crop or compare window, or brings the open one forward. Each closes for good, and with its result. */
-async function openView(view: 'crop' | 'compare', id: unknown) {
+/** Opens a result's crop, compare or preview window, or brings the open one forward. Each closes for good, and with its result. */
+async function openView(view: 'crop' | 'compare' | 'preview', id: unknown) {
   if (typeof id !== 'string' || !engine.has(id)) throw new Error('This result is no longer in the shelf.');
   const { result } = engine.get(id), key = `${view}:${id}`, open = views.get(key);
   if (result.status !== 'ready') throw new Error('Wait for this result to finish first.');
   if (view === 'crop' && result.kind === 'audio') throw new Error('Audio files have nothing to crop.');
   if (open && !open.isDestroyed()) { open.show(); open.focus(); return; }
-  const size = view === 'crop' ? { width: 1020, height: 660, minWidth: 780, minHeight: 520 } : { width: 1100, height: 760, minWidth: 600, minHeight: 460 };
-  const window = new BrowserWindow({ ...size, show: false, title: `${view === 'crop' ? 'Crop' : 'Compare'}: ${result.name}`, backgroundColor: '#211d23', autoHideMenuBar: true, webPreferences: webPreferences() });
+  const size = view === 'crop' ? { width: 1020, height: 660, minWidth: 780, minHeight: 520 } : view === 'preview' ? { width: 900, height: 700, minWidth: 420, minHeight: 320 } : { width: 1100, height: 760, minWidth: 600, minHeight: 460 };
+  const window = new BrowserWindow({ ...size, show: false, title: `${{ crop: 'Crop', compare: 'Compare', preview: 'Preview' }[view]}: ${result.name}`, backgroundColor: '#211d23', autoHideMenuBar: true, webPreferences: webPreferences() });
   views.set(key, window);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
@@ -618,6 +650,154 @@ function nativeSettings() {
   return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating, editorWindow, ...views.values(), batch?.window()].filter((window): window is BrowserWindow => !!window && !window.isDestroyed()).map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
 }
 function syncNative() { if (bridgeReady) bridge.request(nativeSettings()).catch(error => inform(message(error))); }
+// Card actions (spec steps 30 and 31): the right-click menu, the corner buttons and the keys all arrive as one validated invocation
+// from the action table in core/cards/actions.ts.
+const EDITORS = { image: 'editorAppImage', video: 'editorAppVideo', pdf: 'editorAppPDF', audio: 'editorAppAudio' } as const;
+/** The editor app set for a kind of file, with `~` and `$HOME` expanded; empty when none is set. */
+const editorFor = (kind: MediaKind) => { const value = settings[EDITORS[kind]].trim(); return value ? expandHome(value, home) : ''; };
+const cardHost = (): CardHost => ({ engine, settings: () => settings, pipeline: pipelineHost });
+/** The results a card request names: a few distinct ids that are all still in the shelf. */
+function cardIds(value: unknown) {
+  if (!Array.isArray(value) || !value.length || value.length > 40) throw new Error('Choose a result.');
+  return [...new Set(value.map(itemId))].map(id => { engine.get(id); return id; });
+}
+/** What a menu needs from the file and the settings: the editor app (only when it is the full path of an existing .exe), and for video and audio what ffprobe says. */
+async function cardFacts(id: string): Promise<Facts> {
+  const { result } = engine.get(id), editor = editorFor(result.kind);
+  const facts: Facts = { native: true, pipelines: pipelineChoices(settings, result.kind) };
+  if (isEditorPath(editor) && await isFile(editor)) facts.editor = path.win32.basename(editor).replace(/\.exe$/i, '');
+  if (result.status === 'ready') Object.assign(facts, await mediaFacts(engine.output(id), result.kind));
+  return facts;
+}
+const creation = (): CardCreation => ({ engine, settings: () => settings, defaults: () => defaults(), makeRoom, scratchRoot: workdir.temp });
+/** For the batch menu: the first video's HDR flag and the first audio file's bitrates, as macOS looks at the first result. */
+async function batchFacts(ids: string[]): Promise<Facts> {
+  const facts: Facts = { native: true };
+  for (const kind of ['video', 'audio'] as const) {
+    const id = ids.find(candidate => engine.get(candidate).result.kind === kind && engine.get(candidate).result.status === 'ready');
+    if (id) Object.assign(facts, await mediaFacts(engine.output(id), kind));
+  }
+  return facts;
+}
+/** Pops up a result's right-click menu, a submenu of it (from a corner button), or the batch menu for several results, at the pointer. */
+async function cardMenu(sender: Electron.WebContents, ids: string[], name?: unknown) {
+  if (name !== undefined && (typeof name !== 'string' || !(MENUS as readonly string[]).includes(name))) throw new Error('Choose a menu.');
+  const items = ids.map(id => engine.get(id).result);
+  if (items.length > 1 && name !== undefined) throw new Error('Choose one result for this menu.');
+  const nodes = items.length > 1 ? batchMenu(items, await batchFacts(ids)) : name ? submenu(name as string, items[0], await cardFacts(ids[0])) : itemMenu(items[0], await cardFacts(ids[0]));
+  if (!nodes.length) return;
+  const window = BrowserWindow.fromWebContents(sender) ?? undefined;
+  Menu.buildFromTemplate(menuTemplate(nodes, invocation => { void runCard(sender, ids, invocation).catch(error => inform(message(error))); })).popup({ window });
+}
+async function saveResult(window: BrowserWindow | undefined, id: string) {
+  const entry = engine.get(id), file = engine.output(id);
+  const name = `${path.parse(entry.result.name).name}-clop.${entry.result.format === 'jpeg' ? 'jpg' : entry.result.format}`;
+  const result = window ? await dialog.showSaveDialog(window, { defaultPath: name }) : await dialog.showSaveDialog({ defaultPath: name });
+  if (result.filePath && !result.canceled) await copyFile(file, result.filePath);
+}
+/** Saves several results into a folder the user picks, each as `<name>-clop.<ext>`, numbered when the name is taken. */
+async function saveResults(window: BrowserWindow | undefined, ids: string[]) {
+  const picked = window ? await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'], buttonLabel: 'Save here' }) : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], buttonLabel: 'Save here' });
+  const folder = picked.filePaths[0];
+  if (picked.canceled || !folder) return;
+  for (const id of ids) {
+    const entry = engine.get(id), file = engine.output(id), { name: stem } = path.parse(entry.result.name), ext = path.extname(file);
+    for (let n = 0; ; n++) {
+      const target = path.join(folder, `${stem}-clop${n ? ` (${n})` : ''}${ext}`);
+      try { await copyFile(file, target, 1); break; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || n > 999) throw error; }
+    }
+  }
+}
+/** Renders a PDF's pages as images: one page becomes a card of its own, several are saved, optimised, in a folder the user picks. */
+async function pagesToImages(window: BrowserWindow | undefined, id: string, format: 'jpeg' | 'png') {
+  const pages = engine.get(id).result.pages ?? 1;
+  if (pages === 1) { await pageCard(creation(), id, format); return; }
+  const options = { properties: ['openDirectory', 'createDirectory'] as ('openDirectory' | 'createDirectory')[], buttonLabel: 'Save pages', message: `Choose a folder to save ${pages} pages as optimised ${format === 'png' ? 'PNGs' : 'JPEGs'}` };
+  const picked = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+  const folder = picked.filePaths[0];
+  if (picked.canceled || !folder) return;
+  const written = await savePages(creation(), id, format, folder);
+  inform(`Saved ${written.length} pages in ${folder}.`);
+  void shell.openPath(folder);
+}
+/** A saved pipeline run on a result from the card's "Pass file through pipeline" menu or a pipeline button. */
+async function runSavedPipeline(id: string, pipelineId: unknown) {
+  const { kind, source } = engine.get(id).result, pipeline = chosenPipeline(settings, kind, pipelineId);
+  // Read before the run: copying the result back must not replace something the user, or the pipeline itself, put on the clipboard since.
+  const sequence = await currentSequence();
+  await engine.runPipeline(id, async input => {
+    const outcome = await runForApp(pipelineHost, [pipeline], input.optimised ?? await input.fresh(), { kind }, input.signal);
+    // Asked for from the card, so the result stays in view whatever the pipeline's hideResult says.
+    afterPipelines(id, outcome, source, { hide: false });
+    return { file: outcome.file, anyRan: outcome.anyRan, warnings: outcomeNotes(outcome) };
+  });
+  if (isReady(id) && copiesBack(id)) await copy([id], sequence);
+}
+/** The Windows share sheet needs a packaged app, which Clop is not: the file goes on the clipboard and Explorer selects it, where Share is on its ribbon and context menu. */
+async function shareResult(id: string) {
+  await copy([id]);
+  shell.showItemInFolder(engine.output(id));
+}
+/** The actions whose menu entry the file's facts can disable or hide; a request for one is checked against them. */
+const FACT_ACTIONS: readonly string[] = ['removeAudio', 'hdrToSdr', 'coverArt', 'coverDownscale', 'bitrate'];
+/** Runs an action the renderer or a menu asked for on one result, or on a selection (save, copy, restore, downscale, speed, bitrate, aggressive, HDR, strip metadata, dismiss). */
+async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown, { copyBack = true } = {}) {
+  const window = BrowserWindow.fromWebContents(sender) ?? undefined;
+  if (ids.length > 1) {
+    const action = (raw as { action?: unknown } | null)?.action;
+    if (typeof action !== 'string' || !(BATCH_ACTIONS as readonly string[]).includes(action)) throw new Error('This action works on one result at a time.');
+    if (action === 'saveAs') return saveResults(window, ids);
+    if (action === 'copy') return copy(ids);
+    if (action === 'restore') {
+      const { restored, failures } = await restoreAll(engine, ids);
+      const clipboardIds = restored.filter(id => engine.has(id) && engine.get(id).result.source === 'clipboard');
+      if (clipboardIds.length) await copyClipboardResults(clipboardIds);
+      if (failures.length) inform(failures.join('\n'));
+      return;
+    }
+    // Each result on its own: those the action does not work on are skipped, a failure does not stop the rest, and the clipboard is written once at the end.
+    const failures: string[] = [], applies = ids.filter(id => ACTION_KINDS[action as ActionId].includes(engine.get(id).result.kind));
+    if (!applies.length) throw new Error('This action does not work on the selected results.');
+    for (const id of applies) {
+      try { if (action === 'dismiss') await dismiss(id); else await runCard(sender, [id], raw, { copyBack: false }); }
+      catch (error) { failures.push(`${engine.has(id) ? engine.get(id).result.name : 'A result'}: ${message(error)}`); }
+    }
+    const back = applies.filter(id => engine.has(id) && isReady(id) && copiesBack(id));
+    if (action !== 'dismiss' && back.length) await copy(back).catch(error => failures.push(message(error)));
+    if (failures.length) inform(failures.join('\n'));
+    return;
+  }
+  const id = ids[0], item = engine.get(id).result, invocation = parseInvocation(item.kind, raw), plan = planFor(item, invocation);
+  if (FACT_ACTIONS.includes(invocation.action)) {
+    const refusal = refuseUnavailable(item, invocation, { native: true, ...await mediaFacts(engine.output(id), item.kind) });
+    if (refusal) throw new Error(refusal);
+  }
+  if (plan.type !== 'ui') {
+    if (makesNewCard(plan)) { await coverArtCard(creation(), id); return; }
+    await runPlan(cardHost(), id, plan);
+    if (copyBack && isReady(id) && copiesBack(id)) await copy([id]);
+    return;
+  }
+  const file = () => engine.output(id);
+  switch (plan.ui) {
+    case 'stop': engine.stop([id]); return;
+    case 'dismiss': await dismiss(id); return;
+    case 'restore': await engine.restore(id); if (copiesBack(id)) await copy([id]); return;
+    case 'preview': await openView('preview', id); return;
+    case 'compare': await openView('compare', id); return;
+    case 'crop': await openView('crop', id); return;
+    case 'saveAs': await saveResult(window, id); return;
+    case 'copy': await copy([id]); return;
+    case 'reveal': shell.showItemInFolder(file()); return;
+    case 'openDefault': { const error = await shell.openPath(file()); if (error) throw new Error(error); return; }
+    case 'openWith': await openWithDialog(file()); return;
+    case 'editWith': await startProgram(await editorProgram(editorFor(item.kind), { watched: watchedFolders(settings, home), isFile }), file()); return;
+    case 'share': await shareResult(id); return;
+    case 'pipeline': await runSavedPipeline(id, plan.arg); return;
+    case 'pagesToImages': await pagesToImages(window, id, plan.arg as 'jpeg' | 'png'); return;
+    case 'menu': await cardMenu(sender, ids, plan.arg); return;
+  }
+}
 /** Card actions put a clipboard result back on the clipboard, and others with `autoCopyToClipboard`. */
 function copiesBack(id: string) { const { result } = engine.get(id); return result.status === 'ready' && (result.source === 'clipboard' || (settings.autoCopyToClipboard && result.source !== 'folder')); }
 function trusted(sender: Electron.WebContents) { return [main, floating, ...views.values()].some(window => window && !window.isDestroyed() && window.webContents === sender); }
@@ -632,34 +812,20 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'apply': await engine.apply(id, args[1] as ImageOptions); if (copiesBack(id)) await copy([id]); break;
     case 'restore': await engine.restore(id); if (copiesBack(id)) await copy([id]); break;
     case 'copy': await copy([id]); break;
-    case 'save': {
-      const entry = engine.get(id), file = engine.output(id);
-      const name = `${path.parse(entry.result.name).name}-clop.${entry.result.format === 'jpeg' ? 'jpg' : entry.result.format}`;
-      const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender)!, { defaultPath: name });
-      if (result.filePath && !result.canceled) await copyFile(file, result.filePath); break;
-    }
+    case 'save': await saveResult(BrowserWindow.fromWebContents(event.sender) ?? undefined, id); break;
     case 'reveal': shell.showItemInFolder(engine.output(id)); break;
     case 'dismiss': await dismiss(id); break;
     case 'settings': if (event.sender !== main.webContents) throw new Error('Only the settings window can do this.'); await updateSettings(rendererSettings(args[0])); break;
     case 'apps': return bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [];
     case 'run-preset': await importFiles(args[1], 'drop', false, args[0]); break;
     case 'pipelines': return pipelineChoices(settings, engine.get(itemId(args[0])).result.kind);
-    case 'run-pipeline': {
-      const target = itemId(args[0]), { kind, source } = engine.get(target).result, pipeline = chosenPipeline(settings, kind, args[1]);
-      // Read before the run: copying the result back must not replace something the user, or the pipeline itself, put on the clipboard since.
-      const sequence = await currentSequence();
-      await engine.runPipeline(target, async input => {
-        const outcome = await runForApp(pipelineHost, [pipeline], input.optimised ?? await input.fresh(), { kind }, input.signal);
-        // Asked for from the card, so the result stays in view whatever the pipeline's hideResult says.
-        afterPipelines(target, outcome, source, { hide: false });
-        return { file: outcome.file, anyRan: outcome.anyRan, warnings: outcomeNotes(outcome) };
-      });
-      if (isReady(target) && copiesBack(target)) await copy([target], sequence);
-      break;
-    }
+    case 'run-pipeline': await runSavedPipeline(itemId(args[0]), args[1]); break;
     case 'mcp': if (event.sender !== main.webContents) throw new Error('Only the settings window can do this.'); return mcp.handle(args[0]);
     case 'open-crop': await openView('crop', id); break;
     case 'open-compare': await openView('compare', id); break;
+    case 'open-preview': await openView('preview', id); break;
+    case 'card-menu': await cardMenu(event.sender, cardIds(args[0]), args[1]); break;
+    case 'card-action': await runCard(event.sender, cardIds(args[0]), args[1]); break;
     case 'crop-source': return cropSource(engine.get(id), parseCropView(args[1]), media);
     case 'crop': await applyCrop(engine, id, parseCropRequest(args[1], engine.get(id).result.kind)); if (copiesBack(id)) await copy([id]); break;
     case 'crop-sizes': return settings.savedCropSizes;
@@ -677,6 +843,8 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
         case 'presets': await openEditor('zones'); break;
         case 'float': showLatest(); break;
         case 'interactive': hovered = true; floating.setIgnoreMouseEvents(false); break;
+        case 'select': selecting = true; break;
+        case 'unselect': selecting = false; break;
         case 'passthrough': hovered = false; if (!dropActive) floating.setIgnoreMouseEvents(true, { forward: true }); break;
         case 'dismiss-notice': notice = undefined; syncFloating(); broadcast(); break;
         case 'quit': app.quit(); break;
@@ -696,8 +864,15 @@ ipcMain.handle('clop:editor', (event, action: string, command?: unknown) => {
 });
 ipcMain.on('clop:drag', (event, id: string) => {
   if (!trusted(event.sender)) return;
-  try { const file = engine.output(id); event.sender.startDrag({ file, icon: nativeImage.createFromDataURL(engine.get(id).result.preview).resize({ width: 96 }) }); }
-  catch (error) { inform(message(error)); }
+  try {
+    const file = engine.output(id);
+    // On Windows the drag runs inside this call, so it returns once the drop is over.
+    event.sender.startDrag({ file, icon: nativeImage.createFromDataURL(engine.get(id).result.preview).resize({ width: 96 }) });
+    const dismissOnDrop = compactMode.compact ? settings.dismissCompactResultOnDrop : settings.dismissFloatingResultOnDrop;
+    // Electron does not say whether the drop landed; one that ends away from the results counts, as dropping on another app does on macOS.
+    const over = () => { const point = screen.getCursorScreenPoint(), box = floating.getBounds(); return point.x >= box.x && point.x < box.x + box.width && point.y >= box.y && point.y < box.y + box.height; };
+    if (dismissOnDrop && process.platform === 'win32') setTimeout(() => { if (engine.has(id) && !over()) void dismiss(id); }, 250);
+  } catch (error) { inform(message(error)); }
 });
 if (!app.requestSingleInstanceLock()) app.quit();
 else {

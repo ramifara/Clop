@@ -29,10 +29,10 @@ export interface PipelineHost {
 export interface RunContext { kind: MediaKind; sourceApp?: { id?: string; name?: string } }
 
 /** Runs `pipelines` on `file` with the app's settings and effects, then saves the counter and keeps the files cards show. */
-export async function runForApp(host: PipelineHost, pipelines: readonly Pipeline[], file: string, context: RunContext, signal?: AbortSignal): Promise<PipelinesOutcome> {
+export async function runForApp(host: PipelineHost, pipelines: readonly Pipeline[], file: string, context: RunContext, signal?: AbortSignal, onProgress?: (fraction: number) => void): Promise<PipelinesOutcome> {
   const env = host.env(), before = env.counter.value;
   // Pipelines from the user's own settings may run scripts, and so may open any program they name.
-  const outcome = await runPipelines(pipelines, file, { fileType: context.kind, env, effects: await host.effects({ allowExe: true }), allowScripts: true, sourceApp: context.sourceApp, signal })
+  const outcome = await runPipelines(pipelines, file, { fileType: context.kind, env, effects: await host.effects({ allowExe: true }), allowScripts: true, sourceApp: context.sourceApp, signal, ...(onProgress ? { onProgress: ({ step, steps, fraction }) => onProgress((step + fraction) / steps) } : {}) })
     .finally(() => { if (env.counter.value !== before) host.counterChanged(env.counter.value); });
   host.keep([outcome.file, ...outcome.forks, ...outcome.pages]);
   return outcome;
@@ -81,6 +81,11 @@ export function pipelineChoices(settings: Pick<ClopSettings, 'savedPipelines'>, 
   return settings.savedPipelines.filter(isReadable).filter(pipeline => !pipeline.fileType || pipeline.fileType === kind)
     .sort((a, b) => Number(isBuiltin(a)) - Number(isBuiltin(b)))
     .map(pipeline => ({ id: pipeline.id, name: pipeline.name ?? (pipeline.rawText || formatSteps(pipeline.steps)), text: pipeline.rawText ?? formatSteps(pipeline.steps) }));
+}
+/** Every saved pipeline a button can run, for the renderer to match to a card's kind. */
+export function allPipelineChoices(settings: Pick<ClopSettings, 'savedPipelines'>): PipelineChoice[] {
+  return settings.savedPipelines.filter(isReadable).sort((a, b) => Number(isBuiltin(a)) - Number(isBuiltin(b)))
+    .map(pipeline => ({ id: pipeline.id, name: pipeline.name ?? (pipeline.rawText || formatSteps(pipeline.steps)), text: pipeline.rawText ?? formatSteps(pipeline.steps), ...(pipeline.fileType ? { fileType: pipeline.fileType } : {}) }));
 }
 /** The saved pipeline the card asked for by id, refused unless the card offers it for this result. */
 export function chosenPipeline(settings: Pick<ClopSettings, 'savedPipelines'>, kind: MediaKind, id: unknown): Pipeline {
