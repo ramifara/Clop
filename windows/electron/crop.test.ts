@@ -11,7 +11,7 @@ import { boxes, photoPDF, round } from '../core/media/pdf.fixtures';
 import type { CropSize } from '../core/settings/schema';
 import { ItemEngine } from './items';
 import { MediaFiles } from './media-files';
-import { applyCrop, cropSource, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
+import { applyCrop, cropSource, cropsToClose, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
 import { compareSources, parseCompareView } from './compare';
 import { viewFile } from './previews';
 
@@ -177,6 +177,7 @@ test('crop and compare work on the file a pipeline left, which is outside the se
   assert.equal((await cropSource(engine.get(id), { page: 3, time: 0 }, files)).pages, 3, 'the crop window shows the pipeline\'s file');
   const compare = await compareSources(engine.get(id), { page: 3 }, files);
   assert.equal(compare.pages, 3);
+  assert.equal(compare.result.path, piped, 'the path field names the pipeline\'s file, not the copy that serves it');
   assert.ok((await fetchFile(files, compare.result.url)).length > 0);
   // A page change asks again: the copy of the pipeline's file made for this revision is served, not made anew.
   const copy = viewFile(engine.get(id).directory, piped, `compare-r${piping}.pdf`), made = (await stat(copy)).mtimeMs;
@@ -197,6 +198,8 @@ test('compares originals and results the window can load, and refuses to crop au
   assert.deepEqual(await fetchFile(files, pair.original.url), await readFile(entry.originalPath));
   assert.deepEqual(await fetchFile(files, pair.result.url), await readFile(engine.output(image)));
   assert.deepEqual([pair.original.width, pair.original.height, pair.original.bytes, pair.original.format], [400, 200, entry.result.originalBytes, 'png']);
+  // The path fields name the original Clop keeps and the result where it is.
+  assert.deepEqual([pair.original.path, pair.result.path], [entry.originalPath, engine.output(image)]);
   // BMP cannot show in an <img>, so it is compared as PNG.
   const bmp = await engine.importBuffer(await sharp(await halves()).raw().toBuffer({ resolveWithObject: true }).then(({ data, info }) => bmpFile(data, info.width, info.height)), 'old.bmp', 'drop', balanced);
   const bmpPair = await compareSources(engine.get(bmp), { page: 1 }, files);
@@ -231,4 +234,10 @@ test('a crop or compare window is sent its own result and no other', async t => 
   assert.deepEqual(viewItems(engine.list(), `crop:${a}`).map(item => item.id), [a]);
   assert.deepEqual(viewItems(engine.list(), `compare:${b}`).map(item => item.id), [b]);
   assert.deepEqual(viewItems(engine.list(), 'crop:gone'), []);
+});
+
+test('a crop window closes when its result starts processing again, unless it asked to stay open', () => {
+  const status = (id: string) => ({ a: 'processing', b: 'ready', c: 'processing', d: 'error' } as const)[id as 'a'];
+  assert.deepEqual(cropsToClose(['crop:a', 'crop:b', 'compare:c', 'crop:c', 'crop:d', 'crop:gone'], status, new Set()), ['crop:a', 'crop:c'], 'compare windows stay; ready, failed and dismissed results close nothing');
+  assert.deepEqual(cropsToClose(['crop:a', 'crop:c'], status, new Set(['c'])), ['crop:a'], 'a PDF being uncropped from its window keeps it open');
 });

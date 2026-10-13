@@ -226,7 +226,14 @@ try {
   for (let page = 0; page < 4; page++) pdf.addPage([288, 216]).drawImage(photo, { x: 0, y: 0, width: 288, height: 216 });
   await writeFile(scan, await pdf.save());
   const copyFiles = files => execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', '$ErrorActionPreference = "Stop"; Add-Type -AssemblyName System.Windows.Forms; $list = New-Object System.Collections.Specialized.StringCollection; foreach ($file in $env:CLOP_SMOKE_FILES.Split([char]10)) { [void]$list.Add($file) }; [System.Windows.Forms.Clipboard]::SetFileDropList($list)'], { env: { ...process.env, CLOP_SMOKE_FILES: files.join('\n') } });
-  for (const [file, kind] of [[video, 'video'], [scan, 'pdf'], [song, 'audio']]) {
+  // As on macOS, a copied video, PDF or audio file is optimised where it is (`optimised…Behaviour`, in place by default), its original kept in
+  // the working directory's backups, and the clipboard keeps naming it. Copies of the fixtures are used, so the files the later steps copy stay as they were.
+  const copiedDir = path.join(profile, 'Copied');
+  await mkdir(copiedDir);
+  for (const [source, kind] of [[video, 'video'], [scan, 'pdf'], [song, 'audio']]) {
+    const file = path.join(copiedDir, path.basename(source));
+    await copyFile(source, file);
+    const sourceBytes = (await stat(file)).size;
     const before = new Set((await main.evaluate('window.clop.state()')).items.map(item => item.id));
     copyFiles([file]);
     const item = await until(async () => (await main.evaluate('window.clop.state()')).items.find(item => !before.has(item.id) && item.kind === kind && item.source === 'clipboard' && item.status !== 'processing'), `Copying a ${kind} file did not produce a result`, 90000, () => appState(main));
@@ -234,8 +241,12 @@ try {
     assert.equal(item.status, 'ready', item.error);
     assert.ok(item.outputBytes < item.originalBytes, `The ${kind} should be smaller after optimising`);
     await until(() => shown(path.basename(file)), `The ${kind} card did not render`);
-    const rewritten = await until(async () => { const [result] = (await externalClipboard.request({ type: 'read' })).paths; return result && result !== file && path.basename(result) === path.basename(file) && result; }, `The clipboard was not rewritten with the optimised ${kind}`);
-    assert.equal((await stat(rewritten)).size, item.outputBytes, `The clipboard should hold the optimised ${kind}`);
+    const rewritten = await until(async () => { const read = await externalClipboard.request({ type: 'read' }); const [result] = read.paths; return result && path.basename(result) === path.basename(file) && result; }, `The clipboard was not rewritten with the optimised ${kind}`);
+    assert.equal(path.resolve(rewritten).toLowerCase(), path.resolve(file).toLowerCase(), `The clipboard should name the copied ${kind}, optimised where it is`);
+    assert.equal((await stat(file)).size, item.outputBytes, `The copied ${kind} should be replaced by its optimised version`);
+    const copiedBackup = (await readdir(path.join(profile, 'work', 'backups'))).find(name => name.startsWith(`${path.parse(file).name}-`) && name.endsWith(path.extname(file)));
+    assert.ok(copiedBackup, `The copied ${kind}'s original should be in the backups`);
+    assert.equal((await stat(path.join(profile, 'work', 'backups', copiedBackup))).size, sourceBytes, `The backup should be the original ${kind}`);
   }
   assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'Copying video, PDF and audio files must not show an error');
   // A video and an image dropped into a watched folder are optimised where they are, each original kept in the working directory's backups.
@@ -318,8 +329,42 @@ try {
     await main.evaluate('window.clop.settings({ batchModeFileCountThreshold: 30 })');
     console.log('A folder dragged from Explorer onto the drop zone opened the batch window with both of its images.');
   }
+  // Files are put in the page as a drop puts them: a hidden file input that DevTools fills with paths gives the page Files whose paths
+  // `webUtils` reads, as the drop zone's and the preset zones' handlers do.
+  const digest = async file => createHash('sha256').update(await readFile(file)).digest('hex');
+  async function pick(files) {
+    await main.evaluate('document.querySelector("input[type=file]")?.remove()');
+    const input = await main.send('Runtime.evaluate', { expression: '(() => { const input = document.createElement("input"); input.type = "file"; input.multiple = true; input.style.display = "none"; document.body.append(input); return input; })()' });
+    await main.send('DOM.setFileInputFiles', { objectId: input.result.objectId, files });
+    assert.equal(await main.evaluate('document.querySelector("input[type=file]").files.length'), files.length, 'The file input should hold what is dropped');
+    return '[...document.querySelector("input[type=file]").files]';
+  }
+  // A file dropped on the drop zone is placed as macOS places it, by `optimisedImageBehaviour` (in place by default): the file itself
+  // is optimised, its original goes into the working directory's backups, and Restore on the card puts the original back.
+  const dropFolder = path.join(profile, 'Drop photos');
+  await mkdir(dropFolder);
+  const dropFile = path.join(dropFolder, 'dropped.png');
+  await sharp({ create: { width: 900, height: 600, channels: 3, background: '#3ad57b' } }).composite([{ input: Buffer.from('<svg width="900" height="600"><rect x="100" y="80" width="500" height="300" fill="#202a44"/><circle cx="600" cy="360" r="180" fill="#f5a623"/></svg>') }]).png({ compressionLevel: 0 }).toFile(dropFile);
+  const dropOriginal = await digest(dropFile), dropOriginalBytes = (await stat(dropFile)).size;
+  for (const item of (await main.evaluate('window.clop.state()')).items) await main.evaluate(`window.clop.dismiss(${JSON.stringify(item.id)})`);
+  await main.evaluate(`window.clop.importFiles(${await pick([dropFile])})`);
+  const droppedItem = await until(async () => (await main.evaluate('window.clop.state()')).items.find(item => item.source === 'drop' && item.name === 'dropped.png' && item.status !== 'processing'), 'Dropping a file on the drop zone did not give a result', 60000, () => appState(main));
+  console.log('Dropped file:', JSON.stringify({ status: droppedItem.status, error: droppedItem.error, originalBytes: droppedItem.originalBytes, outputBytes: droppedItem.outputBytes }));
+  assert.equal(droppedItem.status, 'ready', droppedItem.error);
+  assert.equal((await stat(dropFile)).size, droppedItem.outputBytes, 'The dropped file should be replaced by its optimised version');
+  assert.ok(droppedItem.outputBytes < dropOriginalBytes, 'The dropped file should be smaller after optimising');
+  const dropBackups = path.join(profile, 'work', 'backups'), dropBackup = (await readdir(dropBackups)).find(file => file.startsWith('dropped-') && file.endsWith('.png'));
+  assert.ok(dropBackup, "The dropped file's original should be in the backups");
+  assert.equal(await digest(path.join(dropBackups, dropBackup)), dropOriginal, 'The backup should be the original dropped file');
+  assert.deepEqual(await readdir(dropFolder), ['dropped.png'], 'Nothing else should be written next to the dropped file');
+  await main.evaluate(`window.clop.restore(${JSON.stringify(droppedItem.id)})`);
+  await until(async () => await digest(dropFile) === dropOriginal, 'Restore did not put the dropped file\'s original back', 30000);
+  assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'Dropping and restoring a file must not show an error');
+  await main.evaluate('document.querySelector("input[type=file]").remove()');
+  console.log('A file dropped on the drop zone was optimised in place with a backup, and Restore put its original back.');
   // A folder of two PNGs dropped on a preset zone whose pipeline converts to WebP: both files run the zone's pipeline, never the batch
-  // window or a plain optimisation, and the originals are left as they were. The drop goes through the same `runPreset` call (the
+  // window or a plain optimisation, on the files themselves as macOS runs it, so each WebP lands beside its PNG (`manualConvertedImageBehaviour`,
+  // `%f`) and the originals are left as they were. The drop goes through the same `runPreset` call (the
   // `run-preset` IPC) the zone in the floating window makes; the files come from a file input that DevTools fills with the folder's
   // path, which gives the page a File for the folder as a drop does. A real drag cannot be used: the zones show only while Ctrl is
   // held during the drag, which the fixtures cannot do.
@@ -327,15 +372,11 @@ try {
   await mkdir(zoneFolder);
   const zoneFiles = ['one.png', 'two.png'].map(name => path.join(zoneFolder, name));
   for (const file of zoneFiles) await sharp({ create: { width: 640, height: 400, channels: 3, background: '#d53a7b' } }).png({ compressionLevel: 0 }).toFile(file);
-  const digest = async file => createHash('sha256').update(await readFile(file)).digest('hex');
   const zoneOriginals = await Promise.all(zoneFiles.map(digest));
   const zoneState = await main.evaluate('window.clop.state()');
   assert.ok(zoneState.settings.presetZones.some(zone => zone.id === webpZone.id), 'The preset zone from the settings file should be loaded');
   for (const item of zoneState.items) await main.evaluate(`window.clop.dismiss(${JSON.stringify(item.id)})`);
-  const input = await main.send('Runtime.evaluate', { expression: '(() => { const input = document.createElement("input"); input.type = "file"; input.multiple = true; input.style.display = "none"; document.body.append(input); return input; })()' });
-  await main.send('DOM.setFileInputFiles', { objectId: input.result.objectId, files: [zoneFolder] });
-  assert.equal(await main.evaluate('document.querySelector("input[type=file]").files.length'), 1, 'The file input should hold the folder');
-  await main.evaluate(`window.clop.runPreset(${JSON.stringify(webpZone.id)}, [...document.querySelector("input[type=file]").files])`);
+  await main.evaluate(`window.clop.runPreset(${JSON.stringify(webpZone.id)}, ${await pick([zoneFolder])})`);
   const zoneResults = await until(async () => {
     const items = (await main.evaluate('window.clop.state()')).items.filter(item => item.source === 'drop');
     return items.length === 2 && items.every(item => item.status !== 'processing') && items;
@@ -349,11 +390,12 @@ try {
     try { assert.equal((await batchAfterZone.evaluate('window.clopBatch.state()')).files.length, 0, 'A drop on a preset zone must not go to the batch window'); } finally { batchAfterZone.close(); }
   }
   assert.deepEqual(await Promise.all(zoneFiles.map(digest)), zoneOriginals, 'The dropped originals must be left as they were');
-  assert.deepEqual((await readdir(zoneFolder)).sort(), ['one.png', 'two.png'], 'Nothing should be written next to the dropped originals');
+  assert.deepEqual((await readdir(zoneFolder)).sort(), ['one.png', 'one.webp', 'two.png', 'two.webp'], 'Each WebP should land beside its original, and nothing else');
+  for (const file of ['one.webp', 'two.webp']) assert.equal((await sharp(path.join(zoneFolder, file)).metadata()).format, 'webp');
   assert.equal((await main.evaluate('window.clop.state()')).notice, undefined, 'A drop on a preset zone must not show an error');
   await main.evaluate('document.querySelector("input[type=file]").remove()');
-  console.log('A folder dropped on a preset zone converted both of its images to WebP and left the originals alone.');
-  console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, copied video, PDF and audio files, an ignored app, a video and an image optimised in place in a watched folder, a clipboard pipeline converting to WebP, a folder dragged from Explorer into the batch window, and a folder dropped on a preset zone converting to WebP.');
+  console.log('A folder dropped on a preset zone converted both of its images to WebP beside them and left the originals alone.');
+  console.log('Packaged Windows app smoke passed: automatic file and pixel clipboard processing, original card geometry, in-card format/resize, duplicate protection, repeat copying after text, restore, automatic drag target, copied video, PDF and audio files, an ignored app, a video and an image optimised in place in a watched folder, a clipboard pipeline converting to WebP, a folder dragged from Explorer into the batch window, a dropped file optimised in place and restored, and a folder dropped on a preset zone converting to WebP beside its images.');
 } finally {
   console.log('Stopping packaged app and native test helper.');
   try { if (main) await main.send('Runtime.evaluate', { expression: 'window.clop.window("quit")' }); } catch {}

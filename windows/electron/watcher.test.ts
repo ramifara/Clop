@@ -85,6 +85,26 @@ test('more files at once than the kind\'s limit are all left alone, with a notic
   await until(() => state.handled.some(([name]) => name === 'single.png'), 'a single file after the burst was not optimised');
   assert.ok(!state.cancelled.includes('single.png'));
 });
+test('a file whose optimisation fails is named, with the reason, in the log and a notice; one that was stopped is not', async t => {
+  const warned: string[] = [];
+  t.mock.method(console, 'warn', (text: string) => { warned.push(text); });
+  const { dir, state, watcher } = await setup(t, {}, {
+    handle: async file => {
+      state.handled.push([path.basename(file), dir]);
+      if (path.basename(file) === 'stopped.png') throw new DOMException('The operation was aborted.', 'AbortError');
+      throw new Error('EBUSY: resource busy or locked, rename');
+    },
+  });
+  await watcher.update();
+  await image(path.join(dir, 'stopped.png'));
+  await until(() => state.handled.length === 1, 'the first image was not handed over');
+  await image(path.join(dir, 'logo.png'));
+  await until(() => state.notices.length === 1, 'the failure was not reported');
+  const said = `Clop could not optimise logo.png from ${dir}: EBUSY: resource busy or locked, rename`;
+  assert.deepEqual([state.notices, warned], [[said], [said]]);
+  await pause(300);
+  assert.equal(state.notices.length, 1, 'a stopped optimisation is no failure');
+});
 test('nothing is watched while paused or disabled, and watching follows settings changes and missing folders', async t => {
   const { root, dir, state, watcher } = await setup(t, { pauseAutomaticOptimisations: true });
   await watcher.update();

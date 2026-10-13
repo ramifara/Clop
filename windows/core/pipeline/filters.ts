@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
-import { extendedPath } from '../longpath';
+import { sharpInput } from '../media/sharp-input';
 import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } from '../media/detect';
 import { probeImage } from '../media/image-codecs';
 import { imageDPIs, loadPDF } from '../media/pdf';
@@ -99,7 +99,7 @@ async function dpi(file: string): Promise<number | undefined> {
     const dpis = await loadPDF(file).then(imageDPIs, () => []);
     return dpis.length ? Math.trunc(Math.max(...dpis)) : undefined;
   }
-  const density = await sharp(extendedPath(file)).metadata().then(meta => meta.density, () => undefined);
+  const density = await sharpInput(file).then(input => sharp(input).metadata()).then(meta => meta.density, () => undefined);
   return density && density > 0 ? Math.trunc(density) : undefined;
 }
 

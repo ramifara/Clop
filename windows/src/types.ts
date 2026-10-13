@@ -56,7 +56,8 @@ export type CropRequest = { type: 'size'; size: CropSize } | { type: 'pdf-rect';
  */
 export interface CropSource { item: ItemResult; preview: string; width: number; height: number; page?: number; pages?: number; initialRect?: CropRect; uncropped?: { width: number; height: number } }
 /** One side of the compare window: a URL the window may load, with what the labels show. */
-export interface CompareSide { url: string; kind: MediaKind; format: string; bytes: number; width?: number; height?: number; durationMs?: number; bitrate?: number }
+/** `path` is the file the side stands for, which its path field shows and its file actions open: the original Clop keeps, or the result where it is. */
+export interface CompareSide { url: string; path: string; kind: MediaKind; format: string; bytes: number; width?: number; height?: number; durationMs?: number; bitrate?: number }
 /** The original and the current result; PDFs are compared a rendered page at a time. */
 export interface CompareSources { item: ItemResult; original: CompareSide; result: CompareSide; page?: number; pages?: number }
 /** An app the ignored-apps picker offers: a running app with a window, or a Start Menu app. `path` is an exe path, or an AUMID for a packaged app. */

@@ -10,6 +10,7 @@ import { factorText } from '../core/ipc/service';
 import { markOptimised, OptimisedMarker } from '../core/marker';
 import { VIDEO_EXTENSIONS } from '../core/media/detect';
 import { toPNG } from '../core/media/image-codecs';
+import { sharpInput } from '../core/media/sharp-input';
 import { stripExifFile, type StripKeep } from '../core/media/strip-copy';
 import { cropPDF, extendPDF, uncropPDF } from '../core/media/pdf';
 import { queue, run } from '../core/run';
@@ -108,7 +109,7 @@ async function convert(ctx: Context, file: string, format: string, quality: numb
       const png = await toPNG(file, path.join(temp, 'input.png'));
       await run('heif-enc', ['-q', String(quality), '-o', produced, png]);
     } else {
-      const image = sharp(file).keepMetadata();
+      const image = sharp(await sharpInput(file)).keepMetadata();
       await (format === 'avif' ? image.avif({ quality }) : image.webp({ quality, smartSubsample: true })).toFile(produced);
     }
     if (await exists(target)) {

@@ -5,7 +5,7 @@ import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cardOptimiser, cardPlaces } from './card';
-import { ItemEngine, message, type ImportExtra, type ItemAutomation } from './items';
+import { ItemEngine, message, type ImportExtra } from './items';
 import { clipboardPNG } from '../core/media/image-codecs';
 import { imageDefaults, rendererSettings } from './settings';
 import { defaultSettings, type ClopSettings } from '../core/settings/schema';
@@ -31,7 +31,7 @@ import { guarded, recentClipboard, toTemplate, trayMenu, trayTooltip, trayVarian
 import { allPipelineChoices, appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
 import { seedBuiltinPipelines } from '../core/pipeline/builtins';
 import { EDITOR_SETTING_KEYS } from '../core/pipeline/editor-state';
-import { draggedType, tilesFor } from '../core/pipeline/zones';
+import { tilesFor } from '../core/pipeline/zones';
 import { EditorService } from './editor';
 import { PresetReveal } from './preset-reveal';
 import { pipelinesSkipOptimisation, type PipelinesOutcome } from '../core/pipeline/triggers';
@@ -60,11 +60,14 @@ import { newPipePath, type OptimisationRequest } from '../core/ipc/protocol';
 import { ClopService } from '../core/ipc/service';
 import { shellEffects } from '../core/shell-effects';
 import { MEDIA_SCHEME, MediaFiles } from './media-files';
-import { applyCrop, cropSource, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
+import { applyCrop, cropSource, cropsToClose, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
+import { restoredFrame, trackFrame, WindowFrames } from './window-frame';
 import { compareSources, parseCompareView } from './compare';
 import { setupBatch } from './batch-window';
 import { expandDroppedFolders, splitFolders } from './dropped';
 import { dropRunsPipelines, planZoneDrop, zoneAutomation } from './zone-drop';
+import { AS_IS, copiedFilePlan, droppedFileExtra } from './drop-placement';
+import { DragType } from './drag-type';
 import { MAX_BATCH_FILES } from '../core/batch/scan';
 import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
 import { expandHome } from '../core/settings/paths';
@@ -79,14 +82,26 @@ protocol.registerSchemesAsPrivileged([{ scheme: MEDIA_SCHEME, privileges: { stan
 let main: BrowserWindow, floating: BrowserWindow, backdrop: DropBackdrop | undefined, backdropWindow: BrowserWindow | undefined, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray | undefined, engine: ItemEngine, media: MediaFiles;
 /** Open crop, compare and preview windows, by `crop:<id>`, `compare:<id>` and `preview:<id>`. */
 const views = new Map<string, BrowserWindow>();
+/** Frames kept across launches: every crop window opens where the last one was left, at its size (the "Crop Window" autosave name on macOS). */
+let windowFrames: WindowFrames | undefined;
+const CROP_FRAME = 'crop', CROP_MIN = { width: 780, height: 520 };
+/** Results whose crop window applies a change that keeps it open (a PDF's Uncrop), so it is not closed while that runs. */
+const cropKeptOpen = new Set<string>();
+/** Closes the crop windows of results that started processing again, as macOS does. */
+function closeRunningCrops() {
+  for (const key of cropsToClose(views.keys(), id => engine.has(id) ? engine.get(id).result.status : undefined, cropKeptOpen)) views.get(key)?.close();
+}
 let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false, bridgeStopped = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
 let altHeld = false, shiftHeld = false, dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
-/** The files being dragged, as the Windows helper reports them; Ctrl during the drag shows the preset zones in the drop zone. */
-let dragFiles: string[] = [];
 /** Whether a file is on this computer (not a cloud placeholder); set once the helper is up, so a folder read before then reads everything. */
 let scanLocal: ((file: string) => Promise<boolean>) | undefined;
+/**
+ * The type of the files being dragged, as the Windows helper reports them, looking inside dragged folders: Ctrl during the drag shows the
+ * preset zones for that type and for any type in the drop zone. A folder's type arrives once it has been looked through, and the grid follows.
+ */
+const dragType = new DragType(() => ({ kindOf: mediaKind, owns: file => workdir.owns(file), isLocal: scanLocal }), () => { syncFloating(); broadcast(); });
 const presetReveal = new PresetReveal();
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
@@ -156,7 +171,7 @@ const isReady = (id: string) => { try { return engine.get(id).result.status === 
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 const presetsRevealed = () => presetReveal.revealed(settings.onlyShowPresetZonesOnControlTapped);
 /** The preset zones for the files being dragged; they take the drop zone's place inside it, so they need no room of their own. */
-function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, draggedType(dragFiles, mediaKind)) }; }
+function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, dragType.type) }; }
 /** Whether the drop target shows now (see `dropZoneShown`); `dropActive` stays true for a drag whose target is hidden, so a drop still lands. */
 const targetShown = () => dropZoneShown({ expecting: dropActive, dragging, onlyWithAlt: settings.onlyShowDropZoneOnOption, alt: altHeld });
 // With `enableFloatingResults` off Clop runs without a result UI: results stay in the shelf, unseen.
@@ -333,9 +348,11 @@ async function openView(view: 'crop' | 'compare' | 'preview', id: unknown) {
   if (result.status !== 'ready') throw new Error('Wait for this result to finish first.');
   if (view === 'crop' && result.kind === 'audio') throw new Error('Audio files have nothing to crop.');
   if (open && !open.isDestroyed()) { open.show(); open.focus(); return; }
-  const size = view === 'crop' ? { width: 1020, height: 660, minWidth: 780, minHeight: 520 } : view === 'preview' ? { width: 900, height: 700, minWidth: 420, minHeight: 320 } : { width: 1100, height: 760, minWidth: 600, minHeight: 460 };
+  const frame = view === 'crop' ? restoredFrame(windowFrames?.get(CROP_FRAME), screen.getAllDisplays().map(display => display.workArea), CROP_MIN) : undefined;
+  const size = view === 'crop' ? { width: 1020, height: 660, minWidth: CROP_MIN.width, minHeight: CROP_MIN.height, ...frame } : view === 'preview' ? { width: 900, height: 700, minWidth: 420, minHeight: 320 } : { width: 1100, height: 760, minWidth: 600, minHeight: 460 };
   const window = new BrowserWindow({ ...size, show: false, title: `${{ crop: 'Crop', compare: 'Compare', preview: 'Preview' }[view]}: ${result.name}`, backgroundColor: background(), autoHideMenuBar: true, webPreferences: webPreferences() });
   views.set(key, window);
+  if (view === 'crop' && windowFrames) trackFrame(windowFrames, CROP_FRAME, window);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.on('page-title-updated', event => event.preventDefault());
@@ -511,8 +528,6 @@ const pipelineHost: PipelineHost = {
   counterChanged: value => { store.set({ lastAutoIncrementingNumber: value }).then(next => { settings = next; }, error => inform(message(error))); },
   keep: files => { for (const root of tempRoots(workdir.temp, sessionDir, files)) if (!keptRoots.has(root)) { keptRoots.add(root); workdir.protect(root); } },
 };
-/** A result shown as it is, without optimising: a file a pipeline forked off. */
-const AS_IS: ItemAutomation = { skipOptimisation: true, fallback: false, run: async ({ original }) => ({ file: original, anyRan: false, warnings: [] }) };
 /** After pipelines ran on a result: `hideResult` keeps it from the floating results, and forked files get cards of their own. */
 function afterPipelines(id: string | undefined, outcome: PipelinesOutcome, source: ItemResult['source'], { hide = true } = {}) {
   if (id && hide && outcome.hidden) quietResult(id);
@@ -522,13 +537,14 @@ function afterPipelines(id: string | undefined, outcome: PipelinesOutcome, sourc
 /**
  * The pipelines attached to `source` (`clipboard` or `dropZone`) for a file of `kind`, as an import's automation. A copied image skips the usual optimisation when every pipeline does (Images.swift); a
  * copied video, PDF or audio file is optimised first (ClopApp.swift), then the pipelines run. A drop skips it for every kind
- * (OptimisationUtils.swift) and is optimised anyway when no pipeline did anything.
+ * (OptimisationUtils.swift) and is optimised anyway when no pipeline did anything. `file` is the dropped file itself, which pipelines that skip
+ * optimisation start from, as macOS runs them on `item.path`; without it they start from a copy in the shelf.
  */
-function sourceAutomation(kind: MediaKind, source: 'clipboard' | 'dropZone', result: ItemResult['source'], app?: CopyingApp): ImportExtra | undefined {
+function sourceAutomation(kind: MediaKind, source: 'clipboard' | 'dropZone', result: ItemResult['source'], app?: CopyingApp, file?: string): ImportExtra | undefined {
   let id: string | undefined;
   const pipelines = attachedPipelines(kind, source, settings, home);
   const automation = attachedAutomation(pipelines, {
-    host: pipelineHost, context: { kind, sourceApp: app }, fallback: true, alwaysOptimise: source === 'clipboard' && kind !== 'image', done: outcome => afterPipelines(id, outcome, result),
+    host: pipelineHost, context: { kind, sourceApp: app }, fallback: true, alwaysOptimise: source === 'clipboard' && kind !== 'image', done: outcome => afterPipelines(id, outcome, result), ...(file ? { source: file } : {}),
   });
   return automation && { automation, staged: staged => { id = staged; } };
 }
@@ -545,7 +561,7 @@ function folderAutomation(file: string, kind: MediaKind, dir: string, id: () => 
 function quietResult(id: string) { quiet.add(id); for (const old of quiet) { if (quiet.size <= 80) break; quiet.delete(old); } }
 const itemId = (value: unknown) => { if (typeof value !== 'string' || !value || value.length > 64) throw new Error('Choose a result.'); return value; };
 /** Imports local files one by one, telling about each that fails. Returns the results that finished. */
-async function importPaths(files: unknown, source: ItemResult['source'], { aggressive = false, name, extra, limit = 20 }: { aggressive?: boolean; name?: (file: string) => Promise<string | undefined>; extra?: (file: string) => ImportExtra | undefined; limit?: number } = {}) {
+async function importPaths(files: unknown, source: ItemResult['source'], { aggressive = false, name, extra, limit = 20 }: { aggressive?: boolean; name?: (file: string) => Promise<string | undefined>; extra?: (file: string) => ImportExtra | undefined | Promise<ImportExtra | undefined>; limit?: number } = {}) {
   if (!Array.isArray(files) || files.length > limit || files.some(p => typeof p !== 'string' || !path.isAbsolute(p))) throw new Error('Choose up to 20 local files at a time.');
   dropActive = false; importsRunning++; broadcast();
   const completed: string[] = [];
@@ -553,20 +569,37 @@ async function importPaths(files: unknown, source: ItemResult['source'], { aggre
     for (const file of files as string[]) {
       try {
         await makeRoom();
-        const id = await engine.importPath(file, source, defaults(aggressive), await name?.(file), extra?.(file));
+        const id = await engine.importPath(file, source, defaults(aggressive), await name?.(file), await extra?.(file));
         if (isReady(id)) completed.push(id);
       } catch (error) { inform(`${path.basename(file)}: ${message(error)}`); }
     }
   } finally { importsRunning--; syncFloating(); broadcast(); }
   return completed;
 }
-/** The pipelines of the drop zone (or of the preset zone `zone`), chosen for the kind the file turns out to be rather than by its name. */
-const dropExtra = (zone?: unknown): ImportExtra => ({ late: kind => zone === undefined ? sourceAutomation(kind, 'dropZone', 'drop') : zoneExtra(zone, kind) });
+/**
+ * The pipelines of the drop zone (or of the preset zone `zone`), chosen for the kind the file turns out to be rather than by its name. Those
+ * that skip optimisation start from `file`, the dropped file itself, when there is one.
+ */
+const dropExtra = (zone?: unknown, file?: string): ImportExtra => ({ late: kind => zone === undefined ? sourceAutomation(kind, 'dropZone', 'drop', undefined, file) : zoneExtra(zone, kind, file) });
 /** The pipeline of the preset zone `zone` for a dropped file of `kind`, as the settings are now. */
-function zoneExtra(zone: unknown, kind: MediaKind): ImportExtra {
+function zoneExtra(zone: unknown, kind: MediaKind, file?: string): ImportExtra {
   let id: string | undefined;
-  return { automation: zoneAutomation(settings, zone, kind, { host: pipelineHost, done: outcome => afterPipelines(id, outcome, 'drop') }), staged: staged => { id = staged; } };
+  return { automation: zoneAutomation(settings, zone, kind, { host: pipelineHost, done: outcome => afterPipelines(id, outcome, 'drop'), ...(file ? { source: file } : {}) }), staged: staged => { id = staged; } };
 }
+/** Whether Clop optimised `file` and it has not changed since: the marker's record, or the hint a copy or a move carries along. */
+const markedOptimised = async (file: string) => await marker.isOptimised(file).catch(() => false) || await marker.hintMatches(file).catch(() => false);
+/**
+ * A dropped or opened file, as macOS treats every file that is not the clipboard's: its results go where the placement settings say
+ * (`folderPlacement`, by default over the file with the original in the backups), its pipelines start from the file itself, and a file
+ * Clop optimised already is not optimised again unless Shift was held. A file in Clop's own folders (a result dragged back) stays in the shelf.
+ */
+async function droppedFile(file: string, { aggressive, zone, pipelines }: { aggressive: boolean; zone?: unknown; pipelines: boolean }): Promise<ImportExtra> {
+  const own = workdir.owns(file);
+  return droppedFileExtra(pipelines ? dropExtra(zone, own ? undefined : file) : undefined, {
+    placement: own ? undefined : kind => folderPlacement(file, kind, folderEnv, saveCounter), marked: await markedOptimised(file), aggressive, zone: zone !== undefined,
+  });
+}
+const saveCounter = (value: number) => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); };
 /**
  * What a drop on the drop zone does: with `useBatchModeForFolders` the batch window takes a pile of more files than
  * `batchModeFileCountThreshold` and each folder holding more than that; everything else, the files in smaller folders too, is optimised one by one.
@@ -577,12 +610,13 @@ async function dropped(files: unknown, aggressive: boolean) {
   if (!Array.isArray(rest) || rest.length) await importFiles(rest, 'drop', { aggressive, limit: settings.useBatchModeForFolders ? Math.max(20, settings.batchModeFileCountThreshold) : 20 });
 }
 /**
- * Dropped and opened files; their results go on the clipboard with `autoCopyToClipboard`. Dropped files run the pipelines attached
- * to the drop zone, or the pipeline of the preset zone `zone` they were dropped on instead.
+ * Dropped and opened files; their results go where the placement settings say, and on the clipboard with `autoCopyToClipboard`. Dropped
+ * files run the pipelines attached to the drop zone, or the pipeline of the preset zone `zone` they were dropped on instead.
  */
-async function importFiles(files: unknown, source: ItemResult['source'], { aggressive = false, zone, limit = 20 }: { aggressive?: boolean; zone?: unknown; limit?: number } = {}) {
+async function importFiles(files: unknown, source: 'drop' | 'file', { aggressive = false, zone, limit = 20 }: { aggressive?: boolean; zone?: unknown; limit?: number } = {}) {
   const sequence = await currentSequence();
-  const extra = source === 'drop' && dropRunsPipelines({ aggressive, zone }) ? () => dropExtra(zone) : undefined;
+  const pipelines = source === 'drop' && dropRunsPipelines({ aggressive, zone });
+  const extra = (file: string) => droppedFile(file, { aggressive, zone, pipelines });
   // A folder among the files becomes the files inside it (the batch window takes the larger ones, see `dropped`).
   if (Array.isArray(files) && files.length <= limit && files.every(file => typeof file === 'string' && path.isAbsolute(file)) && await splitFolders(files).then(split => split!.folders.length > 0)) {
     const expanded = await expandDroppedFolders(files as string[], { owns: file => workdir.owns(file), isLocal: scanLocal });
@@ -629,20 +663,48 @@ async function copyClipboardResults(ids: string[], sequence?: number, options?: 
     ? engine.list().filter(item => item.source === 'clipboard' && item.kind === 'image' && item.status === 'ready').map(item => item.id).reverse() : [];
   await copy(accumulated.length > 1 ? accumulated : ids, sequence, options);
 }
+/**
+ * A copied file, as macOS treats one (`handleClipboardChange` in ClopApp.swift): a video, PDF or audio file is optimised and placed by the
+ * placement settings (in place by default, with the original in the backups), so Restore puts it back; an image file is optimised as a copy
+ * in the shelf and never written to. A video, PDF or audio file Clop optimised already only runs the clipboard's pipelines, on the file itself
+ * and out of sight, or is left alone (`skip`) without them, unless the optimisation was asked for or is aggressive.
+ */
+async function copiedFile(file: string, { aggressive, manual, app }: { aggressive: boolean; manual: boolean; app?: CopyingApp }): Promise<ImportExtra | undefined | 'skip'> {
+  const kind = mediaKind(file) ?? 'image', base = clipboardAutomation(kind, app);
+  if (kind === 'image') return base;
+  const own = workdir.owns(file), marked = !own && await markedOptimised(file), pipelines = attachedPipelines(kind, 'clipboard', settings, home);
+  switch (copiedFilePlan({ kind, marked, aggressive, manual, pipelines: pipelines.length > 0 })) {
+    case 'skip': return 'skip';
+    case 'pipelines': {
+      let id: string | undefined;
+      const automation = attachedAutomation(pipelines, { host: pipelineHost, context: { kind, sourceApp: app }, fallback: false, skipOptimisation: true, source: file, done: outcome => afterPipelines(id, outcome, 'clipboard') })!;
+      return { automation, staged: staged => { id = staged; quietResult(staged); } };
+    }
+    case 'import': return droppedFileExtra(base, {
+      // The content decides: a file named like a video that holds an image is not placed.
+      placement: own ? undefined : found => found === 'image' ? undefined : folderPlacement(file, found, folderEnv, saveCounter), marked, aggressive, zone: false,
+    });
+  }
+}
 /** The steps of importing clipboard results (see `importClipboardList`), written back against the clipboard `sequence` they came from. */
-function clipboardSteps(sequence: number | undefined, aggressive: boolean, options?: { text?: boolean; extra?: string[] }, app?: CopyingApp): ClipboardListSteps {
+function clipboardSteps(sequence: number | undefined, aggressive: boolean, options?: { text?: boolean; extra?: string[] }, app?: CopyingApp, manual = false): ClipboardListSteps {
+  // Files left alone stay in the list written back, as they were.
+  const kept = [...options?.extra ?? []];
   return {
-    turn: clipboardImageTurn, prepare: prepareClipboardImages, writeBack: ids => copyClipboardResults(ids, sequence, options),
-    load: list => importPaths(list, 'clipboard', {
-      aggressive, name: async file => mediaKind(file) === 'image' ? clipboardImageName(path.basename(file)) : undefined,
-      extra: file => clipboardAutomation(mediaKind(file) ?? 'image', app),
-    }),
+    turn: clipboardImageTurn, prepare: prepareClipboardImages, writeBack: ids => copyClipboardResults(ids, sequence, { ...options, extra: kept }),
+    load: async list => {
+      const extras = new Map<string, ImportExtra | undefined>();
+      for (const file of list) { const extra = await copiedFile(file, { aggressive, manual, app }); if (extra === 'skip') kept.push(file); else extras.set(file, extra); }
+      return importPaths(list.filter(file => extras.has(file)), 'clipboard', {
+        aggressive, name: async file => mediaKind(file) === 'image' ? clipboardImageName(path.basename(file)) : undefined, extra: file => extras.get(file),
+      });
+    },
   };
 }
-function importClipboardFiles(files: string[], rest: string[] | undefined, sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }, app?: CopyingApp) {
+function importClipboardFiles(files: string[], rest: string[] | undefined, sequence: number | undefined, aggressive: boolean, options?: { text?: boolean }, app?: CopyingApp, manual = false) {
   // Files past the limit and the entries Clop leaves alone stay in the list the results are written back to.
   const split = splitClipboardList(files, rest);
-  return importClipboardList(split.take, clipboardSteps(sequence, aggressive, { ...options, extra: split.rest }, app));
+  return importClipboardList(split.take, clipboardSteps(sequence, aggressive, { ...options, extra: split.rest }, app, manual));
 }
 function importClipboardImage(bytes: Buffer, name: string, sequence: number | undefined, aggressive: boolean, app?: CopyingApp) {
   return importClipboardImages(clipboardSteps(sequence, aggressive, undefined, app), async () => {
@@ -680,7 +742,7 @@ function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive 
     switch (plan.type) {
       case 'retry': void optimiseClipboard(plan.change, false, aggressive); return;
       case 'none': if (plan.notice) inform(plan.notice); return;
-      case 'files': return () => importClipboardFiles(plan.files, plan.rest, plan.sequence, aggressive, { text: plan.text }, plan.app);
+      case 'files': return () => importClipboardFiles(plan.files, plan.rest, plan.sequence, aggressive, { text: plan.text }, plan.app, manual);
       case 'image': return () => importClipboardImage(plan.bytes, `Clipboard-${stamp()}.${plan.ext}`, plan.sequence, aggressive, plan.app);
       case 'url': return () => importUrl(plan.url, aggressive, 'clipboard', plan.sequence);
     }
@@ -697,9 +759,9 @@ function startClipboardFallback() {
 const optimiseWithCard = cardOptimiser({
   engine: () => engine, makeRoom, defaults,
   placement: (file, kind, req) => !cardPlaces(req, output => effectiveBehaviour(folderEnv(), kind, output, req.placement)) ? undefined
-    : folderPlacement(file, kind, req.origin === 'mcp' ? () => ({ ...folderEnv(), agent: true }) : folderEnv, value => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); }, req.placement),
+    : folderPlacement(file, kind, req.origin === 'mcp' ? () => ({ ...folderEnv(), agent: true }) : folderEnv, saveCounter, req.placement),
 });
-/** The placement environment of watched files, Explorer verbs and command-line cards. */
+/** The placement environment of watched, dropped and opened files, Explorer verbs and command-line cards. */
 const folderEnv = () => ({ settings, workdir, marker, home, counter: nameCounter ??= { value: settings.lastAutoIncrementingNumber } });
 /** Requests from `clop` and the MCP server (spec step 24). Settings they change go through `updateSettings`, so they apply at once. */
 async function serveCLI(userData: string) {
@@ -1059,7 +1121,8 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
     });
     return;
   }
-  const file = () => engine.output(id);
+  // The compare window's file actions name the original's side with `original`: the copy of the original the window shows.
+  const file = () => plan.arg === 'original' ? engine.get(id).originalPath : engine.output(id);
   switch (plan.ui) {
     case 'stop': engine.stop([id]); return;
     case 'dismiss': await dismiss(id); return;
@@ -1071,6 +1134,8 @@ async function runCard(sender: Electron.WebContents, ids: string[], raw: unknown
     case 'copy': await copy([id]); return;
     case 'reveal': shell.showItemInFolder(file()); return;
     case 'openDefault': { const error = await shell.openPath(file()); if (error) throw new Error(error); return; }
+    // As Clop's own write, so the clipboard watcher does not take the copied path for a file to optimise.
+    case 'copyPath': await writeClipboard({ text: file() }); return;
     case 'openWith': await openWithDialog(file()); return;
     case 'editWith': await startProgram(await editorProgram(editorFor(item.kind), { watched: watchedFolders(settings, home), isFile }), file()); return;
     case 'share': await shareResult(id); return;
@@ -1108,7 +1173,13 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'card-menu': await cardMenu(event.sender, cardIds(args[0]), args[1]); break;
     case 'card-action': await runCard(event.sender, cardIds(args[0]), args[1]); break;
     case 'crop-source': return cropSource(engine.get(id), parseCropView(args[1]), media);
-    case 'crop': await applyCrop(engine, id, parseCropRequest(args[1], engine.get(id).result.kind)); if (copiesBack(id)) await copy([id]); break;
+    case 'crop': {
+      const request = parseCropRequest(args[1], engine.get(id).result.kind), keep = request.type === 'pdf-uncrop';
+      if (keep) cropKeptOpen.add(id);
+      try { await applyCrop(engine, id, request); } finally { if (keep) cropKeptOpen.delete(id); }
+      if (copiesBack(id)) await copy([id]);
+      break;
+    }
     case 'crop-sizes': return settings.savedCropSizes;
     case 'save-crop-sizes': settings = await store.set({ savedCropSizes: parseSavedCropSizes(args[0]) }); broadcast(); return settings.savedCropSizes;
     case 'compare-sources': return compareSources(engine.get(id), parseCompareView(args[1]), media);
@@ -1183,6 +1254,7 @@ else {
     setupWatchdog();
     Menu.setApplicationMenu(null);
     const userData = app.getPath('userData');
+    windowFrames = await new WindowFrames(path.join(userData, 'window-frames.json')).load();
     store = new SettingsStore(path.join(userData, 'settings.json'), { home: app.getPath('home'), desktop: app.getPath('desktop'), userData }, true);
     // Watching guards against apps that rewrite many files in its first seconds on the first launch.
     const firstLaunch = !await stat(store.file).then(() => true, () => false);
@@ -1223,7 +1295,7 @@ else {
     engine = new ItemEngine(session, () => settings, file => marker.markOptimised(file));
     media = new MediaFiles([session]);
     protocol.handle(MEDIA_SCHEME, request => media.handle(request));
-    engine.on('change', () => { syncFloating(); broadcast(); });
+    engine.on('change', () => { syncFloating(); broadcast(); closeRunningCrops(); });
     engine.on('ready', (id: string) => { if (quiet.has(id)) return; hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
     engine.on('add', (id: string) => lastBatch.add(id));
     // Whichever way a result gets its original back (card, selection, tray, error card), the shortcut steps start over.
@@ -1282,7 +1354,8 @@ else {
       bridge.on('drag-start', event => {
         if (!settings.enableDragAndDrop) return;
         dragging = true; dropActive = true; altHeld = false; shiftHeld = false; presetReveal.reset();
-        dragFiles = Array.isArray(event.paths) ? (event.paths as unknown[]).filter((file): file is string => typeof file === 'string').slice(0, 64) : [];
+        // A dragged folder is looked through in the background for the type of what it holds; the grid then shows that type's zones too.
+        void dragType.start(Array.isArray(event.paths) ? (event.paths as unknown[]).filter((file): file is string => typeof file === 'string').slice(0, 64) : []);
         floating.setIgnoreMouseEvents(false); syncFloating(); broadcast();
       });
       // The helper reads Ctrl, Alt and Shift while a drag lasts, standing in for the Mac's Control, Option and Command. Holding Ctrl shows the
@@ -1295,7 +1368,7 @@ else {
         presetReveal.update({ ctrl: event.ctrl === true, other: altHeld || shiftHeld }, settings.onlyShowPresetZonesOnControlTapped); syncFloating(); broadcast();
       });
       // The zones stay for the moment a drop on one needs to land.
-      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; altHeld = false; shiftHeld = false; dragFiles = []; presetReveal.reset(); syncFloating(); broadcast(); } }, 180); });
+      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; altHeld = false; shiftHeld = false; dragType.end(); presetReveal.reset(); syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
       bridge.on('stopped', () => { bridgeReady = false; bridgeStopped = true; pickup.cancel(); startClipboardFallback(); for (const watcher of watchers) watcher.resume(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));

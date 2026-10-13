@@ -297,12 +297,23 @@ export class FolderWatcher {
     }, this.timing.safeDelayMs);
   }
 
+  /**
+   * A file whose optimisation failed before it had a result to show the failure on: said in the log and in a notice. One stopped
+   * on purpose (Stop all, quitting, a burst) is not a failure.
+   */
+  private reportFailure(file: string, error: unknown) {
+    if (this.closed || (error instanceof Error && error.name === 'AbortError')) return;
+    const text = `Clop could not optimise ${path.basename(file)} from ${path.dirname(file)}: ${error instanceof Error ? error.message : String(error)}`;
+    console.warn(text);
+    this.host.notice(text);
+  }
+
   private forgetBurst() { return setTimeout(() => { this.cancelled.clear(); this.recent.clear(); }, this.timing.windowMs); }
 
   private dispatch(file: string, dir: string) {
     const id = this.id(file);
     this.running.add(id);
-    void Promise.resolve().then(() => this.host.handle(file, dir)).catch(() => undefined).then(async placed => {
+    void Promise.resolve().then(() => this.host.handle(file, dir)).catch(error => { this.reportFailure(file, error); return undefined; }).then(async placed => {
       this.running.delete(id);
       // Saved again meanwhile: unless the file now is Clop's own result, the new content is optimised in its turn.
       const again = this.queued.delete(id) && !this.closed && !await this.host.isOptimised(file).catch(() => true);

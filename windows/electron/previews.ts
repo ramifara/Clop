@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { retryBusy, run } from '../core/run';
 import { toPNG, sniffImage } from '../core/media/image-codecs';
+import { sharpInput } from '../core/media/sharp-input';
 import { renderPDFPages, uncropPDF } from '../core/media/pdf';
 
 const PIXELS = 60_000_000;
@@ -30,9 +31,9 @@ async function once(out: string, write: (tmp: string) => Promise<unknown>) {
 export function imagePreview(file: string, out: string, maxSide: number, signal?: AbortSignal) {
   return once(out, async tmp => {
     const { format } = await sniffImage(file);
-    const source = format && ['heic', 'jxl', 'bmp'].includes(format) ? await toPNG(file, `${tmp}.decoded.png`, { signal, limitInputPixels: PIXELS }) : file;
-    try { await sharp(source, { limitInputPixels: PIXELS }).autoOrient().resize({ width: maxSide, height: maxSide, fit: 'inside', withoutEnlargement: true }).png().toFile(tmp); }
-    finally { if (source !== file) await rm(source, { force: true }); }
+    const decoded = format && ['heic', 'jxl', 'bmp'].includes(format) ? await toPNG(file, `${tmp}.decoded.png`, { signal, limitInputPixels: PIXELS }) : undefined;
+    try { await sharp(decoded ?? await sharpInput(file), { limitInputPixels: PIXELS }).autoOrient().resize({ width: maxSide, height: maxSide, fit: 'inside', withoutEnlargement: true }).png().toFile(tmp); }
+    finally { if (decoded) await rm(decoded, { force: true }); }
   });
 }
 

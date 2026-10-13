@@ -41,7 +41,7 @@ export async function compareSources(entry: ViewEntry, view: { page: number }, f
   const current = await currentResult(entry);
   const pages = item.kind === 'pdf' ? (await loadPDF(current, { allowEncrypted: true })).getPageCount() : undefined;
   const page = Math.min(view.page, pages ?? 1);
-  async function side(file: string, format: string, facts: Omit<CompareSide, 'url' | 'kind' | 'format'>): Promise<CompareSide> {
+  async function side(file: string, format: string, facts: Omit<CompareSide, 'url' | 'kind' | 'format' | 'path'>, shownPath = file): Promise<CompareSide> {
     let shown = file;
     if (item.kind === 'image' && !DISPLAYABLE_IMAGES.has(format)) shown = await imagePreview(file, viewFile(entry.directory, file, 'compare.png'), 16383, signal);
     if (item.kind === 'pdf') {
@@ -51,10 +51,11 @@ export async function compareSources(entry: ViewEntry, view: { page: number }, f
       shown = await pdfPagePreview(file, viewFile(entry.directory, file, `compare-page${number}.png`), number, 2, { wholePage: true, signal });
     }
     const bitrate = item.kind === 'audio' ? await audioMetadata(file, { signal }).then(info => info.bitrate && Math.round(info.bitrate / 1000), () => undefined) : undefined;
-    return { url: files.url(shown), kind: item.kind, format, ...facts, ...(bitrate ? { bitrate } : {}) };
+    return { url: files.url(shown), path: shownPath, kind: item.kind, format, ...facts, ...(bitrate ? { bitrate } : {}) };
   }
   const sized = item.kind === 'image' || item.kind === 'video';
   const original = await side(entry.originalPath, entry.inputFormat, { bytes: item.originalBytes, ...(sized ? { width: item.originalWidth, height: item.originalHeight } : {}), durationMs: item.durationMs });
-  const result = await side(current, item.format, { bytes: item.outputBytes, ...(sized ? { width: item.width, height: item.height } : {}), durationMs: item.durationMs });
+  // The result's path is where it really is (a placed file in the user's folder), not the copy made to serve it.
+  const result = await side(current, item.format, { bytes: item.outputBytes, ...(sized ? { width: item.width, height: item.height } : {}), durationMs: item.durationMs }, entry.placedPath ?? entry.outputPath);
   return { item, original, result, ...(pages ? { page, pages } : {}) };
 }

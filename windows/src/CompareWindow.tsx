@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import type { Invocation, MenuNode } from '../core/cards/actions';
 import { api, errorText } from './api';
+import { compareMenu, shortPath } from './compare-files';
+import { MenuPopup, MenuView } from './Menu';
 import type { CompareSide, CompareSources, ItemResult } from './types';
 import './views.css';
 
@@ -13,10 +16,14 @@ const clamp = (value: number) => Math.min(Math.max(value, 0), 1);
 /** What decides whether the result the window shows is still the item's current one. */
 const outputKey = (item: ItemResult) => JSON.stringify([item.format, item.outputBytes, item.width, item.height, item.pages, item.restored, item.revision, item.options]);
 
+/** An open file menu: where it shows, and its entries. */
+interface OpenMenu { at: { x: number; y: number }; nodes: MenuNode[]; label: string }
+
 /**
  * The compare window (CompareView.swift): the original and the current result side by side or split by a draggable divider, with
  * the same zoom on both (hold Ctrl, add Alt to zoom further; the cursor pans). Videos play together, PDFs compare a page at a time,
- * and audio files get a player each.
+ * and audio files get a player each. Each side's header has a path field whose menu opens the file, shows it in Explorer or copies
+ * its path, and right-clicking the media opens the same menu (both sides' over the split view).
  */
 export function CompareWindow({ id }: { id: string }) {
   const [sources, setSources] = useState<CompareSources>();
@@ -29,6 +36,7 @@ export function CompareWindow({ id }: { id: string }) {
   const [zoom, setZoom] = useState(1);
   const [origin, setOrigin] = useState({ x: .5, y: .5 });
   const [split, setSplit] = useState(.5);
+  const [menu, setMenu] = useState<OpenMenu>();
   const panes = useRef(new Map<Pane, HTMLElement>()), activePane = useRef<Pane>(undefined), pointer = useRef<{ x: number; y: number }>(undefined);
   const videos = useRef(new Map<'original' | 'result', HTMLVideoElement>());
 
@@ -66,7 +74,8 @@ export function CompareWindow({ id }: { id: string }) {
   }
   useEffect(() => {
     const keys = (event: KeyboardEvent) => {
-      if (event.type === 'keydown' && event.key === 'Escape') { void api.window('close'); return; }
+      // Escape closes an open file menu first, then the window.
+      if (event.type === 'keydown' && event.key === 'Escape') { if (menu) setMenu(undefined); else void api.window('close'); return; }
       if (kind !== 'audio') {
         const next = event.ctrlKey ? (event.altKey ? 8 : 3) : 1;
         if (next !== zoom) { if (next > 1) follow(); else { activePane.current = undefined; setOrigin({ x: .5, y: .5 }); } setZoom(next); }
@@ -77,7 +86,7 @@ export function CompareWindow({ id }: { id: string }) {
       else if (event.key === ' ' && kind === 'image') { event.preventDefault(); setFill(value => !value); }
       else if (kind === 'pdf' && sources?.pages && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) setPage(value => Math.min(Math.max(value + (event.key === 'ArrowLeft' ? -1 : 1), 1), sources.pages!));
     };
-    const blur = () => { setZoom(1); activePane.current = undefined; };
+    const blur = () => { setZoom(1); activePane.current = undefined; setMenu(undefined); };
     document.addEventListener('keydown', keys); document.addEventListener('keyup', keys); window.addEventListener('blur', blur);
     return () => { document.removeEventListener('keydown', keys); document.removeEventListener('keyup', keys); window.removeEventListener('blur', blur); };
   });
@@ -92,15 +101,20 @@ export function CompareWindow({ id }: { id: string }) {
     if (side.kind === 'video') return <VideoSide side={side} register={element => { if (element) videos.current.set(which, element); else videos.current.delete(which); }}/>;
     return <img src={side.url} alt={which === 'original' ? 'Original' : 'Optimised'} draggable={false} style={{ objectFit: side.kind === 'image' && fill ? 'cover' : 'contain' }}/>;
   }
-  const header = (title: string, side: CompareSide) => <header><strong>{title}</strong><small>{side.format.toUpperCase()}</small></header>;
+  /** Runs a file action through the card action table, which the main process checks again. */
+  const invoke = (invocation: Invocation) => { setMenu(undefined); api.cardAction([id], invocation).catch(error => setError(errorText(error))); };
+  const showMenu = (at: { x: number; y: number }, nodes: MenuNode[], label: string) => setMenu({ at, nodes, label });
+  const contextMenu = (which: 'original' | 'result' | 'both') => (event: MouseEvent) => { event.preventDefault(); showMenu({ x: event.clientX, y: event.clientY }, compareMenu(which), which === 'original' ? 'Original file' : which === 'result' ? 'Optimised file' : 'Files'); };
+  const header = (title: string, side: CompareSide, which: 'original' | 'result') => <header><strong>{title}</strong><small>{side.format.toUpperCase()}</small>
+    <PathField path={side.path} label={`${title} file`} open={at => showMenu(at, compareMenu(which), `${title} file`)}/></header>;
   const labels = (side: CompareSide) => <div className="side-labels"><span>Size: {humanSize(side.bytes)}</span>{dimensions(side) && <span>Dimensions: {dimensions(side)}</span>}</div>;
 
   let body: ReactNode;
-  if (kind === 'audio') body = <AudioCompare sources={sources} badge={badge}/>;
+  if (kind === 'audio') body = <AudioCompare sources={sources} badge={badge} header={header} contextMenu={contextMenu}/>;
   else if (mode === 'split') body = <div className="split-stack">
-    <div className="split-headers">{header('Original', original)}{header('Optimised', result)}</div>
-    <div className="split-view" ref={register('split')} onPointerMove={event => { pointer.current = { x: event.clientX, y: event.clientY }; if (zoom > 1) follow(); if (event.buttons === 1) { const r = event.currentTarget.getBoundingClientRect(); setSplit(clamp((event.clientX - r.left) / r.width)); } }}
-      onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); const r = event.currentTarget.getBoundingClientRect(); setSplit(clamp((event.clientX - r.left) / r.width)); }}>
+    <div className="split-headers">{header('Original', original, 'original')}{header('Optimised', result, 'result')}</div>
+    <div className="split-view" ref={register('split')} onContextMenu={contextMenu('both')} onPointerMove={event => { pointer.current = { x: event.clientX, y: event.clientY }; if (zoom > 1) follow(); if (event.buttons === 1) { const r = event.currentTarget.getBoundingClientRect(); setSplit(clamp((event.clientX - r.left) / r.width)); } }}
+      onPointerDown={event => { if (event.button !== 0) return; event.currentTarget.setPointerCapture(event.pointerId); const r = event.currentTarget.getBoundingClientRect(); setSplit(clamp((event.clientX - r.left) / r.width)); }}>
       <div className="layer" style={zoomStyle}>{media(result, 'result')}</div>
       <div className="layer" style={{ clipPath: `inset(0 ${(1 - split) * 100}% 0 0)` }}><div className="layer" style={zoomStyle}>{media(original, 'original')}</div></div>
       <div className="divider" style={{ left: `${split * 100}%` }}><span>↔</span></div>
@@ -110,15 +124,16 @@ export function CompareWindow({ id }: { id: string }) {
   </div>;
   else body = <div className="side-stack" onPointerMove={event => { pointer.current = { x: event.clientX, y: event.clientY }; if (zoom > 1) follow(); }}>
     {([['Original', original, 'original'], ['Optimised', result, 'result']] as const).map(([title, side, which]) => <section key={which} className="side">
-      {header(title, side)}
-      <div className="side-media" ref={register(which)}><div className="layer" style={zoomStyle}>{media(side, which)}</div></div>
+      {header(title, side, which)}
+      <div className="side-media" ref={register(which)} onContextMenu={contextMenu(which)}><div className="layer" style={zoomStyle}>{media(side, which)}</div></div>
       {labels(side)}
     </section>)}
     <div className="side-badge">{badge}</div>
   </div>;
 
-  return <div className="view-window compare-window">
+  return <div className="view-window compare-window" onPointerDown={event => { if (menu && !(event.target as Element).closest('.menu-popup')) setMenu(undefined); }}>
     {body}
+    {menu && <MenuPopup at={menu.at}><MenuView nodes={menu.nodes} onInvoke={invoke} label={menu.label}/></MenuPopup>}
     {error && <p className="view-error" role="alert">{error}</p>}
     {kind !== 'audio' && <div className="compare-controls">
       <div className="segmented" role="group" aria-label="Comparison">
@@ -138,6 +153,12 @@ export function CompareWindow({ id }: { id: string }) {
   </div>;
 }
 
+/** The path of a side's file (`PathFieldMenu`): its middle is left out when it is long, and clicking it opens the file menu under it. */
+function PathField({ path, label, open }: { path: string; label: string; open: (at: { x: number; y: number }) => void }) {
+  return <button className="path-field" title={path} aria-label={`${label}: ${path}`} aria-haspopup="menu"
+    onClick={event => { const r = event.currentTarget.getBoundingClientRect(); open({ x: r.left, y: r.bottom + 2 }); }}>{shortPath(path)}</button>;
+}
+
 /** A muted, looping video, or a note when Chromium cannot play its format. */
 function VideoSide({ side, register }: { side: CompareSide; register: (element: HTMLVideoElement | null) => void }) {
   const [failed, setFailed] = useState(false);
@@ -146,7 +167,7 @@ function VideoSide({ side, register }: { side: CompareSide; register: (element: 
 }
 
 /** Two players over the cover art; only one plays at a time, and scrubbing either sets where both start. */
-function AudioCompare({ sources, badge }: { sources: CompareSources; badge: ReactNode }) {
+function AudioCompare({ sources, badge, header, contextMenu }: { sources: CompareSources; badge: ReactNode; header: (title: string, side: CompareSide, which: 'original' | 'result') => ReactNode; contextMenu: (which: 'original' | 'result') => (event: MouseEvent) => void }) {
   const players = useRef(new Map<'original' | 'result', HTMLAudioElement>());
   const [playing, setPlaying] = useState<'original' | 'result'>();
   /** The live position of the audible side, and the shared start (only a scrub moves it) the other side begins from. */
@@ -174,8 +195,8 @@ function AudioCompare({ sources, badge }: { sources: CompareSources; badge: Reac
     {([['Original', sources.original, 'original'], ['Optimised', sources.result, 'result']] as const).map(([title, side, which]) => {
       const duration = durationOf(which), shownTime = Math.min(playing === which ? position : anchor, duration);
       return <section key={which} className="audio-side">
-        <header><strong>{title}</strong><small>{side.format.toUpperCase()}</small></header>
-        <div className="audio-art" style={{ backgroundImage: `url("${sources.item.originalPreview}")` }}>
+        {header(title, side, which)}
+        <div className="audio-art" style={{ backgroundImage: `url("${sources.item.originalPreview}")` }} onContextMenu={contextMenu(which)}>
           <button aria-label={playing === which ? 'Pause' : 'Play'} disabled={!duration} onClick={() => toggle(which)}>{playing === which ? '❚❚' : '▶'}</button>
         </div>
         <audio ref={element => { if (element) players.current.set(which, element); else players.current.delete(which); }} src={side.url} preload="metadata"

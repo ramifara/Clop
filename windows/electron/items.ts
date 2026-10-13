@@ -7,6 +7,7 @@ import type { CropRequest, ImageOptions, ItemResult } from '../src/types';
 import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { optimiseImage } from '../core/media/image';
 import { probeImage } from '../core/media/image-codecs';
+import { SVGTooLargeError } from '../core/media/sharp-input';
 import { optimiseVideo } from '../core/media/video';
 import { cropPDF, extendPDF, optimisePDF, uncropPDF } from '../core/media/pdf';
 import { cropGeometry } from '../core/media/crop-size';
@@ -18,7 +19,7 @@ import { imageThumbnail, mediaThumbnail } from './thumbnails';
 import type { PipelinesOutcome } from '../core/pipeline/triggers';
 import { imageCompression, parseOptions } from './settings';
 import { mediaKind } from './clipboard';
-import { exists, samePath } from '../core/fileops';
+import { exists, moveTo, samePath } from '../core/fileops';
 
 sharp.concurrency(2);
 sharp.cache({ memory: 32, files: 0, items: 32 });
@@ -45,7 +46,11 @@ export interface ItemPlacement {
  * What the attached pipelines did to a file (`runPipelines` in core/pipeline/triggers.ts). `started` is the file they started
  * from: when it is outside the shelf (a watched or placed file), restoring cannot undo what they did to it.
  */
-export type ItemPipelineOutcome = Pick<PipelinesOutcome, 'file' | 'anyRan' | 'warnings'> & { started?: string };
+export type ItemPipelineOutcome = Pick<PipelinesOutcome, 'file' | 'anyRan' | 'warnings'> & {
+  started?: string;
+  /** Undoes what the pipelines did to `started` when it is outside the shelf, resolving with its path; throws when it cannot (`undoRun` in electron/pipeline-undo.ts). */
+  undo?: () => Promise<string>;
+};
 /** The pipelines attached to where a file came from, which run once, after or instead of its optimisation. */
 export interface ItemAutomation {
   /** Every pipeline skips the plain optimisation, so they start from the original. */
@@ -74,6 +79,8 @@ interface Entry {
   placing?: boolean;
   /** A pipeline changed a file outside the shelf, which restoring cannot give back. */
   changedOutside?: string;
+  /** Undoes what pipelines did to a file outside the shelf, instead of the placement's restore. */
+  undoOutside?: () => Promise<string>;
 }
 /** `placement` puts each result back where the file came from; `staged` hears the result's id as soon as it is in the shelf; `automation` runs attached pipelines. */
 export interface ImportExtra {
@@ -81,7 +88,7 @@ export interface ImportExtra {
   /** Stops the import while it stages and the optimisation after it, as Stop does. */
   signal?: AbortSignal;
   /** More of the above for what the file turns out to be, once its content has been read: a dropped file's name can lie about its kind. */
-  late?: (kind: MediaKind) => Pick<ImportExtra, 'staged' | 'automation'> | undefined;
+  late?: (kind: MediaKind) => Pick<ImportExtra, 'staged' | 'automation' | 'placement'> | undefined;
 }
 /** A change to a result's current file, writing into `outputDir` under `name`. */
 type Edit = (input: string, outputDir: string, name: string, signal: AbortSignal) => Promise<MediaOutput>;
@@ -157,7 +164,7 @@ export class ItemEngine extends EventEmitter {
       entry = kind === 'image' ? await this.stageImage(staged, directory, result, signal) : await this.stageMedia(staged, directory, { ...result, kind }, signal);
       signal.throwIfAborted();
       const late = extra.late?.(kind);
-      entry.placement = extra.placement; entry.automation = extra.automation ?? late?.automation;
+      entry.placement = extra.placement ?? late?.placement; entry.automation = extra.automation ?? late?.automation;
       this.entries.set(id, entry);
       this.emit('add', id); extra.staged?.(id); late?.staged?.(id);
       this.changed();
@@ -169,13 +176,15 @@ export class ItemEngine extends EventEmitter {
     return id;
   }
   private async stageImage(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'kind' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'>, signal = this.controller.signal): Promise<Entry> {
-    const info = await probeImage(staged, signal).catch(error => { if (signal.aborted) throw error; return undefined; });
+    const info = await probeImage(staged, signal).catch(error => { if (signal.aborted || error instanceof SVGTooLargeError) throw error; return undefined; });
     if (!info || !INPUT.has(info.format) || !info.width || !info.height) throw new Error('Use PNG, JPEG, WebP, GIF, AVIF, HEIC, JPEG XL, TIFF, BMP or SVG.');
     const { format, width, height, pages } = info;
     if (format === 'tiff' && pages > 1) throw new Error('Use a single-page TIFF image. Multi-page documents are not supported.');
     if (pages > 250 || info.pixels > PIXELS) throw new Error('This image has too many pixels or animation frames. Use an image under 60 megapixels in total.');
     const originalPath = path.join(path.dirname(staged), `${path.parse(staged).name || 'image'}.${format}`);
-    await rename(staged, originalPath);
+    // Renamed only when the extension is not the format's, and with the retries for a busy file: on Windows a scanner, an indexer or
+    // a tool that inherited a handle (see core/media/sharp-input.ts) can hold a new file for a moment, and a held file cannot be renamed.
+    await moveTo(staged, originalPath);
     const preview = await imageThumbnail(originalPath, DECODED.has(format) || info.deep), bytes = (await stat(originalPath)).size;
     const result: ItemResult = { ...base, originalBytes: bytes, outputBytes: bytes, originalWidth: width, originalHeight: height, width, height, format, originalPreview: preview, preview, animated: pages > 1 };
     return { result, originalPath, outputPath: originalPath, directory, inputFormat: format, revision: 0, cancel: new AbortController(), jobs: new Set() };
@@ -328,7 +337,10 @@ export class ItemEngine extends EventEmitter {
     signal.throwIfAborted();
     // Pipelines that replaced optimisation work on the user's file where it is, with no placement to undo them: its original is in the backups.
     // So do pipelines that ran after an optimisation that left the file as it was: nothing was backed up for them either.
-    if ((fresh || r.unchanged) && outcome.anyRan && outcome.started && !within(e.directory, outcome.started)) e.changedOutside ??= outcome.started;
+    // With an undo for that run, restoring puts things back as far as it safely can; without one, it refuses.
+    if ((fresh || r.unchanged) && outcome.anyRan && outcome.started && !within(e.directory, outcome.started) && !e.changedOutside && !e.undoOutside) {
+      if (outcome.undo) e.undoOutside = outcome.undo; else e.changedOutside = outcome.started;
+    }
     const info = outcome.anyRan ? await stat(outcome.file).catch(() => undefined) : undefined;
     if (info?.isFile()) {
       const kind = await detectKind(outcome.file, { signal }).catch(() => undefined) ?? r.kind;
@@ -410,7 +422,8 @@ export class ItemEngine extends EventEmitter {
     const e = this.get(id);
     if (e.changedOutside) throw new Error(`A pipeline changed ${path.basename(e.changedOutside)}, so Clop leaves it as it is. Its original is in the backups.`);
     // A pipeline's file outside the shelf is no longer the result once the original is back.
-    e.placedPath = e.placement ? await e.placement.restore(resume) : undefined;
+    if (e.undoOutside) { e.placedPath = await e.undoOutside(); e.undoOutside = undefined; }
+    else e.placedPath = e.placement ? await e.placement.restore(resume) : undefined;
     e.outputPath = e.originalPath;
     if (e.result.kind === 'audio') e.result.coverArt = await probe(e.originalPath).then(info => info.kind === 'audio' ? info.hasCoverArt : undefined, () => e.result.coverArt);
     Object.assign(e.result, { status: 'ready', width: e.result.originalWidth, height: e.result.originalHeight, outputBytes: e.result.originalBytes,

@@ -7,9 +7,11 @@ import { formatSteps } from '../core/pipeline/parser';
 import { pipelinesFor, pipelinesSkipOptimisation, runPipelines, type PipelinesOutcome } from '../core/pipeline/triggers';
 import { watchedFolders, isAumid, resolveApp, type AppLookup } from '../core/pipeline/app-resolve';
 import type { PlacementEnv } from '../core/placement';
+import { defaultMarker } from '../core/marker';
 import type { ClopSettings } from '../core/settings/schema';
 import type { PipelineChoice } from '../src/types';
 import type { ItemAutomation, ItemPipelineOutcome, ItemPipelineRun } from './items';
+import { beforeRun, recordingWorkdir, undoRun } from './pipeline-undo';
 
 export { isAumid, resolveApp, watchedFolders, type AppLookup };
 // The app's side of pipelines (spec step 21): the pipelines attached to the clipboard and to watched folders run after, or
@@ -68,9 +70,16 @@ export function attachedAutomation(pipelines: readonly Pipeline[], { host, conte
     skipOptimisation: !alwaysOptimise && (skipOptimisation ?? pipelinesSkipOptimisation(pipelines)), fallback,
     run: async (input: ItemPipelineRun): Promise<ItemPipelineOutcome> => {
       const file = input.optimised ?? source ?? await input.fresh();
-      const outcome = await runForApp(host, pipelines, file, context, input.signal);
+      // On the user's own file, what the run does is noted so Restore can undo it.
+      // The run's backups are recorded on its result, so Restore puts back exactly what this run kept.
+      const env = file === source ? host.env() : undefined, undoEnv = env && { workdir: env.workdir, mark: (target: string) => (env.marker ?? defaultMarker()).markOptimised(target) };
+      const recorded = env && recordingWorkdir(env.workdir);
+      const start = recorded && await beforeRun(file, recorded.backups);
+      const runHost: PipelineHost = recorded ? { ...host, env: () => ({ ...host.env(), workdir: recorded.workdir }) } : host;
+      const outcome = await runForApp(runHost, pipelines, file, context, input.signal);
       done?.(outcome);
-      return { file: outcome.file, anyRan: outcome.anyRan, warnings: outcomeNotes(outcome), started: file };
+      const undo = undoEnv && start && outcome.anyRan ? await undoRun(undoEnv, start, outcome.file) : undefined;
+      return { file: outcome.file, anyRan: outcome.anyRan, warnings: outcomeNotes(outcome), started: file, ...(undo ? { undo } : {}) };
     },
   };
 }

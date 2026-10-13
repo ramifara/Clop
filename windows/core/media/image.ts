@@ -10,6 +10,7 @@ import { centreRect, cropGeometry, type CropSpec, type Rect } from './crop-size'
 import { imageConversionTarget, type ImageConversionSettings } from './conversion';
 import { copyMetadata } from './exif';
 import { encodeHEIC, encodeJXL, probeImage, readableImage } from './image-codecs';
+import { SVGTooLargeError } from './sharp-input';
 import { toneMapToSDR } from './hdr';
 import type { MediaJobOptions, MediaOutput } from './types';
 import { watermarkFilters, watermarkOverlay, type Watermark } from './watermark';
@@ -97,7 +98,7 @@ export function optimiseImage(input: string, outputDir: string, opts: Options): 
 
 async function optimise(input: string, outputDir: string, opts: Options): Promise<MediaOutput> {
   opts.signal?.throwIfAborted();
-  const info = await probeImage(input, opts.signal).catch(error => { if (opts.signal?.aborted) throw error; }), source = info?.format, sourceMeta = info?.meta;
+  const info = await probeImage(input, opts.signal).catch(error => { if (opts.signal?.aborted || error instanceof SVGTooLargeError) throw error; }), source = info?.format, sourceMeta = info?.meta;
   if (!info || !source || !SOURCES.has(source)) throw new Error(`Clop cannot optimise ${source?.toUpperCase() ?? 'this'} images. Use PNG, JPEG, GIF, WebP, AVIF, HEIC, JPEG XL, TIFF, BMP or SVG.`);
   // Checked before anything is decoded or rasterised.
   if (info.pixels > MAX_PIXELS) throw new Error('This image has too many pixels or animation frames. Use an image under 60 megapixels in total.');
@@ -170,7 +171,10 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
     await retryBusy(() => rename(result.file, output));
     const [outWidth, outHeight] = result.size ?? displaySize(await decode(output, true).metadata());
     return done({ path: output, bytes, format: result.format, width: outWidth, height: outHeight });
-  } finally { await rm(tmp, { recursive: true, force: true }); }
+  } finally {
+    // Retried: on Windows a scanner, an indexer or a tool that inherited a handle can hold a file here for a moment (see core/media/sharp-input.ts).
+    await rm(tmp, { recursive: true, force: true, maxRetries: 5 });
+  }
 }
 
 /**

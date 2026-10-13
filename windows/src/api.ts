@@ -83,7 +83,7 @@ const browser: ClopApi = {
       if (plan.type === 'apply') await request('apply', { id, options: { ...item.options, ...plan.options } });
       else if (plan.type === 'ui' && plan.ui === 'restore') await request('restore', { id });
       else if (plan.type === 'ui' && plan.ui === 'dismiss') await request('dismiss', { id });
-      else if (plan.type === 'ui' && ['saveAs', 'reveal'].includes(plan.ui)) download(id);
+      else if (plan.type === 'ui' && ['saveAs', 'reveal'].includes(plan.ui) && plan.arg === undefined) download(id);
       else if (plan.type === 'ui' && plan.ui === 'copy') await browser.copy(id);
       else throw new Error('This action works in the Clop app.');
     }
