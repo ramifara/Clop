@@ -35,3 +35,8 @@ export async function planZoneDrop(settings: ZoneDropSettings, id: unknown, file
   return { files: taken, ...(notices.length ? { notice: notices.join(' ') } : {}) };
 }
 
+/**
+ * Whether a drop runs pipelines: those attached to the drop zone, which a Shift-drop's explicit aggressive optimisation skips (⌘ on
+ * macOS, `wantsPipelineLookup`), or a preset zone's, which always runs; Shift then only makes its optimisation aggressive.
+ */
+export const dropRunsPipelines = ({ aggressive, zone }: { aggressive: boolean; zone?: unknown }) => zone !== undefined || !aggressive;

@@ -22,7 +22,7 @@ import { mediaKind } from './clipboard';
 import { EditorService } from './editor';
 import { ItemEngine } from './items';
 import { attachedAutomation, type PipelineHost } from './pipelines';
-import { planZoneDrop, type ZoneDropSettings } from './zone-drop';
+import { dropRunsPipelines, planZoneDrop, type ZoneDropSettings } from './zone-drop';
 
 const balanced = { mode: 'balanced', format: 'auto', scale: 1 } as const;
 const pipeline = (id: string, text: string, extra: Partial<Pipeline> = {}): Pipeline => ({ id, name: id, steps: parseSteps(text), rawText: text, skipOptimisation: false, hideResult: false, ...extra });
@@ -82,8 +82,15 @@ test('a zone that cannot run refuses the drop with a clear message instead of op
   await assert.rejects(planZoneDrop({ ...settings, presetZones: [zone('OK', 'image', HALF)] }, 'OK', 'C:\\a.png', { kindOf }), /Drop files or folders/);
 });
 
+test('Shift skips the drop zone\'s attached pipelines but never a preset zone\'s', () => {
+  assert.equal(dropRunsPipelines({ aggressive: false }), true);
+  assert.equal(dropRunsPipelines({ aggressive: true }), false, 'an aggressive drop on the drop zone is a plain aggressive optimisation (wantsPipelineLookup)');
+  assert.equal(dropRunsPipelines({ aggressive: true, zone: 'Z' }), true, 'Shift on a preset zone still runs its pipeline');
+  assert.equal(dropRunsPipelines({ aggressive: false, zone: 'Z' }), true);
+});
+
 // What the main process does with a drop on a zone (`zoneDropped` and `importFiles` in main.ts): plan it, then import every file as a
-// drop whose automation is the zone's pipeline for the kind the file turns out to be.
+// drop whose automation is the zone's pipeline for the kind the file turns out to be, optimised aggressively with Shift.
 async function setup(t: TestContext) {
   if (!needTools(t, 'pngquant')) return;
   const root = await mkdtemp(path.join(os.tmpdir(), 'clop-zone-drop-run-'));
@@ -102,7 +109,7 @@ async function setup(t: TestContext) {
     const plan = await planZoneDrop(settings, id, files, { kindOf });
     const ids: string[] = [];
     for (const file of plan.files) {
-      ids.push(await engine.importPath(file, 'drop', aggressive ? { ...balanced, mode: 'aggressive' } : balanced, undefined, !aggressive ? {
+      ids.push(await engine.importPath(file, 'drop', aggressive ? { ...balanced, mode: 'aggressive' } : balanced, undefined, dropRunsPipelines({ aggressive, zone: id }) ? {
         late: kind => ({ automation: attachedAutomation([zonePipeline(settings.presetZones, settings.savedPipelines, id, kind)], { host, context: { kind }, fallback: true }) }),
       } : {}));
     }
@@ -133,11 +140,19 @@ test('an inline pipeline and a pipeline stored as text only run on a zone; one t
   const settings: ZoneDropSettings = { presetZones: [textOnly, zone('Inline', undefined, pipeline('I', 'stripExif'))], savedPipelines: [] };
   const [converted] = (await f.drop(settings, 'Text', [path.join(dir, 'a.png')])).results;
   assert.deepEqual([converted.status, converted.format], ['ready', 'webp']);
-  // A pipeline that does not skip optimisation runs on the optimised file.
+  // A pipeline that does not skip optimisation runs on the optimised file, aggressive with Shift.
   assert.equal(skipsPreOptimisation((settings.presetZones[1] as PresetZone).pipeline), false);
-  const [optimised] = (await f.drop(settings, 'Inline', [path.join(dir, 'a.png')])).results;
-  assert.deepEqual([optimised.status, optimised.format], ['ready', 'png'], optimised.error);
+  const [optimised] = (await f.drop(settings, 'Inline', [path.join(dir, 'a.png')], true)).results;
+  assert.deepEqual([optimised.status, optimised.format, optimised.options.mode], ['ready', 'png', 'aggressive'], optimised.error);
   assert.ok(optimised.outputBytes < optimised.originalBytes, 'optimised before the pipeline ran');
+});
+
+test('Shift on a zone whose pipeline converts still converts: the pipeline runs and the drop is aggressive', async t => {
+  const f = await setup(t); if (!f) return;
+  const dir = await f.folder('Shift', ['a.png', 'b.png']);
+  const settings: ZoneDropSettings = { presetZones: [zone('W', 'image', WEBP)], savedPipelines: [] };
+  const { results } = await f.drop(settings, 'W', [dir], true);
+  assert.deepEqual(results.map(r => [r.status, r.format, r.options.mode]), [['ready', 'webp', 'aggressive'], ['ready', 'webp', 'aggressive']]);
 });
 
 test('a pipeline made in the editor and set as a zone while the app runs is used by the next drop, with no restart', async t => {

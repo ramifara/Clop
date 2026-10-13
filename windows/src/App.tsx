@@ -158,8 +158,8 @@ function dropHints(settings: ClopSettings, aggressive: boolean): ReactNode[] {
 }
 
 /**
- * The preset zones, a two-by-two grid filling the drop zone (`DropZonePresetsView`): a file dropped on a zone is optimised and then runs
- * that zone's pipeline, a drop on "Add preset" opens the preset zones, and an empty slot takes nothing. The grid reads the pointer itself
+ * The preset zones, a two-by-two grid filling the drop zone (`DropZonePresetsView`): files and folders dropped on a zone run that zone's
+ * pipeline (Shift held makes it aggressive), a drop on "Add preset" opens the preset zones, and an empty slot takes nothing. The grid reads the pointer itself
  * and asks `tileAt` which slot is under it, so the gaps between slots never lose a drag.
  */
 function PresetGrid({ presets, run }: { presets: PresetTiles; run: Run }) {
@@ -178,7 +178,7 @@ function PresetGrid({ presets, run }: { presets: PresetTiles; run: Run }) {
       if (slot?.kind === 'add') { void run(() => api.window('presets')); return; }
       if (slot?.kind !== 'zone') return;
       const files = Array.from(event.dataTransfer.files), { tile } = slot;
-      if (files.length) void run(() => api.runPreset(tile.id, files), `Running ${tile.name}`); else void run(async () => { throw new Error('Drop files on a preset zone.'); });
+      if (files.length) void run(() => api.runPreset(tile.id, files, aggressiveDrop(event)), `Running ${tile.name}`); else void run(async () => { throw new Error('Drop files on a preset zone.'); });
     }}>
     {slots.map((slot, index) => {
       if (slot.kind === 'empty') return <div key={`empty-${index}`} className="preset-slot empty" aria-hidden="true"><span className="preset-icon"><SlotMark/></span><span className="preset-name">No preset</span></div>;

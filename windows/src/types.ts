@@ -107,8 +107,8 @@ export interface ClopApi {
   /** The `savedCropSizes` setting, and the only way the renderer can change it. */
   cropSizes(): Promise<CropSize[]>; saveCropSizes(sizes: CropSize[]): Promise<CropSize[]>;
   compareSources(id: string, view?: { page?: number }): Promise<CompareSources>;
-  /** Drops on a preset zone's tile: the files are optimised, then the zone's pipeline runs on them. */
-  runPreset(zoneId: string, files: File[]): Promise<void>;
+  /** Drops on a preset zone's tile: the zone's pipeline runs on the files and on the files in dropped folders; `aggressive` (Shift) makes their optimisation aggressive. */
+  runPreset(zoneId: string, files: File[], aggressive?: boolean): Promise<void>;
   /** The pipeline editor window's side: what it shows, and the checked commands that change pipelines, attachments and preset zones. */
   editor: {
     state(): Promise<EditorState>; command(command: EditorCommand): Promise<EditorReply>;

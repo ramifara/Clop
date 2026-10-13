@@ -64,7 +64,7 @@ import { applyCrop, cropSource, viewItems, parseCropRequest, parseCropView, pars
 import { compareSources, parseCompareView } from './compare';
 import { setupBatch } from './batch-window';
 import { expandDroppedFolders, splitFolders } from './dropped';
-import { planZoneDrop } from './zone-drop';
+import { dropRunsPipelines, planZoneDrop } from './zone-drop';
 import { MAX_BATCH_FILES } from '../core/batch/scan';
 import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
 import { expandHome } from '../core/settings/paths';
@@ -574,8 +574,7 @@ async function dropped(files: unknown, aggressive: boolean) {
  */
 async function importFiles(files: unknown, source: ItemResult['source'], { aggressive = false, zone, limit = 20 }: { aggressive?: boolean; zone?: unknown; limit?: number } = {}) {
   const sequence = await currentSequence();
-  // Pipelines attached to the drop zone (or a preset zone's pipeline) run on drops, but not on a Shift-drop's explicit aggressive optimisation (⌘ on macOS, `wantsPipelineLookup`).
-  const extra = source !== 'drop' || aggressive ? undefined : () => dropExtra(zone);
+  const extra = source === 'drop' && dropRunsPipelines({ aggressive, zone }) ? () => dropExtra(zone) : undefined;
   // A folder among the files becomes the files inside it (the batch window takes folders whole, see `dropped`).
   if (Array.isArray(files) && files.length <= 20 && files.every(file => typeof file === 'string' && path.isAbsolute(file)) && await splitFolders(files).then(split => split!.folders.length > 0)) {
     const expanded = await expandDroppedFolders(files as string[], { owns: file => workdir.owns(file), isLocal: scanLocal });
@@ -589,7 +588,7 @@ async function importFiles(files: unknown, source: ItemResult['source'], { aggre
 }
 /**
  * A drop on the preset zone `zone`: its pipeline runs on every dropped file and on every file in the dropped folders, never the batch
- * window. A zone that cannot run refuses the whole drop with one notice.
+ * window, and Shift makes the optimisation aggressive. A zone that cannot run refuses the whole drop with one notice.
  */
 async function zoneDropped(zone: unknown, files: unknown, aggressive: boolean) {
   const plan = await planZoneDrop(settings, zone, files, { owns: file => workdir.owns(file), isLocal: scanLocal, kindOf: mediaKind });
@@ -1091,7 +1090,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'dismiss': await dismiss(id); break;
     case 'settings': if (event.sender !== main.webContents) throw new Error('Only the settings window can do this.'); await updateSettings(rendererSettings(args[0], settings)); break;
     case 'apps': return bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [];
-    case 'run-preset': await zoneDropped(args[0], args[1], false); break;
+    case 'run-preset': await zoneDropped(args[0], args[1], args[2] === true); break;
     case 'pipelines': return pipelineChoices(settings, engine.get(itemId(args[0])).result.kind);
     case 'run-pipeline': await runSavedPipeline(itemId(args[0]), args[1]); break;
     case 'mcp': if (event.sender !== main.webContents) throw new Error('Only the settings window can do this.'); return mcp.handle(args[0]);
