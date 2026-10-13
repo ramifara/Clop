@@ -2,7 +2,7 @@
 export const TAP_MAX_MS = 400;
 
 /**
- * Whether the preset zone tiles are showing during a drag, from the Ctrl and Alt state the Windows helper reports
+ * Whether the preset zones are showing in the drop zone during a drag, from the Ctrl and Alt state the Windows helper reports
  * (`handlePresetZonesModifier` in OptimisationUtils.swift). By default holding the key shows them and a tap pins them open until the
  * next tap; with `onlyShowPresetZonesOnControlTapped` only a tap shows or hides them. A tap is one key pressed alone and released
  * within `TAP_MAX_MS`. The helper does not report keystrokes or clicks, which cancel a tap on macOS.

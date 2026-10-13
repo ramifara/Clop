@@ -1,20 +1,19 @@
 import { isReadable, type Stored } from './codec';
 import { resolveRunnable, type ClopFileType, type Pipeline, type PresetZone } from './model';
 
-// Preset zones (Clop/PresetZones.swift, DropZonePresetsView in Clop/DropZone.swift): while a file is dragged and Ctrl or Alt is
-// held, up to four tiles show beside the drop target, each running one pipeline on what is dropped on it. Which tiles show,
-// where each one is and what a drop on it runs are decided here, apart from the DOM, so the window and the tests agree.
+// Preset zones (Clop/PresetZones.swift, DropZonePresetsView in Clop/DropZone.swift): while a file is dragged and the preset zone key is
+// held (or tapped), the drop zone's own content gives way to a two-by-two grid of zones inside it, each running one pipeline on what is
+// dropped on it. Which zones fill the grid, which slot is under the pointer and what a drop on one runs are decided here, apart from the
+// DOM, so the window and the tests agree.
 
 export const MAX_TILES = 4;
-/** The tile grid, in CSS pixels: two columns, rows from the top, `gap` between tiles. */
-export const TILE = { columns: 2, width: 96, height: 56, gap: 2 } as const;
+/** The grid: two columns and two rows filling the drop zone, `gap` CSS pixels between slots (`Grid(horizontalSpacing: 2, verticalSpacing: 2)`). */
+export const TILE = { columns: 2, rows: 2, gap: 2 } as const;
 
 export interface PresetTile { id: string; name: string; icon: string; type?: ClopFileType }
-export interface TileSet {
-  tiles: PresetTile[];
-  /** A "new preset" tile follows the zones, as on macOS, while there is room for one. */
-  add: boolean;
-}
+export interface TileSet { tiles: PresetTile[] }
+/** A slot of the grid: a zone, the slot that adds one (right after the zones, while there is room), or an empty slot. */
+export type Slot = { kind: 'zone'; tile: PresetTile } | { kind: 'add' } | { kind: 'empty' };
 
 /** The type every dragged file shares, or undefined when the files differ or one is not a media file (`DragManager.fileType`). */
 export function draggedType(files: readonly string[], kindOf: (file: string) => ClopFileType | undefined): ClopFileType | undefined {
@@ -26,32 +25,28 @@ export function draggedType(files: readonly string[], kindOf: (file: string) => 
 const runnable = (zone: PresetZone, saved: readonly Pipeline[]) => (resolveRunnable(zone.pipeline, saved)?.steps.length ?? 0) > 0;
 
 /**
- * The tiles for a drag of `fileType`: zones of that type first, then those for any type (`cachePresetZones`). With no common
- * type only the any-type zones show. Zones that cannot run (their library pipeline is gone) are left out.
+ * The zones in the grid for a drag of `fileType`, as `cachePresetZones` sorts them: the zones of that type, then the zones for any
+ * type, which belong to every type's grid. With no common type only the zones for any type show. Zones that cannot run (their library
+ * pipeline is gone) are left out. The grid has four slots, so only the first four show.
  */
 export function tilesFor(zones: readonly Stored<PresetZone>[], saved: readonly Stored<Pipeline>[], fileType: ClopFileType | undefined): TileSet {
   const library = saved.filter(isReadable), usable = zones.filter(isReadable).filter(zone => runnable(zone, library));
   const matching = [...usable.filter(zone => zone.type !== undefined && zone.type === fileType), ...usable.filter(zone => zone.type === undefined)];
-  const tiles = matching.slice(0, MAX_TILES).map(({ id, name, icon, type }): PresetTile => ({ id, name, icon, ...(type ? { type } : {}) }));
-  return { tiles, add: tiles.length < MAX_TILES };
+  return { tiles: matching.slice(0, MAX_TILES).map(({ id, name, icon, type }): PresetTile => ({ id, name, icon, ...(type ? { type } : {}) })) };
 }
 
-export const cellCount = ({ tiles, add }: TileSet) => tiles.length + (add ? 1 : 0);
-/** The height of the grid for `cells` tiles. */
-export const gridHeight = (cells: number) => cells <= 0 ? 0 : Math.ceil(cells / TILE.columns) * (TILE.height + TILE.gap) - TILE.gap;
-
-/** The top-left corner of cell `index` in the grid. */
-export const tileOrigin = (index: number) => ({ x: (index % TILE.columns) * (TILE.width + TILE.gap), y: Math.floor(index / TILE.columns) * (TILE.height + TILE.gap) });
+/** The four slots, in reading order (`zoneView(index:)`): the zones, then "Add preset" at the first free slot, then empty slots. */
+export const slotsFor = ({ tiles }: TileSet): Slot[] =>
+  Array.from({ length: MAX_TILES }, (_, index): Slot => index < tiles.length ? { kind: 'zone', tile: tiles[index] } : index === tiles.length ? { kind: 'add' } : { kind: 'empty' });
 
 /**
- * The cell under a point, relative to the grid's top-left corner. A gap between tiles belongs to the tile before it, so
- * a drag that crosses the gap never leaves every tile; outside the grid, or on an empty cell, there is none.
+ * The slot under a point, relative to the top-left corner of a grid `width` by `height`. A gap between slots belongs to the slot before
+ * it, so a drag that crosses the gap never leaves every slot; outside the grid there is none.
  */
-export function tileAt(x: number, y: number, cells: number): number | undefined {
-  const pitchX = TILE.width + TILE.gap, pitchY = TILE.height + TILE.gap;
-  if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= TILE.columns * pitchX || y >= Math.ceil(cells / TILE.columns) * pitchY) return undefined;
-  const index = Math.floor(y / pitchY) * TILE.columns + Math.floor(x / pitchX);
-  return index < cells ? index : undefined;
+export function tileAt(x: number, y: number, width: number, height: number): number | undefined {
+  if (!(x >= 0 && y >= 0 && x < width && y < height)) return undefined;
+  const pitchX = (width + TILE.gap) / TILE.columns, pitchY = (height + TILE.gap) / TILE.rows;
+  return Math.min(TILE.rows - 1, Math.floor(y / pitchY)) * TILE.columns + Math.min(TILE.columns - 1, Math.floor(x / pitchX));
 }
 
 /** What dropping on zone `id` runs for a file of `kind`; refuses a zone that is gone, cannot run, or is for another type. */

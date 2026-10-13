@@ -31,7 +31,7 @@ import { guarded, recentClipboard, toTemplate, trayMenu, trayTooltip, trayVarian
 import { allPipelineChoices, appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
 import { seedBuiltinPipelines } from '../core/pipeline/builtins';
 import { EDITOR_SETTING_KEYS } from '../core/pipeline/editor-state';
-import { cellCount, draggedType, gridHeight, tilesFor, zonePipeline } from '../core/pipeline/zones';
+import { draggedType, tilesFor, zonePipeline } from '../core/pipeline/zones';
 import { EditorService } from './editor';
 import { PresetReveal } from './preset-reveal';
 import { pipelinesSkipOptimisation, type PipelinesOutcome } from '../core/pipeline/triggers';
@@ -80,8 +80,8 @@ let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, 
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
 let altHeld = false, dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
-/** The files being dragged, and whether Ctrl or Alt is held, as the Windows helper reports them: Ctrl or Alt shows the preset zone tiles. */
-let dragFiles: string[] = [], presetsLatched = false;
+/** The files being dragged, as the Windows helper reports them, and the Ctrl and Alt state that shows the preset zones in the drop zone. */
+let dragFiles: string[] = [];
 const presetReveal = new PresetReveal();
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
@@ -150,7 +150,7 @@ const currentSequence = async () => bridgeReady ? sequenceReply(await bridge.req
 const isReady = (id: string) => { try { return engine.get(id).result.status === 'ready'; } catch { return false; } };
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 const presetsRevealed = () => presetReveal.revealed(settings.onlyShowPresetZonesOnControlTapped);
-/** The preset zone tiles for the files being dragged. */
+/** The preset zones for the files being dragged; they take the drop zone's place inside it, so they need no room of their own. */
 function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, draggedType(dragFiles, mediaKind)) }; }
 /** Whether the drop target shows now (see `dropZoneShown`); `dropActive` stays true for a drag whose target is hidden, so a drop still lands. */
 const targetShown = () => dropZoneShown({ expecting: dropActive, dragging, onlyWithAlt: settings.onlyShowDropZoneOnOption, alt: altHeld });
@@ -207,9 +207,7 @@ function syncFloating() {
   const target = targetShown() || settings.keepDropZoneVisible;
   const area = floatingArea();
   const items = visible();
-  // Room for the tiles stays once they were shown, until the drag ends: a tile under the pointer must not lose its window when Ctrl is let go.
-  const tiles = target && (presetsLatched || presetsRevealed()) ? gridHeight(cellCount(presets())) + 8 : 0;
-  const extra = extraHeight({ tiles, notice: !!notice, welcome: !settings.finishedOnboarding });
+  const extra = extraHeight({ notice: !!notice, welcome: !settings.finishedOnboarding });
   cardFit = cardsThatFit(area.height, target, 170, 60 + extra);
   const compact = compactMode.update(items.map(item => ({ id: item.id, running: item.status === 'processing' })));
   const count = Math.min(cardFit, items.length);
@@ -1228,7 +1226,7 @@ else {
       // A change made outside the app (the settings file, the CLI) shows or hides the tray icon and updates its menu and icon too.
       if (changed.some(key => ['enableFloatingResults', 'followCursorScreen', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter', 'autoHideClipboardResultAfter'].includes(key))) { syncCursorFollower(); rescheduleHides(); syncFloating(); broadcast(); }
       if (changed.some(key => ['showMenubarIcon', 'pauseAutomaticOptimisations', 'enableClipboardOptimiser', 'keepDropZoneVisible'].includes(key))) updateTray();
-      // Pipelines, attachments and preset zones show in the editor and, as tiles, on the drop target.
+      // Pipelines, attachments and preset zones show in the editor, and the preset zones in the drop zone.
       if (changed.some(key => (EDITOR_SETTING_KEYS as readonly string[]).includes(key))) { syncFloating(); broadcast(); for (const window of [editorWindow, editorLoading?.window]) if (window && !window.isDestroyed()) window.webContents.send('clop:editor-changed'); }
     });
     for (const watcher of watchers) void watcher.update();
@@ -1249,19 +1247,20 @@ else {
       bridge.on('foreground', event => pickup.focus(Number(event.process)));
       bridge.on('drag-start', event => {
         if (!settings.enableDragAndDrop) return;
-        dragging = true; dropActive = true; altHeld = false; presetReveal.reset(); presetsLatched = false;
+        dragging = true; dropActive = true; altHeld = false; presetReveal.reset();
         dragFiles = Array.isArray(event.paths) ? (event.paths as unknown[]).filter((file): file is string => typeof file === 'string').slice(0, 64) : [];
         floating.setIgnoreMouseEvents(false); syncFloating(); broadcast();
       });
-      // The helper reads Ctrl and Alt while a drag lasts; holding either shows the preset zone tiles, or tapping it with `onlyShowPresetZonesOnControlTapped`.
+      // The helper reads Ctrl and Alt while a drag lasts; holding either shows the preset zones in the drop zone and a tap pins them, or only a tap
+      // toggles them with `onlyShowPresetZonesOnControlTapped`. Their grid sits inside the drop zone, so the floating window keeps its size.
       bridge.on('drag-modifiers', event => {
         if (!dragging) return;
         altHeld = event.alt === true;
-        // With `onlyShowDropZoneOnOption` Alt shows the drop target, so only Ctrl reveals the tiles.
-        presetReveal.update({ ctrl: event.ctrl === true, alt: event.alt === true && !settings.onlyShowDropZoneOnOption }, settings.onlyShowPresetZonesOnControlTapped); presetsLatched ||= presetsRevealed(); syncFloating(); broadcast();
+        // With `onlyShowDropZoneOnOption` Alt shows the drop target, so only Ctrl reveals the zones.
+        presetReveal.update({ ctrl: event.ctrl === true, alt: event.alt === true && !settings.onlyShowDropZoneOnOption }, settings.onlyShowPresetZonesOnControlTapped); syncFloating(); broadcast();
       });
-      // The tiles stay for the moment a drop on one needs to land.
-      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; altHeld = false; dragFiles = []; presetReveal.reset(); presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
+      // The zones stay for the moment a drop on one needs to land.
+      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; altHeld = false; dragFiles = []; presetReveal.reset(); syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
       bridge.on('stopped', () => { bridgeReady = false; bridgeStopped = true; pickup.cancel(); startClipboardFallback(); for (const watcher of watchers) watcher.resume(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));

@@ -62,7 +62,8 @@ export interface CompareSources { item: ItemResult; original: CompareSide; resul
 /** An app the ignored-apps picker offers: a running app with a window, or a Start Menu app. `path` is an exe path, or an AUMID for a packaged app. */
 export interface AppEntry { name: string; path: string; running: boolean }
 /** The preset zone tiles for the drag in progress. They show while `revealed` (Ctrl or Alt held); `add` is the "new preset" tile after them. */
-export interface PresetTiles { revealed: boolean; tiles: PresetTile[]; add: boolean }
+/** The preset zones for the drag under way, and whether they show in the drop zone now. */
+export interface PresetTiles { revealed: boolean; tiles: PresetTile[] }
 /** Where the Settings window was last asked to open (a tray item or `clop://settings/…` link); `nonce` changes with each request so the same target can be asked for again. */
 export interface SettingsRequest { tab: SettingsTab; row?: string; nonce: number }
 export type { EditorCommand, EditorReply, EditorState, PipelineIssue, PresetTile };

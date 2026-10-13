@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { decodePipelines, decodePresetZones } from './codec';
 import { referenceTo, type Pipeline, type PresetZone } from './model';
 import { parseSteps } from './parser';
-import { MAX_TILES, TILE, cellCount, draggedType, gridHeight, tileAt, tileOrigin, tilesFor, zonePipeline } from './zones';
+import { MAX_TILES, draggedType, slotsFor, tileAt, tilesFor, zonePipeline } from './zones';
 
 const pipeline = (id: string, text: string, fileType?: Pipeline['fileType']): Pipeline => ({ id, name: id, steps: parseSteps(text), skipOptimisation: false, hideResult: false, fileType });
 const library = [pipeline('WEBP', 'convert(to: webp)', 'image'), pipeline('HALF', 'downscale(factor: 0.5)'), pipeline('MP3', 'convert(to: mp3)', 'audio')];
@@ -17,16 +17,24 @@ test('a drag has a type when every file shares one', () => {
   assert.equal(draggedType([], kind), undefined);
 });
 
-test('tiles are the zones for the dragged type, then those for any type, at most four, with an add tile while there is room', () => {
+test('the grid holds the zones for the dragged type followed by those for any type, the first four of them (cachePresetZones)', () => {
   const zones = [zone('ANY1', undefined, library[1]), zone('IMG1', 'image', library[0]), zone('AUD', 'audio', library[2]), zone('IMG2', 'image', library[1]), zone('ANY2', undefined, library[1]), zone('IMG3', 'image', library[1])];
   const names = (type: Parameters<typeof tilesFor>[2]) => tilesFor(zones, library, type).tiles.map(tile => tile.id);
   assert.deepEqual(names('image'), ['IMG1', 'IMG2', 'IMG3', 'ANY1'], 'image zones first, cut at four');
-  assert.equal(tilesFor(zones, library, 'image').add, false);
-  assert.deepEqual(names('audio'), ['AUD', 'ANY1', 'ANY2']);
-  assert.equal(tilesFor(zones, library, 'audio').add, true);
+  assert.deepEqual(names('audio'), ['AUD', 'ANY1', 'ANY2'], 'no image zone leaks into an audio drag');
+  assert.deepEqual(names('video'), ['ANY1', 'ANY2']);
   assert.deepEqual(names(undefined), ['ANY1', 'ANY2'], 'with no common type only the zones for any type show');
-  assert.deepEqual(tilesFor([], library, 'video'), { tiles: [], add: true });
+  assert.deepEqual(tilesFor([], library, 'video'), { tiles: [] });
   assert.equal(MAX_TILES, 4);
+});
+
+test('four slots: the zones, then one slot that adds a zone, then empty slots (zoneView)', () => {
+  const tiles = (count: number) => ({ tiles: Array.from({ length: count }, (_, i) => ({ id: `Z${i}`, name: `Z${i}`, icon: 'x' })) });
+  const kinds = (count: number) => slotsFor(tiles(count)).map(slot => slot.kind);
+  assert.deepEqual(kinds(0), ['add', 'empty', 'empty', 'empty']);
+  assert.deepEqual(kinds(2), ['zone', 'zone', 'add', 'empty']);
+  assert.deepEqual(kinds(4), ['zone', 'zone', 'zone', 'zone'], 'a full grid has no add slot');
+  assert.deepEqual(slotsFor(tiles(4)).map(slot => slot.kind === 'zone' && slot.tile.id), ['Z0', 'Z1', 'Z2', 'Z3']);
 });
 
 test('a zone that cannot run has no tile: its pipeline is deleted, unreadable, or has no steps', () => {
@@ -36,21 +44,13 @@ test('a zone that cannot run has no tile: its pipeline is deleted, unreadable, o
   assert.deepEqual(tilesFor(zones, saved, 'image').tiles.map(tile => tile.id), ['OK']);
 });
 
-test('cells sit in two columns and a point finds its cell, gaps included', () => {
-  assert.equal(cellCount({ tiles: [], add: true }), 1);
-  assert.deepEqual([tileOrigin(0), tileOrigin(1), tileOrigin(2), tileOrigin(3)], [{ x: 0, y: 0 }, { x: 98, y: 0 }, { x: 0, y: 58 }, { x: 98, y: 58 }]);
-  assert.deepEqual([gridHeight(0), gridHeight(1), gridHeight(2), gridHeight(3), gridHeight(4)], [0, 56, 56, 114, 114]);
-  const hit = (x: number, y: number, cells = 4) => tileAt(x, y, cells);
-  assert.deepEqual([hit(0, 0), hit(95, 55), hit(98, 0), hit(97, 10), hit(10, 60), hit(150, 100)], [0, 0, 1, 0, 2, 3], 'the gap after a tile belongs to it');
-  assert.equal(hit(-1, 5), undefined);
-  assert.equal(hit(5, -1), undefined);
-  assert.equal(hit(2 * (TILE.width + TILE.gap), 5), undefined, 'right of the grid');
-  assert.equal(hit(5, 2 * (TILE.height + TILE.gap)), undefined, 'below the grid');
-  assert.equal(hit(100, 70, 3), undefined, 'the empty fourth cell');
-  assert.equal(hit(10, 70, 3), 2);
-  assert.equal(hit(10, 10, 0), undefined);
-  assert.equal(hit(NaN, 0), undefined);
-  for (let cell = 0; cell < 4; cell++) { const { x, y } = tileOrigin(cell); assert.equal(hit(x + TILE.width / 2, y + TILE.height / 2), cell); }
+test('the grid fills the drop zone in two rows of two, and a point finds its slot, gaps included', () => {
+  // The drop zone is 196 by 148: slots of 97 by 73 with a 2 px gap.
+  const hit = (x: number, y: number) => tileAt(x, y, 196, 148);
+  assert.deepEqual([hit(0, 0), hit(96, 72), hit(99, 0), hit(0, 75), hit(195, 147)], [0, 0, 1, 2, 3]);
+  assert.deepEqual([hit(97.5, 10), hit(10, 73.5)], [0, 0], 'the gap after a slot belongs to it');
+  for (const [x, y] of [[-1, 5], [5, -1], [196, 5], [5, 148], [NaN, 0], [0, Infinity]]) assert.equal(hit(x, y), undefined, `${x}, ${y} is outside`);
+  assert.equal(tileAt(5, 5, 0, 0), undefined, 'no grid, no slot');
 });
 
 test('dropping on a zone runs its pipeline; a zone that is gone, for another type, or empty is refused', () => {

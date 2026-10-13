@@ -22,6 +22,8 @@
   /* The glass of the floating surfaces: a tint over the acrylic window behind it, or over the desktop where Windows has no acrylic. */
   --glass: #f6f3f0b8; --glass-solid: #f3f0ede6; --glass-edge: #ffffffb3; --glass-line: #3a2f3824; --glass-ink: #2b272d; --glass-muted: #463e45;
   --button-glass: #ebe5d8e0; --button-glass-hover: #fff9e9; --button-glass-ink: #4c444a;
+  /* The preset zone under a dragged file: Clop's peach (`Color.peach`), ringed in its red. */
+  --zone-hover: #ffdca2eb; --zone-hover-line: #dc3a55a6;
   --code-step-processing: #1d6a43; --code-step-file: #8a4b0b; --code-step-filter: #6a3d9a; --code-step-media: #0d5f8a; --code-step-action: #a02f5a;
   --code-param: #7d6a8a; --code-value: #1f5f7a; --code-punct: #8c8290;
 }
@@ -42,6 +44,7 @@
     --shadow-pop: 0 2px 6px #00000059, 0 14px 34px #00000080;
     --glass: #211d23b3; --glass-solid: #241f26e6; --glass-edge: #ffffff1f; --glass-line: #ffffff1a; --glass-ink: #f2ecf3; --glass-muted: #c9bfcb;
     --button-glass: #2d2832e0; --button-glass-hover: #433c48; --button-glass-ink: #f1e8da;
+    --zone-hover: #57402ceb; --zone-hover-line: #ff6079a6;
     --code-step-processing: #7fd3a2; --code-step-file: #f0b46a; --code-step-filter: #c6a2ef; --code-step-media: #79c2ec; --code-step-action: #f08cb4;
     --code-param: #c0a9cf; --code-value: #8fd0ea; --code-punct: #8a808c;
   }
