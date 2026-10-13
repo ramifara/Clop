@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -19,11 +20,11 @@ const STDERR_LIMIT = 1024 * 1024;
 const isToolName = (tool: string): tool is ToolName => (TOOL_NAMES as readonly string[]).includes(tool);
 // ffmpeg's `-progress` key=value lines, which would push its actual error out of the last lines.
 const PROGRESS_LINE = /^(frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time(_us|_ms)?|dup_frames|drop_frames|speed|progress)=\s*\S*$/;
-const lastLines = (text: string, count: number) => text.split(/\r?\n|\r/).map(line => line.trim()).filter(line => line && !PROGRESS_LINE.test(line)).slice(-count).join('\n');
+export const lastLines = (text: string, count: number) => text.split(/\r?\n|\r/).map(line => line.trim()).filter(line => line && !PROGRESS_LINE.test(line)).slice(-count).join('\n');
 const abortError = (signal: AbortSignal) => signal.reason instanceof Error ? signal.reason : new DOMException('The operation was aborted.', 'AbortError');
 
 /** Kills the process and everything it started. Windows has no process groups or SIGTERM, so taskkill walks the tree. */
-function killTree(child: ChildProcess) {
+export function killTree(child: ChildProcess) {
   if (child.pid === undefined) return;
   if (process.platform === 'win32') {
     const taskkill = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
@@ -31,6 +32,16 @@ function killTree(child: ChildProcess) {
     return;
   }
   try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+}
+
+/**
+ * Runs a tool below the priority of the apps the user is working in, so a batch that keeps every core busy still leaves the
+ * desktop responsive. Windows only: on an idle machine the tools get the whole CPU as before, and when another program wants a
+ * core, it goes first. A process that ended before this is asked is not an error.
+ */
+export function lowerPriority(child: ChildProcess) {
+  if (process.platform !== 'win32' || child.pid === undefined) return;
+  try { os.setPriority(child.pid, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch { /* Already gone, or not ours to change. */ }
 }
 
 /** Splits streamed text into lines. Progress output such as ffmpeg's and gifski's ends lines with a bare carriage return. */
@@ -57,6 +68,7 @@ export function run(tool: ToolName | string, args: string[], opts: RunOptions = 
     const cwd = opts.cwd ?? (path.isAbsolute(command) ? path.dirname(command) : path.dirname(process.execPath));
     // A detached child leads its own process group on POSIX, so the whole tree can be killed at once.
     const child = spawn(command, isToolName(tool) ? toolArguments(tool, args) : args, { cwd, env: opts.env, windowsHide: true, windowsVerbatimArguments: opts.windowsVerbatimArguments, detached: process.platform !== 'win32', stdio: [opts.input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+    lowerPriority(child);
     const stdout: Buffer[] = [];
     let stderr = '', failure: Error | undefined, timer: NodeJS.Timeout | undefined;
     const stop = (error: Error) => { failure ??= error; killTree(child); };

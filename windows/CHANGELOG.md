@@ -2,6 +2,17 @@
 
 Clop for Windows versions. Numbering is described in the README under [Versions](README.md#versions).
 
+## Unreleased
+
+Performance. Nothing about the windows, cards or flows changes; each optimisation does less work.
+- exiftool, which every optimised image goes through, stays running between commands (`-stay_open`) instead of starting a Perl interpreter for each one. A command now costs the work alone; the process ends itself after 30 seconds without a command, and one left behind by a run that could not close it (a crash, a forced end) is ended at the next start. Set `CLOP_EXIFTOOL_ONESHOT=1` to start a process per command as before.
+- An edited or converted JPEG, and the adaptive tier's JPEG candidate for a PNG, is written once at the target quality, instead of as a quality-100 intermediate that jpegoptim decoded and encoded again. It is written by libjpeg-turbo; a source JPEG still goes through jpegoptim as it is.
+- Whether an image is opaque (the adaptive tier and the JPEG conversion list) is read from its alpha channel alone, instead of sharp's whole-image statistics, which also measured sharpness and dominant colour.
+- The entropy that decides whether a large JPEG is tried as PNG is measured on a sample of about a million pixels.
+- Card previews cover the card's 196 × 148 box at twice its size (296 px on the short side, at most 2000 px on the long side) instead of filling 1000 × 760, and are written at a fast compression level; the clipboard bitmap of a non-PNG result likewise.
+- Results sent to the windows share their preview strings instead of copying them on every change.
+- On Windows, the bundled tools run below normal priority, so a batch that keeps every core busy leaves the desktop responsive. On an idle machine they get the CPU as before.
+
 ## 1.0.0-beta.1 (not yet released)
 
 The first version with the macOS app's features, Phases 0–6 of the [parity plan](https://plans.ramifara.app/plans/clop-windows-parity). A beta, because the parts that only run on Windows (installer entries, Explorer verbs, updates) have not yet been tried on real PCs beyond CI.

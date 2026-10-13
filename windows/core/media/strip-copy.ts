@@ -3,9 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { copyTo, exists } from '../fileops';
 import type { OptimisedMarker } from '../marker';
-import { run } from '../run';
 import type { Workdir } from '../workdir';
 import { COLOUR_TAGS } from './exif';
+import { exiftool } from './exiftool';
 
 /** Where a stripped file's original is kept, and what records the stripped file as Clop's. */
 export interface StripKeep { workdir: Workdir; marker: OptimisedMarker }
@@ -19,7 +19,7 @@ export interface StripKeep { workdir: Workdir; marker: OptimisedMarker }
 export async function stripExifFile(file: string, { workdir, marker }: StripKeep): Promise<void> {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'clop-exif-')), copy = path.join(temp, path.basename(file));
   try {
-    await run('exiftool', ['-charset', 'filename=utf8', '-XResolution=72', '-YResolution=72', '-all=', '-tagsFromFile', '@', '-XResolution', '-YResolution', '-Orientation', ...COLOUR_TAGS, '-o', copy, file]);
+    await exiftool(['-charset', 'filename=utf8', '-XResolution=72', '-YResolution=72', '-all=', '-tagsFromFile', '@', '-XResolution', '-YResolution', '-Orientation', ...COLOUR_TAGS, '-o', copy, file]);
     if (!await exists(copy)) throw new Error('exiftool wrote nothing');
     await workdir.backup(file, { force: true }).catch(error => { throw new Error(`Could not back up ${file} before replacing it: ${error instanceof Error ? error.message : error}`); });
     await copyTo(copy, file);

@@ -9,17 +9,41 @@ import { sharpInput } from '../core/media/sharp-input';
 import type { MediaKind } from '../core/media/types';
 
 const PIXELS = 60_000_000;
-/** Cards are 196 px wide; video, PDF and audio previews never change with the result, so a small one is enough. */
+/**
+ * Cards are 196 × 148 px and fill that box with the preview (`object-fit: cover`), so what matters is the preview's short side: it
+ * covers the box at 200 % display scaling, and a panorama is not shrunk below the card's height, nor kept longer than `LONGEST`.
+ */
+const IMAGE_BOX = { width: 392, height: 296 };
+const LONGEST = 2000;
+/** Video, PDF and audio previews never change with the result, so a small one is enough. */
 const MEDIA_BOX = { width: 480, height: 360 };
+/** A preview is made twice per image and sent to the windows with every change: zlib's fastest levels write it in a fraction of the default's time, for a little more size. */
+const PREVIEW_COMPRESSION = 2;
 const png = async (source: string | Buffer, box: { width: number; height: number }) => {
-  const bytes = await sharp(source, { limitInputPixels: PIXELS }).autoOrient().resize({ ...box, fit: 'inside', withoutEnlargement: true }).png().toBuffer();
+  const bytes = await sharp(source, { limitInputPixels: PIXELS }).autoOrient().resize({ ...box, fit: 'inside', withoutEnlargement: true }).png({ compressionLevel: PREVIEW_COMPRESSION }).toBuffer();
   return `data:image/png;base64,${bytes.toString('base64')}`;
 };
 
-/** A PNG data URL for the card. `decode` routes formats sharp cannot read, and HDR, through the image engine's decoders. */
+/** The size a `width` × `height` image is previewed at for a card: covering `IMAGE_BOX`, never enlarged, at most `LONGEST` on its long side. */
+export function cardPreviewSize(width: number, height: number) {
+  let scale = Math.min(1, Math.max(IMAGE_BOX.width / width, IMAGE_BOX.height / height));
+  scale = Math.min(scale, LONGEST / Math.max(width, height));
+  return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
+}
+
+/** A card preview of an image sharp reads, at `cardPreviewSize`. */
+async function cardPNG(source: string | Buffer) {
+  const image = sharp(source, { limitInputPixels: PIXELS }).autoOrient(), meta = await image.metadata();
+  // `autoOrient` turns the pixels, so the size is the displayed one.
+  const turned = (meta.orientation ?? 1) >= 5, width = (turned ? meta.height : meta.width) ?? 1, height = (turned ? meta.width : meta.height) ?? 1;
+  const bytes = await image.resize({ ...cardPreviewSize(width, height), fit: 'fill' }).png({ compressionLevel: PREVIEW_COMPRESSION }).toBuffer();
+  return `data:image/png;base64,${bytes.toString('base64')}`;
+}
+
+/** A PNG data URL for the card. `decode` routes formats sharp cannot read, and HDR, through the image engine's decoders, which write no more than the preview needs. */
 export async function imageThumbnail(file: string, decode = false) {
-  const decoded = decode ? await toPNG(file, path.join(path.dirname(file), 'preview.png'), { limitInputPixels: PIXELS }) : undefined;
-  try { return await png(decoded ?? await sharpInput(file), { width: 1000, height: 760 }); } finally { if (decoded) await rm(decoded, { force: true }); }
+  const decoded = decode ? await toPNG(file, path.join(path.dirname(file), 'preview.png'), { limitInputPixels: PIXELS, box: { width: LONGEST, height: LONGEST }, compressionLevel: 1 }) : undefined;
+  try { return await cardPNG(decoded ?? await sharpInput(file)); } finally { if (decoded) await rm(decoded, { force: true }); }
 }
 
 /**

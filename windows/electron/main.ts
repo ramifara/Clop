@@ -54,6 +54,7 @@ import { installVerbs, portablePaths, removeVerbs, verbsStatus } from './explore
 import { explorerVerb, type VerbId } from '../core/shell-verbs';
 import { audioMetadata } from '../core/media/audio';
 import { stripExifFile } from '../core/media/strip-copy';
+import { closeExifTool, endStaleExifTool, recordExifToolPid } from '../core/media/exiftool';
 import { expandFolders, explorerRequest, failureName, skippedNote, stripAll, stripSummary, usableFiles, verbNotes } from './verbs';
 import { mirrorConsoleToFile } from './debug-log';
 import { newPipePath, type OptimisationRequest } from '../core/ipc/protocol';
@@ -1254,6 +1255,10 @@ else {
     setupWatchdog();
     Menu.setApplicationMenu(null);
     const userData = app.getPath('userData');
+    // An exiftool a previous run could not close (a crash, a forced end) is ended, and this run's is noted for the next.
+    const exifToolPid = path.join(userData, 'exiftool.pid');
+    await endStaleExifTool(exifToolPid).catch(() => {});
+    recordExifToolPid(exifToolPid);
     windowFrames = await new WindowFrames(path.join(userData, 'window-frames.json')).load();
     store = new SettingsStore(path.join(userData, 'settings.json'), { home: app.getPath('home'), desktop: app.getPath('desktop'), userData }, true);
     // Watching guards against apps that rewrite many files in its first seconds on the first launch.
@@ -1406,7 +1411,7 @@ else {
     // So does a placement under way (a result taking an original's place), for up to two minutes; a start after a forced end repairs one.
     else if (placing() && !placementsDone) { event.preventDefault(); void Promise.race([placementsSettled(), new Promise(resolve => setTimeout(resolve, 120_000))]).finally(() => { placementsDone = true; app.quit(); }); }
     if (quitting) return;
-    quitting = true; stopUpdates?.(); for (const collector of verbCollectors.values()) collector.cancel(); withdrawPipe?.(); void pipe?.close(); service?.stopAll(); engine?.abort(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); globalShortcut.unregisterAll(); });
+    quitting = true; stopUpdates?.(); for (const collector of verbCollectors.values()) collector.cancel(); withdrawPipe?.(); void pipe?.close(); service?.stopAll(); engine?.abort(); for (const watcher of watchers) void watcher.close(); stopCleaner?.(); pickup.cancel(); if (clipboardTimer) clearInterval(clipboardTimer); for (const timer of hideTimers.values()) clearTimeout(timer); bridge.stop(); void closeExifTool(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (quitting) app.quit(); });
   app.on('activate', () => { if (engine) showLatest(); });
 }

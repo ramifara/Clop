@@ -11,6 +11,7 @@ import { graphic, photo } from '../core/media/image.fixtures';
 import { run } from '../core/run';
 import { needTools } from '../core/testing';
 import { OptimisedMarker } from '../core/marker';
+import { closeExifTool } from '../core/media/exiftool';
 import { validateItems } from './items';
 import { main } from './main';
 
@@ -210,19 +211,36 @@ test('strip-exif removes GPS but keeps the orientation', async t => {
 test('strip-exif on a folder runs exiftool through the image queue, never on every file at once', async t => {
   if (process.platform === 'win32') { t.skip('the stand-in exiftool is a shell script'); return; }
   const c = await cli(t);
-  // A stand-in exiftool that notes when each run starts and ends, and writes the copy it is asked for.
+  // A stand-in exiftool that notes when each run starts and ends, and writes the copy it is asked for: started for one command,
+  // or kept waiting for commands on its input (`-stay_open`, see core/media/exiftool.ts), each ended by `-execute<n>`.
   const tools = c.file('tools'), log = c.file('runs.log');
   await mkdir(tools);
-  await writeFile(path.join(tools, 'exiftool'), `#!/bin/sh\nout=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; last="$a"; done\necho start >> '${log}'; sleep 0.2; cp "$last" "$out"; echo end >> '${log}'\n`, { mode: 0o755 });
+  const strip = `out=""; prev=""; last=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; last="$a"; done; echo start >> '${log}'; sleep 0.2; cp "$last" "$out"; echo end >> '${log}'`;
+  await writeFile(path.join(tools, 'exiftool'), `#!/bin/sh
+strip() { ${strip}; }
+if [ "$1" != "-stay_open" ]; then strip "$@"; exit 0; fi
+set --
+while IFS= read -r line; do
+  case "$line" in
+    -execute*) strip "$@"; echo "{ready\${line#-execute}}"; echo "{clop-done\${line#-execute}}" >&2; set --;;
+    -echo3|-echo4) IFS= read -r line;;
+    -stay_open) IFS= read -r line; exit 0;;
+    *) set -- "$@" "$line";;
+  esac
+done
+`, { mode: 0o755 });
   const previous = process.env.CLOP_TOOLS_DIR;
   process.env.CLOP_TOOLS_DIR = tools;
-  t.after(() => { if (previous === undefined) delete process.env.CLOP_TOOLS_DIR; else process.env.CLOP_TOOLS_DIR = previous; });
+  // The exiftool an earlier test left waiting is the real one: the stand-in only serves a process started after the switch.
+  await closeExifTool();
+  t.after(async () => { await closeExifTool(); if (previous === undefined) delete process.env.CLOP_TOOLS_DIR; else process.env.CLOP_TOOLS_DIR = previous; });
   await mkdir(c.file('photos'));
   for (let i = 0; i < 6; i++) await writeFile(c.file(`photos/${i}.jpg`), `photo ${i}`);
   assert.equal(await c.clop('strip-exif', 'photos'), 0, c.err());
   let running = 0, most = 0;
   for (const line of (await readFile(log, 'utf8')).trim().split('\n')) { running += line === 'start' ? 1 : -1; most = Math.max(most, running); }
-  assert.equal(most, 2, 'two at a time, the image queue\'s limit');
+  // Through the process kept waiting, one at a time; as processes of their own, two, the image queue's limit.
+  assert.ok(most >= 1 && most <= 2, `${most} at a time`);
 });
 
 test('the legacy convert writes next to the original and refuses to overwrite without --force', async t => {

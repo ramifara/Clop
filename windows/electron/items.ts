@@ -113,7 +113,7 @@ export class ItemEngine extends EventEmitter {
    * and drags carry), so a result pasted or dragged into a watched folder is not optimised a second time.
    */
   constructor(private root: string, private settings: () => ItemSettings = defaultSettings, private readonly mark: (file: string) => Promise<void> = async () => {}) { super(); }
-  list() { return [...this.entries.values()].map(e => structuredClone(e.result)).reverse(); }
+  list() { return [...this.entries.values()].map(e => snapshot(e.result)).reverse(); }
   get(id: string) { const entry = this.entries.get(id); if (!entry) throw new Error('This result is no longer in the shelf.'); return entry; }
   has(id: string) { return this.entries.has(id); }
   /** The result's file: where its placement put it, or the shelf's copy. */
@@ -474,6 +474,8 @@ export function mediaExtension(info: VideoInfo | AudioInfo | undefined) {
   if (info.kind === 'video') return has('mp4') ? 'mp4' : has('webm') && /^(vp8|vp9|av1)$/.test(info.codec ?? '') ? 'webm' : has('matroska') ? 'mkv' : has('avi') ? 'avi' : has('mpeg') ? 'mpg' : 'mp4';
   return has('mp4') ? 'm4a' : has('mp3') ? 'mp3' : has('ogg') ? (info.codec === 'opus' ? 'opus' : 'ogg') : has('flac') ? 'flac' : has('wav') ? 'wav' : has('aiff') ? 'aiff' : has('aac') ? 'aac' : 'm4a';
 }
+/** A copy of a result for the windows, which must not see the engine's own object. The previews are the large part, and strings cannot change, so they are shared rather than copied. */
+function snapshot({ preview, originalPreview, ...rest }: ItemResult): ItemResult { return { ...structuredClone(rest), preview, originalPreview }; }
 /** Whether `file` is inside `dir`. */
 function within(dir: string, file: string) {
   const relative = path.relative(dir, file);

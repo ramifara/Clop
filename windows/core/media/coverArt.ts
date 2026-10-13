@@ -5,7 +5,7 @@ import { run, ToolError } from '../run';
 import type { ToolName } from '../tools';
 import { AUDIO_FORMATS, type AudioFormat } from './audioFormat';
 import * as cq from './compression';
-import { imageEntropy } from './image';
+import { imageEntropy, isOpaque } from './image';
 
 // Embedded album art, as Clop/Audio.swift handles it while re-encoding audio.
 export type CoverArtBehaviour = 'optimise' | 'remove' | 'keep';
@@ -113,7 +113,7 @@ export async function optimiseCoverArt(file: string, signal?: AbortSignal) {
   const type = await sniff(file);
   if (type === 'jpg') { await optimiseCoverJPEG(file, signal); return file; }
   if (type !== 'png') return file;
-  const photo = await sharp(file).stats().then(async stats => stats.isOpaque && (await imageEntropy(file)) >= COVER_JPEG_ENTROPY, () => false);
+  const photo = await isOpaque(file).then(async opaque => opaque && (await imageEntropy(file)) >= COVER_JPEG_ENTROPY, () => false);
   // The JPEG trial starts from the original PNG, not the quantized one.
   const jpeg = photo ? path.join(path.dirname(file), `${path.parse(file).name}-photo.jpg`) : undefined;
   if (jpeg) await sharp(file).jpeg({ quality: 100 }).toFile(jpeg);

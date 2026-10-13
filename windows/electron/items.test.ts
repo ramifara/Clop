@@ -144,7 +144,8 @@ test('imports HEIC, JPEG XL, BMP and SVG with previews, and keeps the original t
     assert.equal(result.status, 'ready', `${name}: ${result.error}`);
     assert.deepEqual([result.format, result.originalWidth, result.originalHeight, result.width], [output, 600, 400, 600], name);
     assert.match(result.originalPreview, /^data:image\/png;base64,/);
-    assert.equal((await sharp(Buffer.from(result.preview.split(',')[1], 'base64')).metadata()).width, 600, name);
+    // The preview covers the card's box at twice its size (`cardPreviewSize`): a 600 × 400 image is scaled to 296 px tall.
+    assert.deepEqual([(await sharp(Buffer.from(result.preview.split(',')[1], 'base64')).metadata()).width, (await sharp(Buffer.from(result.preview.split(',')[1], 'base64')).metadata()).height], [444, 296], name);
     await engine.restore(id);
     assert.deepEqual(await readFile(engine.output(id)), bytes, name);
   }
