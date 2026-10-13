@@ -63,3 +63,9 @@ test('dropping on a zone runs its pipeline; a zone that is gone, for another typ
   assert.throws(() => zonePipeline(zones, library, 'NOPE', 'image'), /no longer exists/);
   for (const bad of [undefined, 7, '', 'x'.repeat(101), {}]) assert.throws(() => zonePipeline(zones, library, bad, 'image'), /Choose a preset zone/);
 });
+
+test('a dragged folder has no common type, so only the any-type zones show for it', () => {
+  const kindOf = (file: string) => file.endsWith('.png') ? 'image' as const : undefined;
+  assert.equal(draggedType(['C:\\Photos'], kindOf), undefined);
+  assert.equal(draggedType(['C:\\Photos', 'C:\\a.png'], kindOf), undefined);
+});
