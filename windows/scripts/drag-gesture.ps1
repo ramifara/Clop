@@ -1,4 +1,4 @@
-param([long]$Window, [int]$Width, [int]$Height, [int]$X, [int]$Y, [int]$MoveX = 90, [int]$MoveY = 40, [int]$Hold = 600, [int]$PressDelay = 300, [switch]$Escape)
+param([long]$Window, [int]$Width, [int]$Height, [int]$X, [int]$Y, [int]$MoveX = 90, [int]$MoveY = 40, [int]$Hold = 600, [int]$PressDelay = 300, [int]$ToX = -1, [int]$ToY = -1, [int]$Settle = 800, [switch]$Escape)
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
@@ -25,6 +25,19 @@ try {
   Write-Output 'Moving the mouse'
   [ClopDragGesture]::SetCursorPos($X + $MoveX, $Y + $MoveY) | Out-Null
   Start-Sleep -Milliseconds $Hold
+  if ($ToX -ge 0 -and $ToY -ge 0) {
+    # Carry the drag to a target (screen pixels) in steps, so the window under the cursor sees the drag enter, move over it and then drop.
+    $fromX = $X + $MoveX; $fromY = $Y + $MoveY
+    Write-Output "Moving to the target $ToX,$ToY"
+    foreach ($step in 1..8) {
+      [ClopDragGesture]::SetCursorPos([int]($fromX + ($ToX - $fromX) * $step / 8), [int]($fromY + ($ToY - $fromY) * $step / 8)) | Out-Null
+      Start-Sleep -Milliseconds 80
+    }
+    [ClopDragGesture]::SetCursorPos($ToX + 2, $ToY + 1) | Out-Null
+    Start-Sleep -Milliseconds 80
+    [ClopDragGesture]::SetCursorPos($ToX, $ToY) | Out-Null
+    Start-Sleep -Milliseconds $Settle
+  }
   if ($Escape) {
     [ClopDragGesture]::keybd_event(27,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 300

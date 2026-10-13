@@ -21,7 +21,7 @@ const api: ClopApi = {
   cropSource: (id, view) => invoke('crop-source', id, view), crop: (id, request) => invoke('crop', id, request),
   cropSizes: () => invoke('crop-sizes'), saveCropSizes: sizes => invoke('save-crop-sizes', sizes),
   compareSources: (id, view) => invoke('compare-sources', id, view),
-  runPreset: (zoneId, files) => invoke('run-preset', zoneId, files.map(file => webUtils.getPathForFile(file)).filter(Boolean)),
+  runPreset: (zoneId, files, aggressive) => invoke('run-preset', zoneId, files.map(file => webUtils.getPathForFile(file)).filter(Boolean), aggressive === true),
   editor: {
     state: () => ipcRenderer.invoke('clop:editor', 'state'), command: command => ipcRenderer.invoke('clop:editor', 'command', command),
     subscribe: callback => {

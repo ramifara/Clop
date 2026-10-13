@@ -32,6 +32,8 @@ const MEDIA: readonly StepKind[] = ['removeAudio', 'changeSpeed', 'capFps', 'nor
 const SOLO: readonly StepKind[] = ['targetSize', 'stripExif', 'watermark', 'capFps', 'normalize', 'extractPagesAsImages'];
 const VIDEO_CODECS: readonly string[] = ['hevc', 'x265', 'av1', 'webm'];
 
+/** `PipelineStep.isProcessingStep`: a step that encodes the file (not a media step such as `removeAudio`). */
+export const isEncodingStep = (step: PipelineStep) => PROCESSING.includes(stepKind(step));
 export const isProcessing = (step: PipelineStep) => PROCESSING.includes(stepKind(step)) || MEDIA.includes(stepKind(step));
 /** `PipelineStep.location`: processing steps only. */
 export const stepLocation = (step: PipelineStep) => { const [kind, p] = stepEntry(step); return PROCESSING.includes(kind) ? (p as { location: string }).location : undefined; };
@@ -149,8 +151,11 @@ async function encodeImage(run: RunState, batch: PipelineStep[], progress: Progr
     const size = factor !== undefined && factor < 1 ? { width: Math.max(1, Math.round(info.width * factor)), height: Math.max(1, Math.round(info.height * factor)) } : {};
     // Windows has a truly lossless image tier, so `encoder: lossless` uses it.
     const tier = encoder === 'lossless' ? { tier: 'lossless' as const, factor: compression.factor } : adaptive ? { tier: 'adaptive' as const, factor: compression.factor } : compression;
+    // As `effectiveImageCompression` on macOS: a compression the step names (Windows' lossless and adaptive tiers too) wins over the
+    // normal or aggressive anchor the encoder picks, which would otherwise replace it.
+    const named = params(steps, 'optimise').some(p => p.compression) || encoder === 'lossless' || adaptive;
     const output = await optimiseImage(file, await run.scratch(), {
-      ...imageBase(run), compression: tier, aggressive, format: converts.length ? imageFormat(converts.at(-1)!.to) : undefined, cropSize, ...size,
+      ...imageBase(run), compression: tier, aggressive: named ? undefined : aggressive, format: converts.length ? imageFormat(converts.at(-1)!.to) : undefined, cropSize, ...size,
       onProgress: f => progress((n + f) / all.length),
     });
     file = output.path;

@@ -31,7 +31,7 @@ import { guarded, recentClipboard, toTemplate, trayMenu, trayTooltip, trayVarian
 import { allPipelineChoices, appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
 import { seedBuiltinPipelines } from '../core/pipeline/builtins';
 import { EDITOR_SETTING_KEYS } from '../core/pipeline/editor-state';
-import { draggedType, tilesFor, zonePipeline } from '../core/pipeline/zones';
+import { draggedType, tilesFor } from '../core/pipeline/zones';
 import { EditorService } from './editor';
 import { PresetReveal } from './preset-reveal';
 import { pipelinesSkipOptimisation, type PipelinesOutcome } from '../core/pipeline/triggers';
@@ -63,6 +63,9 @@ import { MEDIA_SCHEME, MediaFiles } from './media-files';
 import { applyCrop, cropSource, viewItems, parseCropRequest, parseCropView, parseSavedCropSizes } from './crop';
 import { compareSources, parseCompareView } from './compare';
 import { setupBatch } from './batch-window';
+import { expandDroppedFolders, splitFolders } from './dropped';
+import { dropRunsPipelines, planZoneDrop, zoneAutomation } from './zone-drop';
+import { MAX_BATCH_FILES } from '../core/batch/scan';
 import { ACTION_KINDS, BATCH_ACTIONS, batchMenu, itemMenu, MENUS, parseInvocation, planFor, refuseUnavailable, submenu, type ActionId, type Facts } from '../core/cards/actions';
 import { expandHome } from '../core/settings/paths';
 import { menuTemplate } from './card-menu';
@@ -82,6 +85,8 @@ let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
 let altHeld = false, shiftHeld = false, dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
 /** The files being dragged, as the Windows helper reports them; Ctrl during the drag shows the preset zones in the drop zone. */
 let dragFiles: string[] = [];
+/** Whether a file is on this computer (not a cloud placeholder); set once the helper is up, so a folder read before then reads everything. */
+let scanLocal: ((file: string) => Promise<boolean>) | undefined;
 const presetReveal = new PresetReveal();
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
@@ -515,13 +520,13 @@ function afterPipelines(id: string | undefined, outcome: PipelinesOutcome, sourc
   for (const fork of outcome.forks) void makeRoom().then(() => engine.importPath(fork, source, defaults(), undefined, { automation: AS_IS })).catch(error => inform(message(error)));
 }
 /**
- * The pipelines attached to `source` (`clipboard` or `dropZone`) for a file of `kind`, or `pipelines` given outright (a preset
- * zone's), as an import's automation. A copied image skips the usual optimisation when every pipeline does (Images.swift); a
+ * The pipelines attached to `source` (`clipboard` or `dropZone`) for a file of `kind`, as an import's automation. A copied image skips the usual optimisation when every pipeline does (Images.swift); a
  * copied video, PDF or audio file is optimised first (ClopApp.swift), then the pipelines run. A drop skips it for every kind
  * (OptimisationUtils.swift) and is optimised anyway when no pipeline did anything.
  */
-function sourceAutomation(kind: MediaKind, source: 'clipboard' | 'dropZone', result: ItemResult['source'], app?: CopyingApp, pipelines = attachedPipelines(kind, source, settings, home)): ImportExtra | undefined {
+function sourceAutomation(kind: MediaKind, source: 'clipboard' | 'dropZone', result: ItemResult['source'], app?: CopyingApp): ImportExtra | undefined {
   let id: string | undefined;
+  const pipelines = attachedPipelines(kind, source, settings, home);
   const automation = attachedAutomation(pipelines, {
     host: pipelineHost, context: { kind, sourceApp: app }, fallback: true, alwaysOptimise: source === 'clipboard' && kind !== 'image', done: outcome => afterPipelines(id, outcome, result),
   });
@@ -540,8 +545,8 @@ function folderAutomation(file: string, kind: MediaKind, dir: string, id: () => 
 function quietResult(id: string) { quiet.add(id); for (const old of quiet) { if (quiet.size <= 80) break; quiet.delete(old); } }
 const itemId = (value: unknown) => { if (typeof value !== 'string' || !value || value.length > 64) throw new Error('Choose a result.'); return value; };
 /** Imports local files one by one, telling about each that fails. Returns the results that finished. */
-async function importPaths(files: unknown, source: ItemResult['source'], { aggressive = false, name, extra }: { aggressive?: boolean; name?: (file: string) => Promise<string | undefined>; extra?: (file: string) => ImportExtra | undefined } = {}) {
-  if (!Array.isArray(files) || files.length > 20 || files.some(p => typeof p !== 'string' || !path.isAbsolute(p))) throw new Error('Choose up to 20 local files at a time.');
+async function importPaths(files: unknown, source: ItemResult['source'], { aggressive = false, name, extra, limit = 20 }: { aggressive?: boolean; name?: (file: string) => Promise<string | undefined>; extra?: (file: string) => ImportExtra | undefined; limit?: number } = {}) {
+  if (!Array.isArray(files) || files.length > limit || files.some(p => typeof p !== 'string' || !path.isAbsolute(p))) throw new Error('Choose up to 20 local files at a time.');
   dropActive = false; importsRunning++; broadcast();
   const completed: string[] = [];
   try {
@@ -556,19 +561,47 @@ async function importPaths(files: unknown, source: ItemResult['source'], { aggre
   return completed;
 }
 /** The pipelines of the drop zone (or of the preset zone `zone`), chosen for the kind the file turns out to be rather than by its name. */
-const dropExtra = (zone?: unknown): ImportExtra => ({
-  late: kind => sourceAutomation(kind, 'dropZone', 'drop', undefined, zone === undefined ? undefined : [zonePipeline(settings.presetZones, settings.savedPipelines, zone, kind)]),
-});
+const dropExtra = (zone?: unknown): ImportExtra => ({ late: kind => zone === undefined ? sourceAutomation(kind, 'dropZone', 'drop') : zoneExtra(zone, kind) });
+/** The pipeline of the preset zone `zone` for a dropped file of `kind`, as the settings are now. */
+function zoneExtra(zone: unknown, kind: MediaKind): ImportExtra {
+  let id: string | undefined;
+  return { automation: zoneAutomation(settings, zone, kind, { host: pipelineHost, done: outcome => afterPipelines(id, outcome, 'drop') }), staged: staged => { id = staged; } };
+}
+/**
+ * What a drop on the drop zone does: with `useBatchModeForFolders` the batch window takes a pile of more files than
+ * `batchModeFileCountThreshold` and each folder holding more than that; everything else, the files in smaller folders too, is optimised one by one.
+ */
+async function dropped(files: unknown, aggressive: boolean) {
+  const rest = batch ? await batch.host.drop(files, aggressive) : files;
+  // What is left is at most `batchModeFileCountThreshold` files and folders, which may be more than the usual 20.
+  if (!Array.isArray(rest) || rest.length) await importFiles(rest, 'drop', { aggressive, limit: settings.useBatchModeForFolders ? Math.max(20, settings.batchModeFileCountThreshold) : 20 });
+}
 /**
  * Dropped and opened files; their results go on the clipboard with `autoCopyToClipboard`. Dropped files run the pipelines attached
  * to the drop zone, or the pipeline of the preset zone `zone` they were dropped on instead.
  */
-async function importFiles(files: unknown, source: ItemResult['source'], aggressive = false, zone?: unknown) {
+async function importFiles(files: unknown, source: ItemResult['source'], { aggressive = false, zone, limit = 20 }: { aggressive?: boolean; zone?: unknown; limit?: number } = {}) {
   const sequence = await currentSequence();
-  // Pipelines attached to the drop zone (or a preset zone's pipeline) run on drops, but not on a Shift-drop's explicit aggressive optimisation (⌘ on macOS, `wantsPipelineLookup`).
-  const extra = source !== 'drop' || aggressive ? undefined : () => dropExtra(zone);
-  const ids = await importPaths(files, source, { aggressive, extra });
+  const extra = source === 'drop' && dropRunsPipelines({ aggressive, zone }) ? () => dropExtra(zone) : undefined;
+  // A folder among the files becomes the files inside it (the batch window takes the larger ones, see `dropped`).
+  if (Array.isArray(files) && files.length <= limit && files.every(file => typeof file === 'string' && path.isAbsolute(file)) && await splitFolders(files).then(split => split!.folders.length > 0)) {
+    const expanded = await expandDroppedFolders(files as string[], { owns: file => workdir.owns(file), isLocal: scanLocal });
+    for (const notice of expanded.notices) inform(notice);
+    files = expanded.files;
+    if (!(files as string[]).length) return;
+    limit = MAX_BATCH_FILES;
+  }
+  const ids = await importPaths(files, source, { aggressive, extra, limit });
   if (settings.autoCopyToClipboard && ids.length) await copy(ids, sequence);
+}
+/**
+ * A drop on the preset zone `zone`: its pipeline runs on every dropped file and on every file in the dropped folders, never the batch
+ * window, and Shift makes the optimisation aggressive. A zone that cannot run refuses the whole drop with one notice.
+ */
+async function zoneDropped(zone: unknown, files: unknown, aggressive: boolean) {
+  const plan = await planZoneDrop(settings, zone, files, { owns: file => workdir.owns(file), isLocal: scanLocal, kindOf: mediaKind });
+  if (plan.notice) inform(plan.notice);
+  if (plan.files.length) await importFiles(plan.files, 'drop', { aggressive, zone, limit: MAX_BATCH_FILES });
 }
 /**
  * The name for a clipboard image: `customNameTemplateForClipboardImages` (or the macOS default template) when
@@ -1054,7 +1087,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
   const id = args[0] as string;
   switch (action) {
     case 'state': return state();
-    case 'import': if (!await batch?.host.drop(args[0], args[1] === true)) await importFiles(args[0], 'drop', args[1] === true); break;
+    case 'import': await dropped(args[0], args[1] === true); break;
     case 'import-url': await importUrl(args[0], args[1] === true); break;
     case 'clipboard': await optimiseClipboard(undefined, true); break;
     case 'apply': await engine.apply(id, args[1] as ImageOptions); if (copiesBack(id)) await copy([id]); break;
@@ -1065,7 +1098,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'dismiss': await dismiss(id); break;
     case 'settings': if (event.sender !== main.webContents) throw new Error('Only the settings window can do this.'); await updateSettings(rendererSettings(args[0], settings)); break;
     case 'apps': return bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [];
-    case 'run-preset': await importFiles(args[1], 'drop', false, args[0]); break;
+    case 'run-preset': await zoneDropped(args[0], args[1], args[2] === true); break;
     case 'pipelines': return pipelineChoices(settings, engine.get(itemId(args[0])).result.kind);
     case 'run-pipeline': await runSavedPipeline(itemId(args[0]), args[1]); break;
     case 'mcp': if (event.sender !== main.webContents) throw new Error('Only the settings window can do this.'); return mcp.handle(args[0]);
@@ -1215,6 +1248,7 @@ else {
       handle: (file, dir) => folders.optimise(file, kind, dir), cancel: files => folders.cancel(files), notice: inform,
       disable: () => toggleSetting({ [enabledKey(kind)]: false }),
     }));
+    scanLocal = isLocal(false);
     const counter = () => nameCounter ??= { value: settings.lastAutoIncrementingNumber };
     const saveCounter = (value: number) => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); };
     batch = setupBatch({ here, devUrl, webPreferences, created: syncNative, quitting: () => quitting, settings: () => settings, owns: file => workdir.owns(file), isLocal: isLocal(false), env: () => ({ settings: () => settings, workdir, marker, home, counter: counter(), saved: saveCounter }) });

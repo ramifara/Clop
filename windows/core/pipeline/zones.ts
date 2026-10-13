@@ -1,4 +1,4 @@
-import { isReadable, type Stored } from './codec';
+import { isReadable, storedId, type Stored, type Unreadable } from './codec';
 import { resolveRunnable, type ClopFileType, type Pipeline, type PresetZone } from './model';
 
 // Preset zones (Clop/PresetZones.swift, DropZonePresetsView in Clop/DropZone.swift): while a file is dragged and the preset zone key is
@@ -48,14 +48,36 @@ export function tileAt(x: number, y: number, width: number, height: number): num
   return Math.floor(y / (height / TILE.rows)) * TILE.columns + Math.floor(x / (width / TILE.columns));
 }
 
-/** What dropping on zone `id` runs for a file of `kind`; refuses a zone that is gone, cannot run, or is for another type. */
-export function zonePipeline(zones: readonly Stored<PresetZone>[], saved: readonly Stored<Pipeline>[], id: unknown, kind: ClopFileType): Pipeline {
+/** A zone a drop can run, with the pipeline it runs. */
+export interface ZoneTarget { zone: PresetZone; pipeline: Pipeline; /** The one type of file the zone takes, when it or its pipeline has one. */ type?: ClopFileType }
+
+/**
+ * The zone `id` and the pipeline a drop on it runs, looked up in the settings as they are now. Refuses, with a message saying what to
+ * do, a zone that is gone or one whose pipeline was deleted, cannot be read by this version, or has no steps: a drop on such a zone
+ * runs nothing, rather than a plain optimisation the zone was not asked for.
+ */
+export function zoneTarget(zones: readonly Stored<PresetZone>[], saved: readonly Stored<Pipeline>[], id: unknown): ZoneTarget {
   if (typeof id !== 'string' || !id || id.length > 100) throw new Error('Choose a preset zone.');
   const zone = zones.filter(isReadable).find(entry => entry.id === id);
   if (!zone) throw new Error('That preset zone no longer exists.');
-  if (zone.type && zone.type !== kind) throw new Error(`${zone.name} is for ${zone.type} files.`);
   const pipeline = resolveRunnable(zone.pipeline, saved.filter(isReadable));
-  if (!pipeline?.steps.length) throw new Error(`${zone.name} has no pipeline to run. Choose one in the pipeline editor.`);
+  if (!pipeline) {
+    const unreadable = saved.find((entry): entry is Unreadable => !isReadable(entry) && storedId(entry) === zone.pipeline.libraryID);
+    if (unreadable) throw new Error(`${zone.name} runs a pipeline this version of Clop cannot read (${unreadable.reason}), so nothing was optimised. Fix it or choose another one in the pipeline editor.`);
+    throw new Error(`The pipeline ${zone.name} ran was deleted, so nothing was optimised. Choose another one in the pipeline editor.`);
+  }
+  if (!pipeline.steps.length) throw new Error(`${zone.name} has no pipeline to run. Choose one in the pipeline editor.`);
+  const type = zone.type ?? pipeline.fileType;
+  return { zone, pipeline, ...(type ? { type } : {}) };
+}
+
+/** Whether a zone takes a file of `kind`: a zone (or its pipeline) for one type takes only that type. */
+export const zoneTakes = (target: ZoneTarget, kind: ClopFileType) => (target.zone.type ?? kind) === kind && (target.pipeline.fileType ?? kind) === kind;
+
+/** What dropping on zone `id` runs for a file of `kind`; refuses a zone that is gone, cannot run, or is for another type. */
+export function zonePipeline(zones: readonly Stored<PresetZone>[], saved: readonly Stored<Pipeline>[], id: unknown, kind: ClopFileType): Pipeline {
+  const target = zoneTarget(zones, saved, id), { zone, pipeline } = target;
+  if (zone.type && zone.type !== kind) throw new Error(`${zone.name} is for ${zone.type} files.`);
   if (pipeline.fileType && pipeline.fileType !== kind) throw new Error(`${pipeline.name ?? zone.name} works on ${pipeline.fileType} files.`);
   return pipeline;
 }
