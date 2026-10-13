@@ -18,7 +18,7 @@ import { imageThumbnail, mediaThumbnail } from './thumbnails';
 import type { PipelinesOutcome } from '../core/pipeline/triggers';
 import { imageCompression, parseOptions } from './settings';
 import { mediaKind } from './clipboard';
-import { exists, samePath } from '../core/fileops';
+import { exists, moveTo, samePath } from '../core/fileops';
 
 sharp.concurrency(2);
 sharp.cache({ memory: 32, files: 0, items: 32 });
@@ -181,7 +181,10 @@ export class ItemEngine extends EventEmitter {
     if (format === 'tiff' && pages > 1) throw new Error('Use a single-page TIFF image. Multi-page documents are not supported.');
     if (pages > 250 || info.pixels > PIXELS) throw new Error('This image has too many pixels or animation frames. Use an image under 60 megapixels in total.');
     const originalPath = path.join(path.dirname(staged), `${path.parse(staged).name || 'image'}.${format}`);
-    await rename(staged, originalPath);
+    // Renamed only when the extension is not the format's, and with the retries for a busy file: on Windows librsvg opens an SVG
+    // through an inheritable handle that does not share deletion, so a tool that another import starts while the SVG is read
+    // inherits it and keeps the copy from being renamed until that tool exits.
+    await moveTo(staged, originalPath);
     const preview = await imageThumbnail(originalPath, DECODED.has(format) || info.deep), bytes = (await stat(originalPath)).size;
     const result: ItemResult = { ...base, originalBytes: bytes, outputBytes: bytes, originalWidth: width, originalHeight: height, width, height, format, originalPreview: preview, preview, animated: pages > 1 };
     return { result, originalPath, outputPath: originalPath, directory, inputFormat: format, revision: 0, cancel: new AbortController(), jobs: new Set() };

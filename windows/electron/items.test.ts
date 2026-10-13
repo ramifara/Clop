@@ -1,10 +1,14 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { watch, type FSWatcher } from 'node:fs';
 import { chmod, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { run } from '../core/run';
+import { powershell } from '../core/shell-effects';
 import { needTools } from '../core/testing';
 import { defaultSettings } from '../core/settings/schema';
 import { clip } from '../core/media/video.fixtures';
@@ -143,6 +147,41 @@ test('imports HEIC, JPEG XL, BMP and SVG with previews, and keeps the original t
     assert.equal((await sharp(Buffer.from(result.preview.split(',')[1], 'base64')).metadata()).width, 600, name);
     await engine.restore(id);
     assert.deepEqual(await readFile(engine.output(id)), bytes, name);
+  }
+});
+test('an SVG whose shelf copy another program holds open still comes into the shelf', { skip: process.platform !== 'win32' && 'Windows only: elsewhere a file held open can still be renamed' }, async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine, dir } = f;
+  // Stands in for a tool started while librsvg read the SVG: it inherits librsvg's handle, which does not share deletion.
+  // This one opens the shelf's copy the same way as soon as it is written, and holds it until its input ends.
+  const script = `$held = [System.Collections.Generic.List[System.IO.FileStream]]::new(); [Console]::Out.WriteLine('ready')
+while ($null -ne ($line = [Console]::In.ReadLine())) { try { $held.Add([System.IO.File]::Open($line, 'Open', 'Read', 'ReadWrite')); [Console]::Out.WriteLine('held') } catch { [Console]::Out.WriteLine('missed') } }
+foreach ($stream in $held) { $stream.Dispose() }`;
+  const holder = spawn(powershell(), ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const exited = new Promise(resolve => holder.once('exit', resolve)), lines = createInterface({ input: holder.stdout })[Symbol.asyncIterator]();
+  const within = <T>(ms: number, value: T) => new Promise<T>(resolve => setTimeout(resolve, ms, value).unref());
+  const reply = () => Promise.race([lines.next().then(line => line.value as string | undefined), within(30_000, 'no answer')]);
+  let watcher: FSWatcher | undefined;
+  try {
+    assert.equal(await reply(), 'ready');
+    let asked = false;
+    watcher = watch(dir, { recursive: true }, (_, name) => {
+      if (asked || !name || !/[\\/]original[\\/]logo\.svg$/i.test(name.toString())) return;
+      asked = true;
+      holder.stdin.write(`${path.join(dir, name.toString())}\n`);
+    });
+    // Large enough that reading it takes long after the copy is written, so the holder has it first.
+    const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240">${Array.from({ length: 20000 }, (_, i) => `<rect x="${(i * 37) % 320}" y="${(i * 53) % 240}" width="3" height="3" fill="#${(i * 2654435761 % 0xffffff).toString(16).padStart(6, '0')}"/>`).join('')}</svg>`);
+    const id = await engine.importBuffer(svg, 'logo.svg', 'drop', balanced), { result } = engine.get(id);
+    const held = await reply();
+    if (held !== 'held') { t.skip(`the holder did not get the copy in time (${held})`); return; }
+    assert.deepEqual([result.status, result.error, result.format], ['ready', undefined, 'png']);
+    assert.ok((await readFile(engine.get(id).originalPath)).equals(svg), 'the shelf keeps the SVG to restore');
+  } finally {
+    watcher?.close();
+    holder.stdin.end();
+    await Promise.race([exited, within(10_000, undefined)]);
+    holder.kill();
   }
 });
 test('serialises resize operations and serves the last requested result', async t => {

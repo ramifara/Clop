@@ -170,7 +170,10 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
     await retryBusy(() => rename(result.file, output));
     const [outWidth, outHeight] = result.size ?? displaySize(await decode(output, true).metadata());
     return done({ path: output, bytes, format: result.format, width: outWidth, height: outHeight });
-  } finally { await rm(tmp, { recursive: true, force: true }); }
+  } finally {
+    // Retried: on Windows a tool started elsewhere while librsvg read the SVG copy can hold it open until that tool exits (see stageImage in electron/items.ts).
+    await rm(tmp, { recursive: true, force: true, maxRetries: 5 });
+  }
 }
 
 /**
