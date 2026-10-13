@@ -5,25 +5,35 @@ import type { Pipeline } from '../core/pipeline/model';
 import { formatSteps, PipelineError } from '../core/pipeline/parser';
 import { pipelinePrompt } from '../core/pipeline/reference';
 import { PIPELINE_SOURCE_KEYS } from '../core/pipeline/triggers';
+import { SETTINGS_CHANGED } from '../core/ipc/protocol';
 import { portablePath } from '../core/settings/paths';
+import type { ClopSettings } from '../core/settings/schema';
 import { shellEffects } from '../core/shell-effects';
 import { resolveHome } from '../core/template';
 import { ValidationError } from './args';
 import { bold, CHECKMARK, dim, green, red, yellow } from './colors';
 import { flag, on, option, str, type ClopCommand, type Context } from './context';
 import { pipelineRunCommand } from './optimise';
-import { readSettings } from './read-settings';
+import { readSettings, readStored } from './read-settings';
 import { shellString, sortedJSON } from './results';
 
 // `clop pipeline …` (ClopCLI/main.swift). Reads come from the running app or the settings file; writes go through the app
 // when it runs, so it applies them at once and nothing it saves later overwrites them.
 
-async function write(ctx: Context, edit: () => Promise<LibraryEdit>, pipeline?: string) {
-  let result: LibraryEdit;
-  try { result = await edit(); } catch (error) { if (error instanceof LibraryError || error instanceof PipelineError) throw new ValidationError((error as Error).message); throw error; }
-  const response = await (await ctx.backend()).settings({ action: 'update', values: result.values, origin: ctx.origin, pipeline });
-  if (!response.ok) throw new ValidationError(response.error ?? 'Clop refused the change.');
-  return result;
+// The change is built from the settings as read, and saved as one `update` that names the values it was built on: if the
+// pipeline editor or another command saved one of them in between, the app refuses it and the edit is built again from the
+// new settings, so neither side loses the other's change.
+const WRITE_ATTEMPTS = 4;
+async function write(ctx: Context, edit: (settings: ClopSettings) => LibraryEdit, pipeline?: string) {
+  for (let attempt = 1; ; attempt++) {
+    const { settings, stored } = await readStored(ctx);
+    let result: LibraryEdit;
+    try { result = edit(settings); } catch (error) { if (error instanceof LibraryError || error instanceof PipelineError) throw new ValidationError((error as Error).message); throw error; }
+    const base = Object.fromEntries(Object.keys(result.values).map(key => [key, stored[key]]));
+    const response = await (await ctx.backend()).settings({ action: 'update', values: result.values, base, origin: ctx.origin, pipeline });
+    if (response.ok) return result;
+    if (response.error !== SETTINGS_CHANGED || attempt >= WRITE_ATTEMPTS) throw new ValidationError(response.error ?? 'Clop refused the change.');
+  }
 }
 const PAINT = { name: green, source: yellow };
 
@@ -110,7 +120,7 @@ const add: ClopCommand = {
   arguments: [{ name: 'name', help: 'Name for the pipeline' }, { name: 'steps', help: "Pipeline steps, e.g. 'crop(width: 1600) -> convert(to: webp)'" }],
   async run(v, ctx) {
     const steps = str(v, 'steps')!;
-    const edit = await write(ctx, async () => addPipeline(await readSettings(ctx), { name: str(v, 'name')!, steps, fileType: str(v, 'fileType'), skipOptimisation: on(v, 'skipOptimisation'), hideResult: on(v, 'hideResult'), force: on(v, 'force') }, ctx.home, PAINT), steps);
+    const edit = await write(ctx, settings => addPipeline(settings, { name: str(v, 'name')!, steps, fileType: str(v, 'fileType'), skipOptimisation: on(v, 'skipOptimisation'), hideResult: on(v, 'hideResult'), force: on(v, 'force') }, ctx.home, PAINT), steps);
     ctx.io.out(`${CHECKMARK()} ${edit.message}\n`);
   },
 };
@@ -118,7 +128,7 @@ const add: ClopCommand = {
 const remove: ClopCommand = {
   name: 'delete', abstract: 'Delete a saved pipeline.', arguments: [{ name: 'name', help: 'Name of the saved pipeline to delete' }],
   async run(v, ctx) {
-    const edit = await write(ctx, async () => deletePipeline(await readSettings(ctx), str(v, 'name')!, PAINT));
+    const edit = await write(ctx, settings => deletePipeline(settings, str(v, 'name')!, PAINT));
     ctx.io.out(`${CHECKMARK()} ${edit.message}\n`);
   },
 };
@@ -156,7 +166,7 @@ const attach: ClopCommand = {
   arguments: [{ name: 'pipeline', help: "Saved pipeline name/id or inline steps, e.g. 'crop(width: 1600) -> convert(to: webp)'." }],
   async run(v, ctx) {
     const arg = str(v, 'pipeline')!;
-    const edit = await write(ctx, async () => attachPipeline(await readSettings(ctx), { pipeline: arg, source: str(v, 'source')!, type: str(v, 'type')!, skipOptimisation: on(v, 'skipOptimisation'), hideResult: on(v, 'hideResult') }, ctx.home, PAINT), arg);
+    const edit = await write(ctx, settings => attachPipeline(settings, { pipeline: arg, source: str(v, 'source')!, type: str(v, 'type')!, skipOptimisation: on(v, 'skipOptimisation'), hideResult: on(v, 'hideResult') }, ctx.home, PAINT), arg);
     ctx.io.out(`${CHECKMARK()} ${edit.message}${edit.notes?.length ? dim(` (${edit.notes.join(', ')})`) : ''}\n`);
   },
 };
@@ -172,7 +182,7 @@ const detach: ClopCommand = {
   async run(v, ctx) {
     const index = str(v, 'index');
     if (index !== undefined && !/^-?\d+$/.test(index)) throw new ValidationError(`The value '${index}' is invalid for '--index <index>'`);
-    const edit = await write(ctx, async () => detachPipeline(await readSettings(ctx), { source: str(v, 'source')!, type: str(v, 'type')!, index: index === undefined ? undefined : Number(index), all: on(v, 'all') }, ctx.home, PAINT));
+    const edit = await write(ctx, settings => detachPipeline(settings, { source: str(v, 'source')!, type: str(v, 'type')!, index: index === undefined ? undefined : Number(index), all: on(v, 'all') }, ctx.home, PAINT));
     ctx.io.out(`${CHECKMARK()} ${edit.message}\n${edit.notes?.map(note => `  ${dim(note)}\n`).join('') ?? ''}`);
   },
 };
@@ -188,7 +198,7 @@ const presetAdd: ClopCommand = {
   arguments: [{ name: 'name', help: 'Name of the preset zone.' }, { name: 'pipeline', help: "Saved pipeline name/id or inline steps, e.g. 'convert(to: webp)'." }],
   async run(v, ctx) {
     const arg = str(v, 'pipeline')!;
-    const edit = await write(ctx, async () => addPresetZone(await readSettings(ctx), { name: str(v, 'name')!, pipeline: arg, type: str(v, 'type'), icon: str(v, 'icon'), skipOptimisation: on(v, 'skipOptimisation'), hideResult: on(v, 'hideResult'), force: on(v, 'force') }, ctx.home, PAINT), arg);
+    const edit = await write(ctx, settings => addPresetZone(settings, { name: str(v, 'name')!, pipeline: arg, type: str(v, 'type'), icon: str(v, 'icon'), skipOptimisation: on(v, 'skipOptimisation'), hideResult: on(v, 'hideResult'), force: on(v, 'force') }, ctx.home, PAINT), arg);
     ctx.io.out(`${CHECKMARK()} ${edit.message}\n`);
   },
 };
@@ -198,7 +208,7 @@ const presetRemove: ClopCommand = {
   options: [option('type', "File type of the preset zone: image, video, pdf, or audio. Omit for the 'all types' zone.")],
   arguments: [{ name: 'name', help: 'Name of the preset zone to remove.' }],
   async run(v, ctx) {
-    const edit = await write(ctx, async () => removePresetZone(await readSettings(ctx), { name: str(v, 'name')!, type: str(v, 'type') }, PAINT));
+    const edit = await write(ctx, settings => removePresetZone(settings, { name: str(v, 'name')!, type: str(v, 'type') }, PAINT));
     ctx.io.out(`${CHECKMARK()} ${edit.message}\n`);
   },
 };

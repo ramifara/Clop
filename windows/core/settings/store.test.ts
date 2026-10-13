@@ -112,3 +112,43 @@ test('a failed write keeps the previous settings and a retry writes again', asyn
   assert.deepEqual(events, [['keepDropZoneVisible']]);
   assert.deepEqual((await readdir(dir)).sort(), ['settings.json']);
 });
+
+test('an update reads the settings in its turn, so concurrent read-modify-writes lose nothing', async t => {
+  const dir = await folder(t), file = path.join(dir, 'settings.json');
+  const store = new SettingsStore(file, paths);
+  await store.load();
+  const events: SettingKey[][] = [];
+  store.on('change', (_settings, changed) => events.push(changed));
+  // Each adds one folder to the list as it is when its turn comes; a get() then set() would keep only some of them.
+  const results = await Promise.all(Array.from({ length: 6 }, (_, n) => store.update(current => ({ patch: { imageDirs: [...current.imageDirs, `~/Folder${n}`] }, result: current.imageDirs.length }))));
+  assert.deepEqual(results.map(reply => reply.result), [...results.keys()].map(n => n + store.get('imageDirs').length - 6));
+  assert.equal(store.get('imageDirs').filter(dir => dir.startsWith('~/Folder')).length, 6);
+  assert.deepEqual((await readJson(file)).imageDirs, store.get('imageDirs'));
+  assert.equal(events.length, 6);
+  // Interleaved with plain sets: the update still sees what the set before it saved.
+  const [, after] = await Promise.all([store.set({ keepDropZoneVisible: true }), store.update(current => ({ patch: { launchAtLogin: current.keepDropZoneVisible }, result: current.keepDropZoneVisible }))]);
+  assert.equal(after.result, true);
+  assert.equal(after.settings.launchAtLogin, true);
+});
+
+test('an update that throws or has nothing to change writes nothing, and the queue goes on', async t => {
+  const dir = await folder(t), file = path.join(dir, 'settings.json');
+  const store = new SettingsStore(file, paths);
+  await store.load();
+  await assert.rejects(store.update(() => { throw new Error('refused'); }), /refused/);
+  const same = await store.update(current => ({ result: 7, patch: { keepDropZoneVisible: current.keepDropZoneVisible } }));
+  assert.equal(same.result, 7);
+  assert.deepEqual(await readdir(dir), []);
+  await store.update(() => ({ patch: { keepDropZoneVisible: true }, result: 0 }));
+  assert.equal((await readJson(file)).keepDropZoneVisible, true);
+});
+
+test('an update is refused while the settings file could not be read', async t => {
+  const dir = await folder(t), file = path.join(dir, 'settings.json');
+  await mkdir(file);
+  const store = new SettingsStore(file, paths);
+  await store.load().catch(() => {});
+  let ran = false;
+  await assert.rejects(store.update(() => { ran = true; return { patch: { keepDropZoneVisible: true }, result: 0 }; }), /will not save changes/);
+  assert.equal(ran, false);
+});

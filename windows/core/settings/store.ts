@@ -57,16 +57,32 @@ export class SettingsStore extends EventEmitter<{ change: [settings: ClopSetting
    * leaves the previous settings in place, so retrying the same change writes again.
    */
   set(partial: unknown): Promise<ClopSettings> {
+    return this.enqueue(() => this.apply(partial));
+  }
+
+  /**
+   * A read-modify-write that no other write can slip into: `change` gets the settings as they are when its turn comes, after
+   * every set and update queued before it, and returns the values to replace plus a result to hand back. Use it whenever the
+   * new value depends on the old one (editing one entry of a list); a `get()` followed by a `set()` can overwrite what was
+   * saved in between. Nothing is written when `change` throws or returns no values.
+   */
+  update<T>(change: (current: ClopSettings) => { patch?: unknown; result: T }): Promise<{ settings: ClopSettings; result: T }> {
     return this.enqueue(async () => {
       if (this.unreadable) throw this.unreadable;
-      const previous = this.current, next = parseSettings(partial, previous);
-      const changed = SETTING_KEYS.filter(key => !isDeepStrictEqual(next[key], previous[key]));
-      if (!changed.length) return previous;
-      await this.write(next);
-      this.current = next;
-      this.emit('change', next, changed);
-      return next;
+      const { patch, result } = change(this.current);
+      return { settings: patch === undefined ? this.current : await this.apply(patch), result };
     });
+  }
+
+  private async apply(partial: unknown): Promise<ClopSettings> {
+    if (this.unreadable) throw this.unreadable;
+    const previous = this.current, next = parseSettings(partial, previous);
+    const changed = SETTING_KEYS.filter(key => !isDeepStrictEqual(next[key], previous[key]));
+    if (!changed.length) return previous;
+    await this.write(next);
+    this.current = next;
+    this.emit('change', next, changed);
+    return next;
   }
 
   /** Writes the current settings after any queued sets. */

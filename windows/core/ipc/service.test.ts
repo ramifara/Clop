@@ -20,7 +20,7 @@ import { ClopService, cropSizeText, factorText, requestSteps, type ServiceDeps }
 async function setup(t: TestContext, deps: Partial<ServiceDeps> = {}, values: Partial<ClopSettings> = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-service-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const store = { current: { ...defaultSettings(), ...values }, get: () => store.current, async set(partial: unknown) { store.current = { ...store.current, ...(partial as object) }; return store.current; } };
+  const store = { current: { ...defaultSettings(), ...values }, get: () => store.current, async update<T>(change: (current: ClopSettings) => { patch?: unknown; result: T }) { const { patch, result } = change(store.current); if (patch !== undefined) store.current = { ...store.current, ...(patch as object) }; return { settings: store.current, result }; } };
   const workdir = await new Workdir(path.join(dir, 'work')).ensure();
   const copied: string[][] = [];
   const service = new ClopService({ store, workdir, effects: new FakeEffects(), marker: new OptimisedMarker(path.join(dir, 'optimised.json')), copyFiles: async files => { copied.push(files); }, ...deps });

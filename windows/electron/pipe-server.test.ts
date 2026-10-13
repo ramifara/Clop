@@ -20,7 +20,6 @@ import { publishPipe, startPipeServer } from './pipe-server';
 /** An app stand-in: the real service behind the real pipe server, published where the CLI looks for it. */
 async function app(t: TestContext) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-pipe-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
   const userData = path.join(dir, 'data');
   const store = new SettingsStore(path.join(userData, 'settings.json'), { home: dir, desktop: dir, userData });
   await store.load();
@@ -29,7 +28,9 @@ async function app(t: TestContext) {
   const received: ClientMessage['kind'][] = [];
   const server = await startPipeServer(newPipePath(), (message, emit) => { received.push(message.kind); return service.handle(message, emit); });
   const withdraw = await publishPipe(userData, server);
-  t.after(async () => { withdraw(); await server.close(); });
+  // One hook, in order: the server closes before its folder goes (an open pipe keeps the test process alive), and an
+  // --async job the app is still finishing can hold files there briefly on Windows.
+  t.after(async () => { withdraw(); await server.close(); await rm(dir, { recursive: true, force: true, maxRetries: 10 }); });
   const out: string[] = [], err: string[] = [];
   const io: IO = { out: text => { out.push(text); }, err: text => { err.push(text); }, errTTY: false };
   const cli = (...argv: string[]) => main(argv, { io, cwd: dir, options: { userData, home: dir }, env: {}, colours: false });
@@ -90,7 +91,7 @@ test('a connection must greet first, a malformed request gets a failed answer, a
 
 test('a pipe that cannot prove it is the app gets no request, and the CLI runs headless', async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-forged-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10 }));
   // A squatter on the published name: it answers the greeting with a guess and records everything it is sent.
   const heard: string[] = [];
   const forged = net.createServer(socket => socket.on('data', chunk => {
@@ -112,7 +113,7 @@ test('a pipe that cannot prove it is the app gets no request, and the CLI runs h
 
 test('a held pipe that does not answer is a busy app: the CLI reads settings here but does not change them', async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-silent-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10 }));
   // One listener never answers, one hangs up on every greeting: neither is a wrong proof.
   const sockets = new Set<net.Socket>();
   const silent = net.createServer(socket => { sockets.add(socket); }), hangUp = net.createServer(socket => socket.on('data', () => socket.destroy()));
@@ -140,7 +141,7 @@ test('a held pipe that does not answer is a busy app: the CLI reads settings her
 
 test('a CLI with no app published runs headless', async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-headless-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10 }));
   const out: string[] = [];
   const code = await main(['settings', 'get', 'pdfDPI', '--json'], { io: { out: text => { out.push(text); }, err: () => {}, errTTY: false }, cwd: dir, options: { userData: dir, home: dir }, env: {}, colours: false });
   assert.equal(code, 0);

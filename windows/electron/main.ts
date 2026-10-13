@@ -21,11 +21,14 @@ import { FolderResults, LastBatch, restoreAll } from './automation';
 import { appsReply } from './apps';
 import { appPathReply, attachedAutomation, attachedPipelines, chosenPipeline, isAumid, outcomeNotes, pipelineChoices, resolveApp, runForApp, tempRoots, watchedFolders, type PipelineHost } from './pipelines';
 import { seedBuiltinPipelines } from '../core/pipeline/builtins';
+import { EDITOR_SETTING_KEYS } from '../core/pipeline/editor-state';
+import { cellCount, draggedType, gridHeight, tilesFor, zonePipeline } from '../core/pipeline/zones';
+import { EditorService } from './editor';
 import { pipelinesSkipOptimisation, type PipelinesOutcome } from '../core/pipeline/triggers';
 import type { PipelineEffects } from '../core/pipeline/executor';
 import type { MediaKind } from '../core/media/types';
 import { spawn } from 'node:child_process';
-import type { AppEntry, AppState, ImageOptions, ItemResult } from '../src/types';
+import type { AppEntry, AppState, ImageOptions, ItemResult, PresetTiles } from '../src/types';
 import { publishPipe, startPipeServer, type PipeServer } from './pipe-server';
 import { clopURLs, type ClopURL } from './clop-url';
 import { installPortableCLI, isPortable, portableCLIDir, portableCLIInstalled, refreshPortableCLI, removePortableCLI } from './cli-install';
@@ -42,13 +45,15 @@ import { setupBatch } from './batch-window';
 const here = path.dirname(fileURLToPath(import.meta.url));
 // The crop and compare windows load the session's originals and results through this scheme, with byte ranges for video.
 protocol.registerSchemesAsPrivileged([{ scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, stream: true } }]);
-let main: BrowserWindow, floating: BrowserWindow, tray: Tray, engine: ItemEngine, media: MediaFiles;
+let main: BrowserWindow, floating: BrowserWindow, editorWindow: BrowserWindow | undefined, editorLoading: { window: BrowserWindow; done: Promise<void> } | undefined, tray: Tray, engine: ItemEngine, media: MediaFiles;
 /** Open crop and compare windows, by `crop:<id>` and `compare:<id>`. */
 const views = new Map<string, BrowserWindow>();
 let settings = defaultSettings(), notice: string | undefined, quitting = false, bridgeReady = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>;
 let dropActive = false, dragging = false, importsRunning = 0, hovered = false;
+/** The files being dragged, and whether Ctrl or Alt is held, as the Windows helper reports them: Ctrl or Alt shows the preset zone tiles. */
+let dragFiles: string[] = [], dragModifiers = { ctrl: false, alt: false }, presetsLatched = false;
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
 let clipboardTimer: NodeJS.Timeout | undefined;
@@ -87,7 +92,10 @@ const currentSequence = async () => bridgeReady ? sequenceReply(await bridge.req
 /** Whether a result is still in the shelf and finished; a card can be dismissed while its import runs. */
 const isReady = (id: string) => { try { return engine.get(id).result.status === 'ready'; } catch { return false; } };
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
-const state = (): AppState => ({ items: engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id)), settings, native: true, platform: process.platform, dropActive, notice });
+const presetsRevealed = () => dragModifiers.ctrl || dragModifiers.alt;
+/** The preset zone tiles for the files being dragged. */
+function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, draggedType(dragFiles, mediaKind)) }; }
+const state = (): AppState => ({ items: engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id)), settings, native: true, platform: process.platform, dropActive, notice, presets: presets() });
 function broadcast() {
   for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
   // The crop and compare windows follow their result even after its card hid, so they get every result.
@@ -108,7 +116,9 @@ function syncFloating() {
   if (!floating || floating.isDestroyed()) return;
   const target = dropActive || settings.keepDropZoneVisible;
   const count = Math.min(target ? 2 : 3, state().items.length);
-  const height = count * 166 + Math.max(0, count - 1) * 4 + (target ? 160 : 0) + (count > 1 ? 28 : 0) + (notice ? 85 : 0) + 40;
+  // Room for the tiles stays once they were shown, until the drag ends: a tile under the pointer must not lose its window when Ctrl is let go.
+  const tiles = presetsLatched || presetsRevealed() ? gridHeight(cellCount(presets())) + 8 : 0;
+  const height = count * 166 + Math.max(0, count - 1) * 4 + (target ? 160 : 0) + tiles + (count > 1 ? 28 : 0) + (notice ? 85 : 0) + 40;
   const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
   floating.setSize(236, Math.min(height, area.height));
   positionFloating();
@@ -220,6 +230,24 @@ async function openView(view: 'crop' | 'compare', id: unknown) {
     syncNative();
     throw error;
   }
+}
+/**
+ * The pipeline editor: its own sandboxed window, made the first time it is asked for. `tab` opens it on the preset zones.
+ * It counts as the editor window only once its page has loaded; a page that fails to load is closed, so the next try starts
+ * over. Asks that arrive while it loads wait for it, so a tab change is never sent to a page that cannot receive it yet.
+ */
+async function openEditor(tab?: 'zones') {
+  if (editorLoading) await editorLoading.done;
+  let window = editorWindow && !editorWindow.isDestroyed() ? editorWindow : undefined;
+  if (!window) {
+    window = new BrowserWindow({ width: 1060, height: 720, minWidth: 780, minHeight: 500, show: false, backgroundColor: '#f3f1ef', title: 'Clop pipelines', autoHideMenuBar: true, webPreferences: webPreferences() });
+    configure(window);
+    window.on('closed', syncNative);
+    const created = window, done = load(created, { editor: '1', ...(tab ? { tab } : {}) }).then(() => { editorWindow = created; syncNative(); }, (error: unknown) => { created.destroy(); throw error; });
+    editorLoading = { window: created, done };
+    try { await done; } finally { editorLoading = undefined; }
+  } else if (tab) window.webContents.send('clop:editor-tab', tab);
+  window.show(); window.focus();
 }
 async function createWindows() {
   const windowPreferences = webPreferences();
@@ -340,19 +368,20 @@ function afterPipelines(id: string | undefined, outcome: PipelinesOutcome, sourc
   for (const fork of outcome.forks) void makeRoom().then(() => engine.importPath(fork, source, defaults(), undefined, { automation: AS_IS })).catch(error => inform(message(error)));
 }
 /**
- * The pipelines attached to `source` (`clipboard` or `dropZone`) for a file of `kind`, as an import's automation. A copied image
- * skips the usual optimisation when every pipeline does (Images.swift); a copied video, PDF or audio file is optimised first
- * (ClopApp.swift), then the pipelines run. A drop skips it for every kind (OptimisationUtils.swift) and is optimised anyway when
- * no pipeline did anything.
+/**
+ * The pipelines attached to `source` (`clipboard` or `dropZone`) for a file of `kind`, or `pipelines` given outright (a preset
+ * zone's), as an import's automation. A copied image skips the usual optimisation when every pipeline does (Images.swift); a
+ * copied video, PDF or audio file is optimised first (ClopApp.swift), then the pipelines run. A drop skips it for every kind
+ * (OptimisationUtils.swift) and is optimised anyway when no pipeline did anything.
  */
-function attachedExtra(kind: MediaKind, source: 'clipboard' | 'dropZone', result: ItemResult['source'], app?: CopyingApp): ImportExtra | undefined {
+function sourceAutomation(kind: MediaKind, source: 'clipboard' | 'dropZone', result: ItemResult['source'], app?: CopyingApp, pipelines = attachedPipelines(kind, source, settings, home)): ImportExtra | undefined {
   let id: string | undefined;
-  const automation = attachedAutomation(attachedPipelines(kind, source, settings, home), {
+  const automation = attachedAutomation(pipelines, {
     host: pipelineHost, context: { kind, sourceApp: app }, fallback: true, alwaysOptimise: source === 'clipboard' && kind !== 'image', done: outcome => afterPipelines(id, outcome, result),
   });
   return automation && { automation, staged: staged => { id = staged; } };
 }
-const clipboardAutomation = (kind: MediaKind, app?: CopyingApp) => attachedExtra(kind, 'clipboard', 'clipboard', app);
+const clipboardAutomation = (kind: MediaKind, app?: CopyingApp) => sourceAutomation(kind, 'clipboard', 'clipboard', app);
 /** The pipelines attached to the watched folder `dir`. When they replace optimisation and none did anything, the card stays out of sight, as on macOS. */
 function folderAutomation(file: string, kind: MediaKind, dir: string, id: () => string | undefined) {
   const pipelines = attachedPipelines(kind, dir, settings, home), replaces = pipelinesSkipOptimisation(pipelines);
@@ -380,11 +409,17 @@ async function importPaths(files: unknown, source: ItemResult['source'], { aggre
   } finally { importsRunning--; syncFloating(); broadcast(); }
   return completed;
 }
-/** Dropped and opened files; their results go on the clipboard with `autoCopyToClipboard`. */
-async function importFiles(files: unknown, source: ItemResult['source'], aggressive = false) {
+/**
+ * Dropped and opened files; their results go on the clipboard with `autoCopyToClipboard`. Dropped files run the pipelines attached
+ * to the drop zone, or the pipeline of the preset zone `zone` they were dropped on instead.
+ */
+async function importFiles(files: unknown, source: ItemResult['source'], aggressive = false, zone?: unknown) {
   const sequence = await currentSequence();
-  // Pipelines attached to the drop zone run on drops, but not on a ⌘-drop's explicit aggressive optimisation (`wantsPipelineLookup`).
-  const extra = source === 'drop' && !aggressive ? (file: string) => attachedExtra(mediaKind(file) ?? 'image', 'dropZone', 'drop') : undefined;
+  // Pipelines attached to the drop zone (or a preset zone's pipeline) run on drops, but not on a ⌘-drop's explicit aggressive optimisation (`wantsPipelineLookup`).
+  const extra = source !== 'drop' || aggressive ? undefined : (file: string) => {
+    const kind = mediaKind(file) ?? 'image';
+    return sourceAutomation(kind, 'dropZone', 'drop', undefined, zone === undefined ? undefined : [zonePipeline(settings.presetZones, settings.savedPipelines, zone, kind)]);
+  };
   const ids = await importPaths(files, source, { aggressive, extra });
   if (settings.autoCopyToClipboard && ids.length) await copy(ids, sequence);
 }
@@ -495,7 +530,7 @@ async function serveCLI(userData: string) {
   const files = shellEffects();
   // The same effects as pipelines run from the app, per request: an agent without the permission for script steps cannot open a program by path.
   const service = new ClopService({
-    store: { get: () => store.get(), set: async value => { await updateSettings(value); return settings; } },
+    store: { get: () => store.get(), update: async change => { const wasEnabled = settings.mcpEnabled, reply = await store.update(change); await settingsChanged(reply.settings, wasEnabled); return reply; } },
     workdir, marker, effects: options => pipelineEffects(options), copyFiles: list => files.copyFiles(list), home: app.getPath('home'), withCard: optimiseWithCard,
   });
   pipe = await startPipeServer(newPipePath(), (request, emit) => { console.log(`CLI request: ${request.kind}`); return service.handle(request, emit); });
@@ -543,6 +578,7 @@ function updateTray() {
     { label: 'Bring back last result', click: bringBackLast },
     { label: 'Stop all', click: () => engine.stop() },
     { type: 'separator' },
+    { label: 'Pipelines…', click: () => { openEditor().catch(error => inform(message(error))); } },
     { label: 'Settings…', click: () => main.show() },
     { label: 'Open originals and results', click: () => { void shell.openPath(workdir.temp); } },
     ...(isPortable() ? [{ label: cliInstalled ? 'Remove command-line tool' : 'Install command-line tool', click: toggleCLI }] : []),
@@ -553,7 +589,11 @@ function updateTray() {
 function toggleSetting(value: unknown) { updateSettings(value).catch(error => { updateTray(); inform(message(error)); }); }
 async function updateSettings(value: unknown) {
   const wasEnabled = settings.mcpEnabled;
-  settings = await store.set(value);
+  await settingsChanged(await store.set(value), wasEnabled);
+}
+/** Brings the app in line with settings that were just saved. */
+async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
+  settings = saved;
   if (settings.mcpEnabled !== wasEnabled && app.isPackaged) void mcp.writeCard().catch(error => console.warn(`Could not write the MCP server card: ${message(error)}`));
   if (!settings.enableClipboardOptimiser || paused()) pickup.cancel();
   floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop);
@@ -564,7 +604,7 @@ async function updateSettings(value: unknown) {
 }
 /** Presses inside Clop's own windows, the crop and compare windows too, never start a drag. */
 function nativeSettings() {
-  return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating, ...views.values(), batch?.window()].filter((window): window is BrowserWindow => !!window && !window.isDestroyed()).map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
+  return { type: 'settings', explorerDrag: settings.enableDragAndDrop, ownWindows: [main, floating, editorWindow, ...views.values(), batch?.window()].filter((window): window is BrowserWindow => !!window && !window.isDestroyed()).map(window => Number(window.getNativeWindowHandle().readBigUInt64LE())) };
 }
 function syncNative() { if (bridgeReady) bridge.request(nativeSettings()).catch(error => inform(message(error))); }
 /** Card actions put a clipboard result back on the clipboard, and others with `autoCopyToClipboard`. */
@@ -591,6 +631,7 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
     case 'dismiss': await dismiss(id); break;
     case 'settings': await updateSettings(rendererSettings(args[0])); break;
     case 'apps': return bridgeReady ? appsReply(await bridge.request({ type: 'apps' })) : [];
+    case 'run-preset': await importFiles(args[1], 'drop', false, args[0]); break;
     case 'pipelines': return pipelineChoices(settings, engine.get(itemId(args[0])).result.kind);
     case 'run-pipeline': {
       const target = itemId(args[0]), { kind, source } = engine.get(target).result, pipeline = chosenPipeline(settings, kind, args[1]);
@@ -619,6 +660,8 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
         case 'close': BrowserWindow.fromWebContents(event.sender)?.close(); break;
         case 'minimize': BrowserWindow.fromWebContents(event.sender)?.minimize(); break;
         case 'main': main.show(); break;
+        case 'editor': await openEditor(); break;
+        case 'presets': await openEditor('zones'); break;
         case 'float': showLatest(); break;
         case 'interactive': hovered = true; floating.setIgnoreMouseEvents(false); break;
         case 'passthrough': hovered = false; if (!dropActive) floating.setIgnoreMouseEvents(true, { forward: true }); break;
@@ -628,6 +671,15 @@ ipcMain.handle('clop:action', async (event, action: string, ...args: unknown[]) 
       } break;
     default: throw new Error('Unknown Clop action.');
   }
+});
+// The editor window may only ask for the pipeline editor's state and send its commands, which `EditorService` checks.
+const editor = new EditorService({ settings: () => store.get(), update: change => store.update(change), context: () => ({ home }) });
+ipcMain.handle('clop:editor', (event, action: string, command?: unknown) => {
+  const known = [editorWindow, editorLoading?.window].find(window => window && !window.isDestroyed() && window.webContents === event.sender);
+  if (!known) throw new Error('Untrusted window.');
+  if (action === 'state') return editor.state();
+  if (action === 'command') return editor.command(command);
+  throw new Error('Unknown editor action.');
 });
 ipcMain.on('clop:drag', (event, id: string) => {
   if (!trusted(event.sender)) return;
@@ -653,8 +705,7 @@ else {
     let settingsError: unknown;
     settings = await store.load().catch(error => { settingsError = error; return store.get(); });
     // The built-in pipelines join the library once per version. Not over a settings file that could not be read: saving would replace it.
-    const seeded = settingsError ? undefined : seedBuiltinPipelines(settings.savedPipelines, settings.builtinPipelinesSeededVersion);
-    if (seeded) settings = await store.set(seeded).catch(error => { settingsError = error; return settings; });
+    if (!settingsError) settings = await store.update(current => ({ patch: seedBuiltinPipelines(current.savedPipelines, current.builtinPipelinesSeededVersion), result: undefined })).then(reply => reply.settings, error => { settingsError = error; return settings; });
     mirrorConsoleToFile(path.join(userData, 'logs', 'clop.log'), () => settings.persistDebugLogs);
     mcp = mcpSettings({
       userData, home: app.getPath('home'), cliPath: mcpServerPath(), missing: mcpServerMissing(), version: app.getVersion(), appPath: process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath,
@@ -698,7 +749,11 @@ else {
     const counter = () => nameCounter ??= { value: settings.lastAutoIncrementingNumber };
     const saveCounter = (value: number) => { store.set({ lastAutoIncrementingNumber: value }).catch(error => inform(message(error))); };
     batch = setupBatch({ here, devUrl, webPreferences, created: syncNative, quitting: () => quitting, settings: () => settings, owns: file => workdir.owns(file), isLocal, env: () => ({ settings: () => settings, workdir, marker, home, counter: counter(), saved: saveCounter }) });
-    store.on('change', next => { settings = next; for (const watcher of watchers) void watcher.update(); });
+    store.on('change', (next, changed) => {
+      settings = next; for (const watcher of watchers) void watcher.update();
+      // Pipelines, attachments and preset zones show in the editor and, as tiles, on the drop target.
+      if (changed.some(key => (EDITOR_SETTING_KEYS as readonly string[]).includes(key))) { syncFloating(); broadcast(); for (const window of [editorWindow, editorLoading?.window]) if (window && !window.isDestroyed()) window.webContents.send('clop:editor-changed'); }
+    });
     for (const watcher of watchers) void watcher.update();
     const icon = nativeImage.createFromPath(path.join(here, 'icon.png'));
     tray = new Tray(icon); tray.setToolTip('Clop'); tray.on('double-click', showLatest); updateTray();
@@ -716,8 +771,19 @@ else {
         if (change) { if (ignoredApp(change, settings.clipboardIgnoredAppBundleIds)) pickup.cancel(); else pickup.change(change); } else inform('The Windows helper sent an unreadable clipboard change.');
       });
       bridge.on('foreground', event => pickup.focus(Number(event.process)));
-      bridge.on('drag-start', () => { if (settings.enableDragAndDrop) { dragging = true; dropActive = true; floating.setIgnoreMouseEvents(false); syncFloating(); broadcast(); } });
-      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; syncFloating(); broadcast(); } }, 180); });
+      bridge.on('drag-start', event => {
+        if (!settings.enableDragAndDrop) return;
+        dragging = true; dropActive = true; dragModifiers = { ctrl: false, alt: false }; presetsLatched = false;
+        dragFiles = Array.isArray(event.paths) ? (event.paths as unknown[]).filter((file): file is string => typeof file === 'string').slice(0, 64) : [];
+        floating.setIgnoreMouseEvents(false); syncFloating(); broadcast();
+      });
+      // The helper reads Ctrl and Alt while a drag lasts; either one shows the preset zone tiles.
+      bridge.on('drag-modifiers', event => {
+        if (!dragging) return;
+        dragModifiers = { ctrl: event.ctrl === true, alt: event.alt === true }; presetsLatched ||= presetsRevealed(); syncFloating(); broadcast();
+      });
+      // The tiles stay for the moment a drop on one needs to land.
+      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; dragFiles = []; dragModifiers = { ctrl: false, alt: false }; presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
       bridge.on('stopped', () => { bridgeReady = false; pickup.cancel(); startClipboardFallback(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));

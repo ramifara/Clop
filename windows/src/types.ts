@@ -1,5 +1,10 @@
 import type { ClopSettings, CropSize } from '../core/settings/schema';
 import type { MediaKind } from '../core/media/types';
+import type { EditorCommand } from '../core/pipeline/editor-commands';
+import type { EditorState } from '../core/pipeline/editor-state';
+import type { PipelineIssue } from '../core/pipeline/parser';
+import type { PresetTile } from '../core/pipeline/zones';
+import type { EditorReply } from '../electron/editor';
 export type OutputFormat = 'auto' | 'png' | 'jpeg' | 'webp' | 'avif' | 'gif';
 /** `crop` is the crop window's crop size, applied to the original before the scale and longest edge (images and videos). */
 export interface ImageOptions { mode: 'balanced' | 'aggressive' | 'lossless'; scale: number; maxEdge?: number; format: OutputFormat; crop?: CropSize }
@@ -41,7 +46,10 @@ export interface CompareSide { url: string; kind: MediaKind; format: string; byt
 export interface CompareSources { item: ItemResult; original: CompareSide; result: CompareSide; page?: number; pages?: number }
 /** An app the ignored-apps picker offers: a running app with a window, or a Start Menu app. `path` is an exe path, or an AUMID for a packaged app. */
 export interface AppEntry { name: string; path: string; running: boolean }
-export interface AppState { items: ItemResult[]; settings: ClopSettings; native: boolean; platform: string; dropActive?: boolean; notice?: string }
+/** The preset zone tiles for the drag in progress. They show while `revealed` (Ctrl or Alt held); `add` is the "new preset" tile after them. */
+export interface PresetTiles { revealed: boolean; tiles: PresetTile[]; add: boolean }
+export interface AppState { items: ItemResult[]; settings: ClopSettings; native: boolean; platform: string; dropActive?: boolean; notice?: string; presets?: PresetTiles }
+export type { EditorCommand, EditorReply, EditorState, PipelineIssue, PresetTile };
 export interface ClopApi {
   state(): Promise<AppState>; subscribe(callback: (state: AppState) => void): () => void;
   importFiles(files: File[], aggressive?: boolean): Promise<void>; importUrl(url: string, aggressive?: boolean): Promise<void>; clipboard(): Promise<void>;
@@ -53,7 +61,7 @@ export interface ClopApi {
   /** The saved pipelines the card can run on a result, and running one of them. */
   pipelines(id: string): Promise<PipelineChoice[]>; runPipeline(id: string, pipelineId: string): Promise<void>;
   mcp(request: McpRequest): Promise<McpState>;
-  window(action: 'hide' | 'close' | 'main' | 'float' | 'quit' | 'minimize' | 'interactive' | 'passthrough' | 'dismiss-notice'): Promise<void>;
+  window(action: 'hide' | 'close' | 'main' | 'float' | 'quit' | 'minimize' | 'interactive' | 'passthrough' | 'dismiss-notice' | 'editor' | 'presets'): Promise<void>;
   /** Opens (or brings forward) a result's crop or compare window. */
   openCrop(id: string): Promise<void>; openCompare(id: string): Promise<void>;
   /** The crop window's picture; `page` is 1-based (PDF), `time` a fraction of the video's duration. */
@@ -62,6 +70,14 @@ export interface ClopApi {
   /** The `savedCropSizes` setting, and the only way the renderer can change it. */
   cropSizes(): Promise<CropSize[]>; saveCropSizes(sizes: CropSize[]): Promise<CropSize[]>;
   compareSources(id: string, view?: { page?: number }): Promise<CompareSources>;
+  /** Drops on a preset zone's tile: the files are optimised, then the zone's pipeline runs on them. */
+  runPreset(zoneId: string, files: File[]): Promise<void>;
+  /** The pipeline editor window's side: what it shows, and the checked commands that change pipelines, attachments and preset zones. */
+  editor: {
+    state(): Promise<EditorState>; command(command: EditorCommand): Promise<EditorReply>;
+    /** Hears that pipelines, attachments or preset zones changed elsewhere, or that the window was asked to open on the preset zones. */
+    subscribe(callback: (event: 'changed' | 'zones') => void): () => void;
+  };
 }
 declare global { interface Window { clop?: ClopApi } }
 /** One agent in the MCP pane: whether Clop's server is in its config, and the line under its name. */

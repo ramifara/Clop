@@ -201,7 +201,7 @@ export class ClopService {
       }
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENT_FILES, queue.length) }, worker));
-    if (counter.value !== settings.lastAutoIncrementingNumber) await store.set({ lastAutoIncrementingNumber: counter.value }).catch(() => {});
+    if (counter.value !== settings.lastAutoIncrementingNumber) await store.update(() => ({ patch: { lastAutoIncrementingNumber: counter.value }, result: undefined })).catch(() => {});
     // One file per input: the result, or the original when it failed, as macOS does for --copy.
     if (req.copyToClipboard && this.deps.copyFiles) await this.deps.copyFiles(copied.filter(Boolean)).catch(error => console.warn(`Could not copy the results: ${message(error)}`));
     emit({ kind: 'done' });

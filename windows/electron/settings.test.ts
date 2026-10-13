@@ -28,7 +28,7 @@ test('rejects invalid dimensions, formats and non-finite scales', () => {
 test('the renderer may only change the settings its window writes', () => {
   assert.deepEqual(rendererSettings({ floatingResultsCorner: 'topLeft', keepDropZoneVisible: true }), { floatingResultsCorner: 'topLeft', keepDropZoneVisible: true });
   for (const key of RENDERER_SETTINGS) assert.doesNotThrow(() => rendererSettings({ [key]: true }));
-  for (const key of ['editorAppImage', 'workdir', 'mcpEnabled', 'mcpAllowScriptSteps', 'pipelinesToRunOnImage', 'imageDirs', '__proto__', 'unknown']) assert.throws(() => rendererSettings(JSON.parse(`{"${key}": 1}`)), /cannot be changed from this window/, key);
+  for (const key of ['editorAppImage', 'workdir', 'mcpEnabled', 'mcpAllowScriptSteps', 'pipelinesToRunOnImage', 'pipelinesToRunOnVideo', 'savedPipelines', 'presetZones', 'imageDirs', '__proto__', 'unknown']) assert.throws(() => rendererSettings(JSON.parse(`{"${key}": 1}`)), /cannot be changed from this window/, key);
   assert.throws(() => rendererSettings({ keepDropZoneVisible: true, workdir: 'C:\\' }), /workdir cannot be changed/);
   for (const bad of [null, 'x', [], 1]) assert.throws(() => rendererSettings(bad));
 });
