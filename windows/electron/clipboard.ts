@@ -34,14 +34,15 @@ const TEMPORARY = /^\.clop-.*\.tmp$/i;
 export const mediaKind = (file: string) => KIND.get(path.extname(file).slice(1).toLowerCase());
 /** Whether `file`'s format is in a `…FormatsToSkip` list, under any of its extensions. */
 export const skipsFormat = (list: readonly string[], file: string) => list.some(item => format(item) === format(path.extname(file)));
-export type ClipboardSettings = Pick<ClopSettings, 'optimiseVideoClipboard' | 'optimisePDFClipboard' | 'optimiseAudioClipboard' | 'optimiseImagePathClipboard' | 'imageFormatsToSkip' | 'videoFormatsToSkip' | 'audioFormatsToSkip' | 'clipboardIgnoredAppBundleIds'>;
+export type ClipboardSettings = Pick<ClopSettings, 'optimiseTIFF' | 'optimiseHEICAVIFClipboard' | 'optimiseVideoClipboard' | 'optimisePDFClipboard' | 'optimiseAudioClipboard' | 'optimiseImagePathClipboard' | 'imageFormatsToSkip' | 'videoFormatsToSkip' | 'audioFormatsToSkip' | 'clipboardIgnoredAppBundleIds'>;
 
 /** Whether an automatic clipboard optimisation takes a file of this kind, by the per-type clipboard settings (`handleClipboardChange` in ClopApp.swift). */
 export function takesFile(kind: MediaKind, file: string, settings: ClipboardSettings, { bitmap = false } = {}) {
   const skips = (list: readonly string[]) => skipsFormat(list, file);
   switch (kind) {
     // A copied image file with no image data beside it is only a reference, as Explorer copies it (`optimiseImagePathClipboard`).
-    case 'image': return (bitmap || settings.optimiseImagePathClipboard) && !skips(settings.imageFormatsToSkip);
+    // A TIFF is optimised only with `optimiseTIFF` (the guard at the top of `runImagePipeline`; a manual optimisation passes `allowTiff`).
+    case 'image': return (bitmap || settings.optimiseImagePathClipboard) && (settings.optimiseTIFF || format(path.extname(file).slice(1)) !== 'tiff') && !skips(settings.imageFormatsToSkip);
     case 'video': return settings.optimiseVideoClipboard && !skips(settings.videoFormatsToSkip);
     case 'pdf': return settings.optimisePDFClipboard;
     case 'audio': return settings.optimiseAudioClipboard && !skips(settings.audioFormatsToSkip);
@@ -123,6 +124,9 @@ export function textPathKind(file: string, { manual, settings, owns, platform = 
 }
 
 export type ClipboardSnapshot = ClipboardChange & { owned?: boolean; transient?: boolean };
+/** The image data the helper finds on the clipboard besides a bitmap (`optimiseHEICAVIFClipboard`), by extension. */
+export const IMAGE_DATA = ['heic', 'heif', 'avif'] as const;
+export type ImageData = (typeof IMAGE_DATA)[number];
 /** A clipboard change or snapshot from the Windows helper, checked field by field. Undefined when it is malformed. */
 export function clipboardChange(event: unknown): ClipboardSnapshot | undefined {
   if (!event || typeof event !== 'object') return;
@@ -131,12 +135,14 @@ export function clipboardChange(event: unknown): ClipboardSnapshot | undefined {
   if (!isSequence(e.sequence) || !Array.isArray(e.paths) || e.paths.length > MAX_FILES) return;
   if (!e.paths.every(file => typeof file === 'string' && file.length > 0 && file.length <= MAX_PATH && path.isAbsolute(file))) return;
   if (!['image', 'bitmap', 'text', 'owned', 'transient'].every(flag)) return;
+  if (e.data != null && !IMAGE_DATA.includes(e.data as ImageData)) return;
   if (e.process !== undefined && !Number.isSafeInteger(e.process)) return;
   if (e.app !== undefined && typeof e.app !== 'string') return;
   if (![e.owner, e.aumid].every(value => value === undefined || (typeof value === 'string' && value.length <= MAX_PATH))) return;
   return {
     sequence: e.sequence as number, paths: e.paths as string[], image: e.image === true, bitmap: e.bitmap === true, text: e.text === true,
     ...(e.process === undefined ? {} : { process: e.process as number }), ...(e.app === undefined ? {} : { app: e.app as string }),
+    ...(e.data == null ? {} : { data: e.data as ImageData }),
     ...(e.owner ? { owner: e.owner as string } : {}), ...(e.aumid ? { aumid: e.aumid as string } : {}),
     ...(e.owned === undefined ? {} : { owned: e.owned as boolean }), ...(e.transient === undefined ? {} : { transient: e.transient as boolean }),
   };
@@ -148,6 +154,14 @@ export function sequenceReply(reply: unknown): number {
   if (!isSequence(sequence)) throw new Error('The Windows helper sent an unreadable clipboard sequence.');
   return sequence;
 }
+/** The bytes of an `image-data` reply from the Windows helper (base64), at most the helper's limit. */
+export function imageDataReply(reply: unknown, limit = IMAGE_DATA_LIMIT): Buffer {
+  const bytes = (reply as Record<string, unknown> | null)?.bytes;
+  if (typeof bytes !== 'string' || bytes.length > Math.ceil(limit / 3) * 4) throw new Error('The Windows helper sent unreadable image data.');
+  return Buffer.from(bytes, 'base64');
+}
+/** The most bytes of HEIC or AVIF data the helper hands over. */
+export const IMAGE_DATA_LIMIT = 32 * 1024 * 1024;
 /** A `copy` reply: skipped because the clipboard changed meanwhile, or written with the clipboard's new sequence number. */
 export function copyReply(reply: unknown): { skipped: true } | { skipped: false; sequence: number } {
   const r = reply as Record<string, unknown> | null;
@@ -165,6 +179,8 @@ export interface IntakeSources {
   /** A snapshot from the Windows helper; undefined without one. */
   read: () => Promise<ClipboardSnapshot | undefined>;
   image: () => Promise<Buffer>;
+  /** The clipboard's HEIC, HEIF or AVIF data, as the original file. */
+  imageData?: (ext: ImageData) => Promise<Buffer>;
   text: () => Promise<string>;
   isFile: (file: string) => Promise<boolean>;
   /** Recognises files by path, size and modification time. */
@@ -225,7 +241,10 @@ export async function clipboardIntake(change: ClipboardSnapshot | undefined, man
     memory.fingerprint = ''; memory.own = '';
     return listed.remote.length ? { type: 'none', notice: `${path.basename(listed.remote[0])} is on a network share. Clop only opens network paths when asked: press Ctrl+Shift+C to optimise it.` } : none;
   }
-  const bytes = !snapshot || snapshot.bitmap ? await sources.image() : Buffer.alloc(0);
+  // With `optimiseHEICAVIFClipboard`, HEIC and AVIF data come before the bitmap, which is a decoded copy that has lost the HDR gain map.
+  const original = settings.optimiseHEICAVIFClipboard && sources.imageData ? snapshot?.data : undefined;
+  let bytes = original ? await sources.imageData!(original).catch(() => Buffer.alloc(0)) : Buffer.alloc(0), ext: string = original ?? 'png';
+  if (!bytes.length) { ext = 'png'; if (!snapshot || snapshot.bitmap) bytes = await sources.image(); }
   const text = !bytes.length && (!snapshot || snapshot.text) && (manual || pathSettings(settings)) ? parseClipboardText(await sources.text(), sources.platform, { manual }) : undefined;
   const file = text?.type === 'path' && textPathKind(text.path, { manual, settings, owns, platform: sources.platform }) && await sources.isFile(text.path) ? text.path : undefined;
   let pathHash = '';
@@ -243,9 +262,9 @@ export async function clipboardIntake(change: ClipboardSnapshot | undefined, man
   }
   if (bytes.length) {
     const hash = sources.hash(bytes);
-    if (!manual && (hash === memory.fingerprint || hash === memory.own || !takesFile('image', 'clipboard.png', settings, { bitmap: true }))) return none;
+    if (!manual && (hash === memory.fingerprint || hash === memory.own || !takesFile('image', `clipboard.${ext}`, settings, { bitmap: true }))) return none;
     memory.fingerprint = hash;
-    return { type: 'image', bytes, ext: 'png', sequence, ...app };
+    return { type: 'image', bytes, ext, sequence, ...app };
   }
   if (file) {
     if (!manual) { memory.fingerprint = pathHash; memory.own = ''; }

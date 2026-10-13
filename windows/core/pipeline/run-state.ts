@@ -47,6 +47,8 @@ export interface PipelineRunOptions {
   sourceApp?: { id?: string; name?: string };
   /** A per-request placement (CLI `--convert-behaviour`), which a `convert` step's default location follows. */
   placementOverride?: PlacementOverride;
+  /** A plain optimisation (a command-line or agent request), which turns the video types `formatsToConvertToMP4` lists into MP4 as the app's own optimisation does. Pipelines and card edits keep the container. */
+  convertContainers?: boolean;
   /** Another pipeline runs on the same file after this one, so a `fork` keeps a copy even when no later step of this one changes the file. */
   laterPipelines?: boolean;
   signal?: AbortSignal;

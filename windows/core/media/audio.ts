@@ -3,7 +3,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { queue, retryBusy, run } from '../run';
 import { settingsSchema, type CompressionQuality } from '../settings/schema';
-import { AUDIO_FORMATS, audioBitrate, audioEncodingArgs, loweredBitrate, loweredBitrateByFactor, outputAudioFormat, resolveBitrate, type AudioConversionSettings, type AudioFormat } from './audioFormat';
+import { AUDIO_FORMATS, audioBitrate, audioConversionRoute, audioEncodingArgs, loweredBitrate, loweredBitrateByFactor, outputAudioFormat, resolveBitrate, type AudioConversionSettings, type AudioFormat } from './audioFormat';
 import { coverArtArgs, extractCoverArt, scaleCoverArt, type CoverArtOptions } from './coverArt';
 import { audioInfo, type AudioInfo } from './detect';
 import { ffprobe, probeNumber } from './ffprobe';
@@ -86,6 +86,8 @@ async function optimise(input: string, outputDir: string, opts: Options<AudioOpt
   // Re-encoding at the input's own bitrate would change nothing, so aggressive steps below it.
   if (opts.aggressive && spec.allowedBitrates.length) bitrate = Math.min(bitrate, resolveBitrate(format, -1, inputKbps));
   const sameFormat = inputExt === spec.ext || (inputExt === 'opus' && format === 'opus');
+  // A type the user listed for the output format is converted whatever the size; the AAC and MP3 lists keep a result that is not smaller out (AudioPipeline.swift).
+  const chosen = !opts.format && audioConversionRoute(inputExt, opts)?.chosen === true;
 
   return withTemp(outputDir, async tmp => {
     const out = path.join(tmp, `audio.${spec.ext}`);
@@ -95,7 +97,7 @@ async function optimise(input: string, outputDir: string, opts: Options<AudioOpt
     const args = ['-i', input, ...await coverArtArgs(input, format, tmp, opts, signal), ...audioEncodingArgs(format, bitrate, { aggressive: opts.aggressive, inputSampleRate: info.sampleRate }), ...loudnorm];
     await ffmpeg(args, out, info, opts);
     // A requested loudness change is kept whatever its size; dropping it would ignore the request.
-    if (opts.loudnorm === undefined && (await stat(out)).size >= inputBytes && (sameFormat || !opts.allowLarger)) {
+    if (opts.loudnorm === undefined && (await stat(out)).size >= inputBytes && (sameFormat || !(opts.allowLarger || chosen))) {
       opts.onProgress?.(1);
       return { path: input, bytes: inputBytes, format: inputExt, durationMs: info.durationMs, bitrate: inputKbps, unchanged: true };
     }

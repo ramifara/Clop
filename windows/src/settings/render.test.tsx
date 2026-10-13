@@ -107,9 +107,9 @@ test('preset zones show their name, type and pipeline', () => {
 
 test('a row nothing reads yet says so, and a working one does not', () => {
   const html = (key: string) => render(<EntryRow entry={SETTING_ENTRIES.find(row => row.keys[0] === key)!} flash={false}/>);
-  assert.match(html('followCursorScreen'), /Not used by Clop for Windows yet/);
+  assert.match(html('defaultLinkExpiration'), /Not used by Clop for Windows yet/);
   assert.doesNotMatch(html('stripMetadata'), /Not used by Clop/);
-  assert.doesNotMatch(render(<EntryRow entry={SETTING_ENTRIES.find(row => row.keys[0] === 'followCursorScreen')!} flash={false} note={false}/>), /Not used by Clop/);
+  assert.doesNotMatch(render(<EntryRow entry={SETTING_ENTRIES.find(row => row.keys[0] === 'defaultLinkExpiration')!} flash={false} note={false}/>), /Not used by Clop/);
 });
 
 test('every row nothing reads yet shows the note, whatever its control and label, and the wired shortcut and tray rows do not', () => {

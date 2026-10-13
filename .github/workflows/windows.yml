@@ -55,6 +55,8 @@ jobs:
         run: npx electron-builder --win nsis portable --x64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Check the app is long path aware
+        run: node scripts/check-long-path.mjs
       - name: Exercise packaged Windows app
         timeout-minutes: 5
         run: node scripts/desktop-smoke.mjs

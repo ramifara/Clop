@@ -1,4 +1,5 @@
 import sharp, { type OverlayOptions } from 'sharp';
+import { extendedPath } from '../longpath';
 
 export type WatermarkPosition = 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight' | 'center';
 export interface Watermark { file: string; position?: WatermarkPosition; opacity?: number; scale?: number }
@@ -25,7 +26,8 @@ export function watermarkFilters(imageWidth: number, watermark: Watermark, image
 
 /** The watermark scaled to a `width` × `height` image and placed as `watermarked` (Images.swift) draws it, kept inside the image. */
 export async function watermarkOverlay(watermark: Watermark, width: number, height: number): Promise<OverlayOptions> {
-  const source = await sharp(watermark.file).metadata();
+  // libvips opens the file itself, so a path past MAX_PATH needs the prefix.
+  const file = extendedPath(watermark.file), source = await sharp(file).metadata();
   let w = watermarkWidth(width, watermark, Math.round), h = Math.max(1, Math.round((w * (source.height ?? 1)) / (source.width ?? 1)));
   if (h > height) { w = Math.max(1, Math.round((w * height) / h)); h = height; }
   const corners = { topLeft: [PADDING, PADDING], topRight: [width - w - PADDING, PADDING], bottomLeft: [PADDING, height - h - PADDING], center: [(width - w) / 2, (height - h) / 2], bottomRight: [width - w - PADDING, height - h - PADDING] };
@@ -33,7 +35,7 @@ export async function watermarkOverlay(watermark: Watermark, width: number, heig
   const inside = (value: number, room: number) => Math.max(0, Math.min(room, Math.round(value)));
   // sharp orders its operations itself and applies `linear` before `ensureAlpha`, so a watermark without alpha (RGB or grey) gets its
   // four bands in a pass of its own first.
-  const rgba = await sharp(watermark.file).resize(w, h, { fit: 'fill' }).toColourspace('srgb').ensureAlpha().png().toBuffer();
+  const rgba = await sharp(file).resize(w, h, { fit: 'fill' }).toColourspace('srgb').ensureAlpha().png().toBuffer();
   const input = await sharp(rgba).linear([1, 1, 1, watermark.opacity ?? 1], [0, 0, 0, 0]).png().toBuffer();
   return { input, left: inside(left, width - w), top: inside(top, height - h) };
 }

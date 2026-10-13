@@ -10,6 +10,7 @@ import sharp from 'sharp';
 import { OptimisedMarker } from '../marker';
 import { graphic, photo } from '../media/image.fixtures';
 import { photoPDF } from '../media/pdf.fixtures';
+import { clip } from '../media/video.fixtures';
 import { FakeEffects } from '../pipeline/executor.fixtures';
 import { parseSteps } from '../pipeline/parser';
 import { defaultSettings, type ClopSettings } from '../settings/schema';
@@ -104,7 +105,27 @@ test('agents are refused before any file is touched unless the user allowed them
   assert.match((scripted[0] as { error: { error: string } }).error.error, /script steps/);
   assert.equal((await stat(input)).mtimeMs, before);
   const review = await s.send({ urls: [fileURL(input)], prepareInBatch: true });
-  assert.match((review[0] as { error: { error: string } }).error.error, /batch optimiser window/);
+  assert.match((review[0] as { error: { error: string } }).error.error, /needs Clop running/);
+  assert.equal((await stat(input)).mtimeMs, before);
+});
+
+test('--review sends the files to the batch window and optimises nothing; a window that refuses is reported per input', async t => {
+  const added: [string[], boolean][] = [];
+  let refuse: string | undefined;
+  const s = await setup(t, { prepareInBatch: async (files, aggressive) => { if (refuse) throw new Error(refuse); added.push([files, aggressive]); } });
+  const input = s.file('a.png');
+  await graphic(50, 50).png().toFile(input);
+  const before = (await stat(input)).mtimeMs;
+  assert.deepEqual(await s.send({ urls: [fileURL(input), fileURL(s.file('b.png'))], prepareInBatch: true, aggressiveOptimisation: true }), [{ kind: 'done' }]);
+  assert.deepEqual(added, [[[input, s.file('b.png')], true]]);
+  assert.equal((await stat(input)).mtimeMs, before);
+  assert.deepEqual(await readdir(s.workdir.backups), []);
+  refuse = 'A batch is running. Wait for it to finish or cancel it before adding files.';
+  assert.deepEqual(await s.send({ urls: [fileURL(input)], prepareInBatch: true }), [{ kind: 'error', error: { error: refuse, forURL: fileURL(input) } }, { kind: 'done' }]);
+  const link = await s.send({ urls: ['https://example.com/a.png'], prepareInBatch: true });
+  assert.match((link[0] as { error: { error: string } }).error.error, /on this computer/);
+  // The MCP gate still comes first.
+  assert.match(((await s.send({ urls: [fileURL(input)], prepareInBatch: true, origin: 'mcp' }))[0] as { error: { error: string } }).error.error, /not accepting changes from agents/);
 });
 
 test('an agent\'s request that names a network share or a device anywhere is refused before any file is touched', async t => {
@@ -125,6 +146,23 @@ test('an agent\'s request that names a network share or a device anywhere is ref
   }
   assert.equal((await stat(input)).mtimeMs, before);
   assert.deepEqual(await readdir(s.workdir.backups), []);
+});
+
+test('--review from an agent applies the same path guard before the batch window looks the files up', async t => {
+  const added: string[][] = [];
+  const s = await setup(t, { prepareInBatch: async files => { added.push(files); } }, { mcpEnabled: true });
+  const input = s.file('a.png');
+  await graphic(50, 50).png().toFile(input);
+  const refused = /is on a network share or a device\. Agents may only use files and folders on this PC's own drives/;
+  for (const url of ['file://server/share/a.png', 'file:////server/share/dir', 'file:///%5C%5Cserver%5Cshare%5Ca.png']) {
+    const messages = await s.send({ urls: [fileURL(input), url], prepareInBatch: true, origin: 'mcp' });
+    assert.match((messages[0] as { error: { error: string } }).error.error, refused, url);
+    assert.equal(messages.length, 3, 'one refusal per input, then done');
+  }
+  assert.deepEqual(added, [], 'the batch window was never asked to look at a remote path');
+  // A local file from an agent, and a person's own request, still reach the window.
+  assert.deepEqual(await s.send({ urls: [fileURL(input)], prepareInBatch: true, origin: 'mcp' }), [{ kind: 'done' }]);
+  assert.deepEqual(added, [[input]]);
 });
 
 test('an agent\'s download reaches only the internet: a host on this PC or its network is refused, a person\'s is fetched', async t => {
@@ -163,6 +201,17 @@ test('an agent\'s download connects only to an address that passed the check, wh
   assert.deepEqual(first, [{ address: '93.184.216.34', family: 4 }]);
   const single = await new Promise<unknown[]>(resolve => publicLookup(async () => [{ address: '2606:4700:4700::1111' }])('v6.test', {}, (error, address, family) => resolve([error, address, family])));
   assert.deepEqual(single, [null, '2606:4700:4700::1111', 6]);
+});
+
+test('a plain request turns a video of a type formatsToConvertToMP4 lists into an MP4, and leaves an unlisted one in its container', async t => {
+  if (!needTools(t, 'ffmpeg', 'ffprobe')) return;
+  const listed = await setup(t), unlisted = await setup(t, {}, { formatsToConvertToMP4: [] });
+  for (const [s, extension] of [[listed, '.mp4'], [unlisted, '.mov']] as const) {
+    const input = await clip(s.file('take.mov'), { audio: 'aac' });
+    const [done] = answers(await s.send({ urls: [fileURL(input)] }));
+    assert.ok(done.kind === 'response', JSON.stringify(done));
+    assert.equal(path.extname(done.response.path), extension, JSON.stringify(done));
+  }
 });
 
 test('a request that shows its result lets the app optimise it with a card, then places that result', async t => {

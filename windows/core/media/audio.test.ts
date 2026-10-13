@@ -246,3 +246,20 @@ test('cover art sharp cannot decode is re-embedded untouched', async t => {
   assert.deepEqual([picture?.codec_name, picture?.width, picture?.height], ['bmp', 300, 200]);
   assert.ok((await readFile((await extractAudioCoverArt(output.path, w.out)).path)).equals(await readFile(bmp)));
 });
+
+test('formatsToConvertToOutputAudio converts its types to the chosen output format once the AAC and MP3 lists pass them', async t => {
+  const w = await workspace(t); if (!w) return;
+  const wav = await tone(w.file('take.wav')), flac = await tone(w.file('album.flac'));
+  const settings = { formatsToConvertToAAC: [], formatsToConvertToMP3: [], formatsToConvertToOutputAudio: ['wav'] };
+  const converted = await optimiseAudio(wav, w.out, { ...settings, audioFormat: 'opus' });
+  assert.deepEqual([path.basename(converted.path), (await audio(converted.path)).codec], ['take.ogg', 'opus']);
+  const unlisted = await optimiseAudio(flac, w.out, { ...settings, audioFormat: 'opus' });
+  assert.equal(path.basename(unlisted.path), 'album.flac');
+  const same = await optimiseAudio(wav, w.out, { ...settings, audioFormat: 'sameAsInput' });
+  assert.deepEqual([same.path, same.unchanged], [wav, true], 'sameAsInput converts nothing');
+  // FLAC to WAV is always larger: the type the user listed is converted anyway, and a type already in the output format keeps the smaller-only rule.
+  const grown = await optimiseAudio(flac, w.out, { ...settings, formatsToConvertToOutputAudio: ['flac'], audioFormat: 'wav' });
+  assert.deepEqual([path.basename(grown.path), grown.unchanged, grown.bytes > await size(flac)], ['album.wav', undefined, true]);
+  const kept = await optimiseAudio(wav, w.out, { ...settings, audioFormat: 'wav', aggressive: false });
+  assert.equal(kept.unchanged, true, 'WAV to WAV that is not smaller stays as it was');
+});

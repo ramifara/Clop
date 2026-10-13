@@ -15,7 +15,8 @@ import { expandTemplate, type Counter } from '../core/template';
 import { WindowsBridge } from './native';
 import { ignoredApp, withIgnored } from './apps';
 import { ClipboardPickup, type ClipboardChange } from './pickup';
-import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, copiesFiles, DEFAULT_NAME_TEMPLATE, pausedForPoll, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp } from './clipboard';
+import { CursorFollower, FOLLOW_INTERVAL_MS, hideChanges, hideDelay, dropZoneShown } from './floating-results';
+import { ClipboardIntake, importClipboardImages, importClipboardList, type ClipboardListSteps, replacedClipboardImages, serial, clipboardChange, clipboardIntake, copyReply, copiesFiles, DEFAULT_NAME_TEMPLATE, pausedForPoll, mediaKind, sequenceReply, splitClipboardList, copyingApp, type ClipboardMemory, type CopyingApp, imageDataReply } from './clipboard';
 import { OptimisedMarker } from '../core/marker';
 import { FolderWatcher } from './watcher';
 import { enabledKey, localFile } from './watch-rules';
@@ -76,16 +77,19 @@ const views = new Map<string, BrowserWindow>();
 let settings = defaultSettings(), settingsRequest: SettingsRequest | undefined, notice: string | undefined, quitting = false, bridgeReady = false, bridgeStopped = false;
 let store: SettingsStore, workdir: Workdir, stopCleaner: (() => void) | undefined, workdirProblem: string | undefined;
 let mcp: ReturnType<typeof mcpSettings>, prefs: ReturnType<typeof createPrefs>;
-let dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
+let altHeld = false, dropActive = false, dragging = false, importsRunning = 0, hovered = false, selecting = false;
 /** The files being dragged, and whether Ctrl or Alt is held, as the Windows helper reports them: Ctrl or Alt shows the preset zone tiles. */
 let dragFiles: string[] = [], presetsLatched = false;
 const presetReveal = new PresetReveal();
 const hidden = new Set<string>();
 const hideTimers = new Map<string, NodeJS.Timeout>();
+/** The delay each hide timer was started with, so a change of the timing settings can tell which timers to start again (`hideChanges`). */
+const hideDelays = new Map<string, number>();
+function stopHide(id: string) { const timer = hideTimers.get(id); if (timer) clearTimeout(timer); hideTimers.delete(id); hideDelays.delete(id); }
 const compactMode = new CompactMode({
   always: () => settings.alwaysShowCompactResults, seconds: () => settings.autoClearAllCompactResultsAfter, fit: () => cardFit, clear: ids => hideResults(ids),
   paused: () => hovered || dragging || selecting,
-  switched: compact => { if (compact) { for (const timer of hideTimers.values()) clearTimeout(timer); hideTimers.clear(); } },
+  switched: compact => { if (compact) { for (const timer of hideTimers.values()) clearTimeout(timer); hideTimers.clear(); hideDelays.clear(); } },
 });
 let clipboardTimer: NodeJS.Timeout | undefined;
 const memory: ClipboardMemory = { fingerprint: '', own: '' };
@@ -146,13 +150,16 @@ const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 const presetsRevealed = () => presetReveal.revealed(settings.onlyShowPresetZonesOnControlTapped);
 /** The preset zone tiles for the files being dragged. */
 function presets(): PresetTiles { return { revealed: presetsRevealed(), ...tilesFor(settings.presetZones, settings.savedPipelines, draggedType(dragFiles, mediaKind)) }; }
-const visible = () => engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id));
+/** Whether the drop target shows now (see `dropZoneShown`); `dropActive` stays true for a drag whose target is hidden, so a drop still lands. */
+const targetShown = () => dropZoneShown({ expecting: dropActive, dragging, onlyWithAlt: settings.onlyShowDropZoneOnOption, alt: altHeld });
+// With `enableFloatingResults` off Clop runs without a result UI: results stay in the shelf, unseen.
+const visible = () => settings.enableFloatingResults ? engine.list().filter(item => !hidden.has(item.id) && !quiet.has(item.id)) : [];
 let choices: { saved: ClopSettings['savedPipelines']; list: ReturnType<typeof allPipelineChoices> } | undefined;
 /** The saved pipelines, kept until the library changes: the state is sent on every progress step. */
 const pipelineList = () => (choices?.saved === settings.savedPipelines ? choices : choices = { saved: settings.savedPipelines, list: allPipelineChoices(settings) }).list;
 /** How many full cards fit the screen last time the shelf was laid out. */
 let cardFit = 3;
-const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, dropActive, notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList(), ...(settings.finishedOnboarding ? {} : { welcome: true as const }) });
+const state = (): AppState => ({ items: visible(), settings, native: true, platform: process.platform, dropActive: targetShown(), notice, presets: presets(), settingsRequest, layout: { compact: compactMode.compact, cards: cardFit }, pipelines: pipelineList(), ...(settings.finishedOnboarding ? {} : { welcome: true as const }) });
 function broadcast() {
   refreshTrayIcon();
   for (const window of [main, floating]) if (window && !window.isDestroyed()) window.webContents.send('clop:state', state());
@@ -160,11 +167,32 @@ function broadcast() {
   if (views.size) { const all = engine.list(); for (const [key, window] of views) if (!window.isDestroyed()) window.webContents.send('clop:state', { ...state(), items: viewItems(all, key) }); }
 }
 function inform(text: string) { notice = text; syncFloating(); broadcast(); }
+/** The display the floating results sit on: the cursor's when they appear, then wherever `followCursorScreen` moved them. */
+let floatingDisplay: number | undefined;
+function floatingArea() {
+  if (!floating.isVisible()) floatingDisplay = undefined;
+  const display = screen.getAllDisplays().find(candidate => candidate.id === floatingDisplay) ?? screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  floatingDisplay = display.id;
+  return display.workArea;
+}
 function positionFloating() {
-  const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+  const area = floatingArea();
   const [w, h] = floating.getSize();
   floating.setPosition(settings.floatingResultsCorner.endsWith('Right') ? area.x + area.width - w : area.x,
     settings.floatingResultsCorner.startsWith('bottom') ? area.y + area.height - h : area.y);
+}
+const cursorFollower = new CursorFollower();
+let followTimer: NodeJS.Timeout | undefined;
+/** Starts or stops the look at the cursor that `followCursorScreen` asks for. */
+function syncCursorFollower() {
+  if (settings.followCursorScreen === (followTimer !== undefined)) return;
+  if (!settings.followCursorScreen) { clearInterval(followTimer); followTimer = undefined; cursorFollower.reset(); return; }
+  followTimer = setInterval(() => {
+    if (!floating || floating.isDestroyed()) return;
+    const moveTo = cursorFollower.tick({ cursor: screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id, current: floatingDisplay, active: floating.isVisible() && visible().length > 0, frozen: dragging });
+    if (moveTo !== undefined) { floatingDisplay = moveTo; syncFloating(); }
+  }, FOLLOW_INTERVAL_MS);
+  followTimer.unref();
 }
 function showFloating(focus = false, reposition = false) {
   if (reposition && !floating.isVisible()) positionFloating();
@@ -174,11 +202,11 @@ function showFloating(focus = false, reposition = false) {
 const compactHeight = (rows: number) => 38 + rows * (settings.showCompactImages ? 58 : 34);
 function syncFloating() {
   if (!floating || floating.isDestroyed()) return;
-  const target = dropActive || settings.keepDropZoneVisible;
-  const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+  const target = targetShown() || settings.keepDropZoneVisible;
+  const area = floatingArea();
   const items = visible();
   // Room for the tiles stays once they were shown, until the drag ends: a tile under the pointer must not lose its window when Ctrl is let go.
-  const tiles = presetsLatched || presetsRevealed() ? gridHeight(cellCount(presets())) + 8 : 0;
+  const tiles = target && (presetsLatched || presetsRevealed()) ? gridHeight(cellCount(presets())) + 8 : 0;
   const extra = extraHeight({ tiles, notice: !!notice, welcome: !settings.finishedOnboarding });
   cardFit = cardsThatFit(area.height, target, 170, 60 + extra);
   const compact = compactMode.update(items.map(item => ({ id: item.id, running: item.status === 'processing' })));
@@ -197,26 +225,37 @@ function showLatest() {
 function hideResults(ids: string[]) {
   for (const id of ids) {
     if (!engine.has(id)) continue;
-    const timer = hideTimers.get(id); if (timer) clearTimeout(timer);
-    hideTimers.delete(id); hidden.add(id); removed(id);
+    stopHide(id); hidden.add(id); removed(id);
   }
   syncFloating(); broadcast();
 }
+/**
+ * Brings the hide timers in line with the settings: results switched back on (`enableFloatingResults`) get timers, timers stop when the
+ * results or auto-hide are switched off, and a timer whose delay changed starts again from now. The others keep counting.
+ */
+function rescheduleHides() {
+  const { start, stop } = hideChanges(visible().filter(item => item.status === 'ready'), hideDelays, settings);
+  for (const id of stop) stopHide(id);
+  for (const id of start) scheduleHide(id);
+}
 function scheduleHide(id: string) {
-  const existing = hideTimers.get(id); if (existing) clearTimeout(existing);
+  stopHide(id);
   // The compact list clears every result together instead (CompactMode).
   if (compactMode.compact) return;
   const check = () => {
+    // Switched off meanwhile: the result waits on the shelf, and `rescheduleHides` times it again once the results are back.
+    if (!settings.enableFloatingResults) { hideTimers.delete(id); hideDelays.delete(id); return; }
     if (hovered || dragging) { hideTimers.set(id, setTimeout(check, 1000)); return; }
     hideResults([id]);
   };
-  hideTimers.set(id, setTimeout(check, engine.get(id).result.source === 'clipboard' ? 10000 : 30000));
+  const delay = hideDelay(settings, engine.get(id).result.source);
+  if (delay !== undefined) { hideTimers.set(id, setTimeout(check, delay)); hideDelays.set(id, delay); }
 }
 async function dismiss(id: string) {
-  const timer = hideTimers.get(id); if (timer) clearTimeout(timer);
+  stopHide(id);
   for (const view of ['crop', 'compare', 'preview']) views.get(`${view}:${id}`)?.close();
   if (engine.has(id)) media?.revoke(engine.get(id).directory);
-  hideTimers.delete(id); hidden.delete(id); shortcutRunner.forget(id);
+  hidden.delete(id); shortcutRunner.forget(id);
   await engine.dismiss(id);
   if (!quiet.delete(id)) removed(id);
 }
@@ -335,6 +374,7 @@ async function createWindows() {
   protectFromCapture(floating, settings.allowClopToAppearInScreenshots);
   await load(main, { preferences: '1' }); await load(floating, { floating: '1' });
   positionFloating();
+  syncCursorFollower();
   floating.setIgnoreMouseEvents(true, { forward: true });
   // The drop zone that stays, and the welcome card of a first run, show from the start.
   if (settings.keepDropZoneVisible || !settings.finishedOnboarding) syncFloating();
@@ -568,7 +608,7 @@ function optimiseClipboard(change?: ClipboardChange, manual = false, aggressive 
   if (!manual && (!settings.enableClipboardOptimiser || paused())) return Promise.resolve();
   return intake.submit(async () => {
     const plan = await clipboardIntake(change, manual, memory, {
-      settings, owns: file => workdir.owns(file), image: readClipboardImage, text: () => clipboard.readText(), isFile, fingerprint: filesFingerprint, hash: fingerprint,
+      settings, owns: file => workdir.owns(file), image: readClipboardImage, imageData: async ext => imageDataReply(await bridge.request({ type: 'image-data', ext })), text: () => clipboard.readText(), isFile, fingerprint: filesFingerprint, hash: fingerprint,
       read: async () => {
         if (!bridgeReady) return;
         const snapshot = clipboardChange(await bridge.request({ type: 'read' }));
@@ -610,6 +650,7 @@ async function serveCLI(userData: string) {
     store: { get: () => store.get(), update: async change => { const wasEnabled = settings.mcpEnabled, reply = await store.update(change); await settingsChanged(reply.settings, wasEnabled); return reply; } },
     workdir, marker, effects: options => pipelineEffects(options), copyFiles: list => files.copyFiles(list), home: app.getPath('home'), withCard: optimiseWithCard,
     counter: () => nameCounter ??= { value: settings.lastAutoIncrementingNumber },
+    prepareInBatch: async (files, aggressive) => { if (!batch) throw new Error('Clop is still starting. Try again in a moment.'); await batch.host.add(files, aggressive); },
   });
   pipe = await startPipeServer(newPipePath(), (request, emit) => {
     console.log(`CLI request: ${request.kind}`);
@@ -792,6 +833,7 @@ async function settingsChanged(saved: typeof settings, wasEnabled: boolean) {
   if (settings.mcpEnabled !== wasEnabled && app.isPackaged) void mcp.writeCard().catch(error => console.warn(`Could not write the MCP server card: ${message(error)}`));
   if (!settings.enableClipboardOptimiser || paused()) pickup.cancel();
   floating.setAlwaysOnTop(settings.floatingResultsAlwaysOnTop);
+  syncCursorFollower(); rescheduleHides();
   syncFloating();
   if (process.platform === 'win32') syncLoginItem(app, settings.launchAtLogin, loginExecutable());
   applyWindowSettings();
@@ -1151,6 +1193,7 @@ else {
       if (changed.includes('pauseAutomaticOptimisations')) shortcutRunner.pauseChanged();
       if (changed.some(key => ['keyComboModifiers', 'enabledKeys', 'quickResizeKeys', 'allowClopToAppearInScreenshots'].includes(key))) applyWindowSettings();
       // A change made outside the app (the settings file, the CLI) shows or hides the tray icon and updates its menu and icon too.
+      if (changed.some(key => ['enableFloatingResults', 'followCursorScreen', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter', 'autoHideClipboardResultAfter'].includes(key))) { syncCursorFollower(); rescheduleHides(); syncFloating(); broadcast(); }
       if (changed.some(key => ['showMenubarIcon', 'pauseAutomaticOptimisations', 'enableClipboardOptimiser', 'keepDropZoneVisible'].includes(key))) updateTray();
       // Pipelines, attachments and preset zones show in the editor and, as tiles, on the drop target.
       if (changed.some(key => (EDITOR_SETTING_KEYS as readonly string[]).includes(key))) { syncFloating(); broadcast(); for (const window of [editorWindow, editorLoading?.window]) if (window && !window.isDestroyed()) window.webContents.send('clop:editor-changed'); }
@@ -1173,17 +1216,19 @@ else {
       bridge.on('foreground', event => pickup.focus(Number(event.process)));
       bridge.on('drag-start', event => {
         if (!settings.enableDragAndDrop) return;
-        dragging = true; dropActive = true; presetReveal.reset(); presetsLatched = false;
+        dragging = true; dropActive = true; altHeld = false; presetReveal.reset(); presetsLatched = false;
         dragFiles = Array.isArray(event.paths) ? (event.paths as unknown[]).filter((file): file is string => typeof file === 'string').slice(0, 64) : [];
         floating.setIgnoreMouseEvents(false); syncFloating(); broadcast();
       });
       // The helper reads Ctrl and Alt while a drag lasts; holding either shows the preset zone tiles, or tapping it with `onlyShowPresetZonesOnControlTapped`.
       bridge.on('drag-modifiers', event => {
         if (!dragging) return;
-        presetReveal.update({ ctrl: event.ctrl === true, alt: event.alt === true }, settings.onlyShowPresetZonesOnControlTapped); presetsLatched ||= presetsRevealed(); syncFloating(); broadcast();
+        altHeld = event.alt === true;
+        // With `onlyShowDropZoneOnOption` Alt shows the drop target, so only Ctrl reveals the tiles.
+        presetReveal.update({ ctrl: event.ctrl === true, alt: event.alt === true && !settings.onlyShowDropZoneOnOption }, settings.onlyShowPresetZonesOnControlTapped); presetsLatched ||= presetsRevealed(); syncFloating(); broadcast();
       });
       // The tiles stay for the moment a drop on one needs to land.
-      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; dragFiles = []; presetReveal.reset(); presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
+      bridge.on('drag-end', () => { dragging = false; setTimeout(() => { if (!dragging) { dropActive = false; altHeld = false; dragFiles = []; presetReveal.reset(); presetsLatched = false; syncFloating(); broadcast(); } }, 180); });
       bridge.on('notice', inform);
       bridge.on('stopped', () => { bridgeReady = false; bridgeStopped = true; pickup.cancel(); startClipboardFallback(); for (const watcher of watchers) watcher.resume(); });
       bridge.start(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'native', 'bridge.ps1'));

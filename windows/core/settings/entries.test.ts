@@ -125,11 +125,7 @@ test('name templates apply under Same folder and path templates under Specific f
  */
 const PENDING_KEYS = [
   'audioFormat',
-  'autoHideClipboardResultAfter', 'autoHideFloatingResults', 'autoHideFloatingResultsAfter',
-  'convertHDRToSDR', 'defaultLinkExpiration', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnUpload',
-  'enableFloatingResults', 'followCursorScreen', 'formatsToConvertToJPEG', 'formatsToConvertToMP4',
-  'formatsToConvertToOutputAudio', 'formatsToConvertToPNG', 'onlyShowDropZoneOnOption', 'optimiseHEICAVIFClipboard',
-  'optimiseTIFF',
+  'defaultLinkExpiration', 'dismissCompactResultOnUpload', 'dismissFloatingResultOnUpload',
 ];
 
 test('the rows that do nothing yet are exactly the pinned list, each with a reason', () => {

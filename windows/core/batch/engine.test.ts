@@ -554,3 +554,46 @@ test('an earlier batch can be opened again from its manifest and reverted', asyn
   assert.equal(await BatchBackup.latest(workdir), undefined);
   assert.equal(await Batch.restore(first.id, env).then(batch => batch?.items.length), 0, 'and nothing to open');
 });
+
+test('a WebP the Compatibility lists turn into a JPEG follows the converted-file placement: the original stays beside the result', async t => {
+  if (!needTools(t, 'jpegoptim', 'pngquant', 'exiftool')) return;
+  const { dir, files, env, params } = await setup(t);
+  const source = await write(path.join(files, 'picture.webp'), await photo(320, 240, 5).webp({ quality: 95 }).toBuffer());
+  const before = await digest(source);
+  const batch = await batchOf(env, [source], params());
+  await batch.run();
+  assert.deepEqual(batch.items.map(item => [item.status, item.result && path.basename(item.result), item.newFormat]), [['done', 'picture.jpeg', 'JPEG']]);
+  assert.equal(await digest(source), before, 'the default converted-image setting is the same folder, so the WebP stays');
+  assert.deepEqual(await batch.revert(), []);
+  assert.equal(await exists(path.join(files, 'picture.jpeg')), false);
+  assert.equal(await digest(source), before);
+  // The setting decides: in place replaces the WebP, backed up in the batch, and reverts.
+  const settings = defaultSettings({ home: dir, desktop: dir, userData: dir });
+  const replacing: BatchEnv = { ...env, settings: () => ({ ...settings, convertedImageBehaviour: 'inPlace' as const }) };
+  const second = await batchOf(replacing, [source], params());
+  await second.run();
+  assert.equal(await exists(source), false);
+  assert.equal(await exists(path.join(files, 'picture.jpeg')), true);
+  assert.deepEqual(await second.revert(), []);
+  assert.equal(await digest(source), before);
+  // A folder chosen in the batch covers the conversion too, and an explicit conversion is not an automatic one.
+  const folder = batchOf(env, [source], params({ output: { location: 'folder', folder: path.join(dir, 'out'), template: '%f' } }));
+  const third = await folder; await third.run();
+  assert.deepEqual(third.items.map(item => item.result && path.relative(dir, item.result)), [path.join('out', 'picture.jpeg')]);
+});
+
+test('a MOV in the MP4 compatibility list becomes an MP4 in a batch, and the original stays beside it', async t => {
+  if (!needTools(t, 'ffmpeg', 'ffprobe')) return;
+  const { files, env, params } = await setup(t);
+  const mov = await clip(path.join(files, 'take.mov'), { seconds: 1 });
+  const before = await digest(mov);
+  const asDefault = await batchOf({ ...env, settings: () => ({ ...env.settings(), convertedVideoBehaviour: 'sameFolder' as const }) }, [mov], params());
+  await asDefault.run();
+  assert.deepEqual(asDefault.items.map(item => [item.status, item.result && path.basename(item.result), item.newFormat]), [['done', 'take.mp4', 'MP4']], asDefault.items.map(item => item.error).join());
+  assert.equal(await digest(mov), before);
+  await asDefault.revert();
+  // Left out of the list, the file keeps its container.
+  const kept = await batchOf({ ...env, settings: () => ({ ...env.settings(), formatsToConvertToMP4: [] }) }, [mov], params());
+  await kept.run();
+  assert.ok(kept.items[0].unchanged || path.extname(kept.items[0].result ?? '') === '.mov');
+});

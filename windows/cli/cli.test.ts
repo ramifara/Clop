@@ -318,3 +318,12 @@ test('the bundled entry point runs as its own process', async t => {
   await promisify(execFile)(process.execPath, [tsx, path.join(import.meta.dirname, 'index.ts'), 'pipeline', 'run', `runScript(path: "${script.replaceAll('\\', '/')}")`, image, '-n'], { env: { ...process.env, CLOP_USER_DATA: dir, ELECTRON_RUN_AS_NODE: '1' } });
   assert.equal((await readFile(seen, 'utf8')).trim(), '[]');
 });
+
+test('--review without the app says it needs the app and touches nothing', async t => {
+  const c = await cli(t);
+  await graphic(300, 200).png({ compressionLevel: 0 }).toFile(c.file('a.png'));
+  const before = (await readFile(c.file('a.png'))).length;
+  assert.equal(await c.clop('optimise', '--review', 'a.png'), 1);
+  assert.equal(c.err(), '--review opens the batch window, which needs Clop running. Start Clop and run the command again, or run it without --review.\n');
+  assert.equal((await readFile(c.file('a.png'))).length, before);
+});

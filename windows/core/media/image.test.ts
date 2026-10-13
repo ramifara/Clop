@@ -73,7 +73,8 @@ test('a result that is not smaller keeps the input', async t => {
   const w = await workspace(t); if (!w) return;
   // sharp encodes WebP the same on every platform, and re-encoding a quality-5 WebP at the factor's quality 60 grows it.
   const input = await w.file('rough.webp', photo(320, 240).webp({ quality: 5 }));
-  const output = await optimiseImage(input, w.out, { compression: at(30), name: 'rough' });
+  // WebP is converted to JPEG by default; unlisted it stays WebP and can keep its bytes.
+  const output = await optimiseImage(input, w.out, { compression: at(30), name: 'rough', formatsToConvertToJPEG: [] });
   assert.deepEqual(output, { path: input, bytes: (await stat(input)).size, format: 'webp', width: 320, height: 240, unchanged: true });
   assert.deepEqual(await readdir(w.out), []);
 });

@@ -1,6 +1,6 @@
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
-import { copyTo, exists } from '../fileops';
+import { copyTo, exists, samePath } from '../fileops';
 import { lowerAudioBitrate, audioMetadata, changeAudioSpeed, optimiseAudio } from '../media/audio';
 import { audioFormatFromName, loweredBitrate, outputAudioFormat } from '../media/audioFormat';
 import { computedSize, even, type CropSpec } from '../media/crop-size';
@@ -14,7 +14,7 @@ import { optimisePDF, PDF_DPI_ADAPTIVE, PDF_DPI_NO_DOWNSAMPLE, PDF_DPI_STOPS, re
 import { convertVideoToGIF, optimiseVideo, removeVideoAudio, watermarkVideo } from '../media/video';
 import { videoEncoderToCompression, type VideoCodecConversion } from '../media/videoCompression';
 import type { WatermarkPosition } from '../media/watermark';
-import { effectiveBehaviour } from '../placement';
+import { effectiveBehaviour, placedExtension, placeOutput } from '../placement';
 import type { CompressionQuality } from '../settings/schema';
 import { applyLocation } from './files';
 import { effectiveCompression, parseAspectRatio, stepEntry, stepKind, WATERMARK_POSITIONS, type ClopFileType, type EncoderQuality, type PipelineStep, type StepKind, type StepParamMap } from './model';
@@ -77,6 +77,19 @@ export function convertLocation(run: RunState, location: string): string {
   }
 }
 
+/**
+ * Puts a result where `location` says. A result whose format changed without a `convert` step (the Compatibility lists made it, such as a
+ * WebP that became JPEG) and whose location is the default `inPlace` follows the auto-conversion placement instead, as
+ * `applyImageConversionBehaviour` does on macOS: `converted…Behaviour` and its name template, which by default leave an image's original beside it.
+ */
+async function placeResult(run: RunState, location: string, result: string, input: string, { fromSettings = false, explicit = false } = {}) {
+  const changed = location === 'inPlace' && !explicit && !samePath(result, input) && placedExtension(result, input).toLowerCase() !== path.extname(input).toLowerCase();
+  if (!changed) return applyLocation(run, location, result, input, fromSettings);
+  const { env, placementOverride } = run.opts;
+  if (effectiveBehaviour(env, run.fileType, 'autoConvert', placementOverride) === 'temporary') return applyLocation(run, 'temporaryFolder', result, input);
+  return (await placeOutput(env, { produced: result, original: input, type: run.fileType, kind: 'autoConvert', overrides: placementOverride })).path;
+}
+
 /** Splits a batch into passes the engine can encode at once: a second step of one exclusive group starts the next pass. */
 function passes(batch: PipelineStep[], group: (kind: StepKind) => string | undefined): PipelineStep[][] {
   const out: PipelineStep[][] = [];
@@ -104,7 +117,7 @@ function optimiseSettings(steps: PipelineStep[], fallback: CompressionQuality) {
 }
 
 const settingsOf = (run: RunState) => run.settings;
-const imageBase = (run: RunState) => { const s = settingsOf(run); return { stripMetadata: s.stripMetadata, preserveColorMetadata: s.preserveColorMetadata, gifFrameDropBehaviour: s.gifFrameDropBehaviour, signal: run.signal }; };
+const imageBase = (run: RunState) => { const s = settingsOf(run); return { stripMetadata: s.stripMetadata, preserveColorMetadata: s.preserveColorMetadata, gifFrameDropBehaviour: s.gifFrameDropBehaviour, formatsToConvertToJPEG: s.formatsToConvertToJPEG, formatsToConvertToPNG: s.formatsToConvertToPNG, convertHDRToSDR: s.convertHDRToSDR, signal: run.signal }; };
 const videoBase = (run: RunState) => {
   const s = settingsOf(run);
   return {
@@ -114,7 +127,7 @@ const videoBase = (run: RunState) => {
 };
 const audioBase = (run: RunState) => {
   const s = settingsOf(run);
-  return { compression: s.audioCompression, formatsToConvertToAAC: s.formatsToConvertToAAC, formatsToConvertToMP3: s.formatsToConvertToMP3, coverArt: s.audioCoverArt, preserveDates: s.preserveDates, signal: run.signal };
+  return { compression: s.audioCompression, formatsToConvertToAAC: s.formatsToConvertToAAC, formatsToConvertToMP3: s.formatsToConvertToMP3, formatsToConvertToOutputAudio: s.formatsToConvertToOutputAudio, audioFormat: s.audioFormat, coverArt: s.audioCoverArt, preserveDates: s.preserveDates, signal: run.signal };
 };
 
 function imageFormat(to: string): ImageFormat {
@@ -167,6 +180,7 @@ async function encodeVideo(run: RunState, batch: PipelineStep[], progress: Progr
     const output = await optimiseVideo(file, dir, {
       ...videoBase(run), compression: optimises && !params(steps, 'optimise').some(p => p.compression) && videoEncoder ? videoEncoderToCompression(videoEncoder) : compression, aggressive,
       ...(converts.length ? videoConversion(converts.at(-1)!.to) : {}), crop: cropSize, ...size,
+      ...(optimises && !converts.length && run.opts.convertContainers ? { formatsToConvertToMP4: run.settings.formatsToConvertToMP4 } : {}),
       ...(speed ? { speed: speed.factor, playbackSpeedFrameBehaviour: speed.frames ?? run.settings.playbackSpeedFrameBehaviour } : {}),
       removeAudio: steps.some(step => 'removeAudio' in step) || run.settings.removeAudioFromVideos, onProgress,
     });
@@ -216,19 +230,19 @@ export async function runBatch(run: RunState, batch: PipelineStep[], progress: P
   if (batch.some(step => 'convert' in step)) { const chosen = convertLocation(run, location); fromSettings ||= chosen !== location; location = chosen; }
   const input = run.current;
   const encode = { image: encodeImage, video: encodeVideo, audio: encodeAudio, pdf: encodePDF }[run.fileType];
-  run.current = await applyLocation(run, location, await encode(run, batch, progress), input, fromSettings);
+  run.current = await placeResult(run, location, await encode(run, batch, progress), input, { fromSettings, explicit: batch.some(step => 'convert' in step) });
 }
 
 /** The steps that run on their own. */
 export async function runSolo(run: RunState, step: PipelineStep, progress: Progress) {
   const [kind, p] = stepEntry(step), input = run.current, { signal } = run;
-  const place = async (location: string, result: string, fromSettings = false) => { run.current = await applyLocation(run, location, result, input, fromSettings); };
+  const place = async (location: string, result: string, fromSettings = false, explicit = false) => { run.current = await placeResult(run, location, result, input, { fromSettings, explicit }); };
   switch (kind) {
     case 'convert': {
       // Only a video to GIF gets here: gifski makes it, outside the ffmpeg pass.
       const gif = await convertVideoToGIF(input, await run.scratch(), { maxWidth: 960, fps: 15, aggressive: run.settings.useAggressiveOptimisationGIF, signal, onProgress: progress });
       const chosen = convertLocation(run, p.location);
-      return place(chosen, gif.path, chosen !== p.location);
+      return place(chosen, gif.path, chosen !== p.location, true);
     }
     case 'targetSize': {
       if ((await stat(input)).size <= p.bytes) {
