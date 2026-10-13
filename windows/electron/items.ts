@@ -7,6 +7,7 @@ import type { CropRequest, ImageOptions, ItemResult } from '../src/types';
 import { defaultSettings, type ClopSettings } from '../core/settings/schema';
 import { optimiseImage } from '../core/media/image';
 import { probeImage } from '../core/media/image-codecs';
+import { SVGTooLargeError } from '../core/media/sharp-input';
 import { optimiseVideo } from '../core/media/video';
 import { cropPDF, extendPDF, optimisePDF, uncropPDF } from '../core/media/pdf';
 import { cropGeometry } from '../core/media/crop-size';
@@ -175,15 +176,14 @@ export class ItemEngine extends EventEmitter {
     return id;
   }
   private async stageImage(staged: string, directory: string, base: Pick<ItemResult, 'id' | 'kind' | 'name' | 'source' | 'status' | 'options' | 'animated' | 'createdAt'>, signal = this.controller.signal): Promise<Entry> {
-    const info = await probeImage(staged, signal).catch(error => { if (signal.aborted) throw error; return undefined; });
+    const info = await probeImage(staged, signal).catch(error => { if (signal.aborted || error instanceof SVGTooLargeError) throw error; return undefined; });
     if (!info || !INPUT.has(info.format) || !info.width || !info.height) throw new Error('Use PNG, JPEG, WebP, GIF, AVIF, HEIC, JPEG XL, TIFF, BMP or SVG.');
     const { format, width, height, pages } = info;
     if (format === 'tiff' && pages > 1) throw new Error('Use a single-page TIFF image. Multi-page documents are not supported.');
     if (pages > 250 || info.pixels > PIXELS) throw new Error('This image has too many pixels or animation frames. Use an image under 60 megapixels in total.');
     const originalPath = path.join(path.dirname(staged), `${path.parse(staged).name || 'image'}.${format}`);
-    // Renamed only when the extension is not the format's, and with the retries for a busy file: on Windows librsvg opens an SVG
-    // through an inheritable handle that does not share deletion, so a tool that another import starts while the SVG is read
-    // inherits it and keeps the copy from being renamed until that tool exits.
+    // Renamed only when the extension is not the format's, and with the retries for a busy file: on Windows a scanner, an indexer or
+    // a tool that inherited a handle (see core/media/sharp-input.ts) can hold a new file for a moment, and a held file cannot be renamed.
     await moveTo(staged, originalPath);
     const preview = await imageThumbnail(originalPath, DECODED.has(format) || info.deep), bytes = (await stat(originalPath)).size;
     const result: ItemResult = { ...base, originalBytes: bytes, outputBytes: bytes, originalWidth: width, originalHeight: height, width, height, format, originalPreview: preview, preview, animated: pages > 1 };

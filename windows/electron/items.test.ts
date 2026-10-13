@@ -2,7 +2,7 @@ import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { watch, type FSWatcher } from 'node:fs';
-import { chmod, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, truncate, utimes, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import os from 'node:os';
 import path from 'node:path';
@@ -342,6 +342,14 @@ test('names an imported file as asked and reports files it cannot read', async t
     await chmod(file, 0o000);
     await assert.rejects(engine.importPath(file, 'drop', balanced), /Could not read source\.png/);
   }
+});
+test('an SVG too large to open is refused with that reason, not as an unknown format', async t => {
+  const f = await fixture(t); if (!f) return;
+  const file = path.join(f.dir, 'poster.svg');
+  await writeFile(file, '<svg xmlns="http://www.w3.org/2000/svg" width="60" height="40"/>');
+  await truncate(file, 11 * 1024 * 1024);
+  await assert.rejects(f.engine.importPath(file, 'drop', balanced), { message: 'poster.svg is an SVG larger than 10 MB, which Clop does not open.' });
+  assert.deepEqual(f.engine.list(), []);
 });
 test('names downloads without a matching extension by their content', async t => {
   const f = await media(t, 'gs'); if (!f) return;

@@ -1,5 +1,5 @@
 import sharp, { type OverlayOptions } from 'sharp';
-import { extendedPath } from '../longpath';
+import { sharpInput } from './sharp-input';
 
 export type WatermarkPosition = 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight' | 'center';
 export interface Watermark { file: string; position?: WatermarkPosition; opacity?: number; scale?: number }
@@ -26,8 +26,8 @@ export function watermarkFilters(imageWidth: number, watermark: Watermark, image
 
 /** The watermark scaled to a `width` × `height` image and placed as `watermarked` (Images.swift) draws it, kept inside the image. */
 export async function watermarkOverlay(watermark: Watermark, width: number, height: number): Promise<OverlayOptions> {
-  // libvips opens the file itself, so a path past MAX_PATH needs the prefix.
-  const file = extendedPath(watermark.file), source = await sharp(file).metadata();
+  // An SVG watermark is read into memory; libvips opens any other file itself, with the prefix past MAX_PATH.
+  const file = await sharpInput(watermark.file), source = await sharp(file).metadata();
   let w = watermarkWidth(width, watermark, Math.round), h = Math.max(1, Math.round((w * (source.height ?? 1)) / (source.width ?? 1)));
   if (h > height) { w = Math.max(1, Math.round((w * height) / h)); h = height; }
   const corners = { topLeft: [PADDING, PADDING], topRight: [width - w - PADDING, PADDING], bottomLeft: [PADDING, height - h - PADDING], center: [(width - w) / 2, (height - h) / 2], bottomRight: [width - w - PADDING, height - h - PADDING] };

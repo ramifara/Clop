@@ -1,5 +1,6 @@
 import sharp, { type Metadata } from 'sharp';
 import { extendedPath } from '../longpath';
+import { sharpInput } from './sharp-input';
 import { access, copyFile, mkdtemp, open, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { run, type RunOptions } from '../run';
@@ -14,8 +15,8 @@ export async function sniffImage(file: string): Promise<{ format?: string; meta?
   if (head.readUInt16BE(0) === 0xff0a || head.equals(Buffer.from('0000000c4a584c200d0a870a', 'hex'))) return { format: 'jxl' };
   if (head.toString('latin1', 0, 2) === 'BM') return { format: 'bmp' };
   // A HEIF whose images differ in size cannot be read as one animation; its primary image still can.
-  const long = extendedPath(file);
-  const meta = await sharp(long, { animated: true }).metadata().catch(() => sharp(long).metadata()).catch(() => undefined);
+  const input = await sharpInput(file);
+  const meta = await sharp(input, { animated: true }).metadata().catch(() => sharp(input).metadata()).catch(() => undefined);
   if (!meta?.format) return {};
   return { format: meta.format === 'heif' ? (meta.compression === 'av1' ? 'avif' : 'heic') : meta.format, meta };
 }
@@ -77,7 +78,7 @@ export async function readableImage(file: string, format: string, opts: DecodeOp
   if (format === 'heic') decoded = await decodeHEIC(file, opts);
   else if (format === 'jxl') await tool('djxl', [name, 'decoded.png'], dir, opts);
   else if (format === 'bmp') await tool('ffmpeg', ['-y', '-nostdin', '-v', 'error', '-i', name, '-frames:v', '1', 'decoded.png'], dir, opts);
-  else if (format === 'svg') await sharp(file).png({ compressionLevel: 1 }).toFile(png);
+  else if (format === 'svg') await sharp(await sharpInput(file)).png({ compressionLevel: 1 }).toFile(png);
   if (format === 'jxl' || format === 'bmp' || format === 'svg') decoded = png;
   const meta = await sharp(decoded).metadata();
   if ((meta.bitsPerSample ?? 8) > 8 || meta.depth === 'ushort') {

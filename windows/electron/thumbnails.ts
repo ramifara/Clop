@@ -5,6 +5,7 @@ import { run } from '../core/run';
 import { extractCoverArt } from '../core/media/coverArt';
 import { renderPDFPages } from '../core/media/pdf';
 import { toPNG } from '../core/media/image-codecs';
+import { sharpInput } from '../core/media/sharp-input';
 import type { MediaKind } from '../core/media/types';
 
 const PIXELS = 60_000_000;
@@ -17,8 +18,8 @@ const png = async (source: string | Buffer, box: { width: number; height: number
 
 /** A PNG data URL for the card. `decode` routes formats sharp cannot read, and HDR, through the image engine's decoders. */
 export async function imageThumbnail(file: string, decode = false) {
-  const source = decode ? await toPNG(file, path.join(path.dirname(file), 'preview.png'), { limitInputPixels: PIXELS }) : file;
-  try { return await png(source, { width: 1000, height: 760 }); } finally { if (source !== file) await rm(source, { force: true }); }
+  const decoded = decode ? await toPNG(file, path.join(path.dirname(file), 'preview.png'), { limitInputPixels: PIXELS }) : undefined;
+  try { return await png(decoded ?? await sharpInput(file), { width: 1000, height: 760 }); } finally { if (decoded) await rm(decoded, { force: true }); }
 }
 
 /**
