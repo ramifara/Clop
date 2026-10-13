@@ -2,6 +2,7 @@ name: Windows image app
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths: ['windows/**', '.github/workflows/windows.yml']
   pull_request:
     paths: ['windows/**', '.github/workflows/windows.yml']
@@ -10,7 +11,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: windows
@@ -23,7 +24,23 @@ jobs:
           cache-dependency-path: windows/package-lock.json
       - name: Install
         run: npm ci
-      - name: Test image operations
+      - name: Restore bundled tools
+        id: tools-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: windows/.tools
+          key: clop-tools-${{ runner.os }}-${{ hashFiles('windows/scripts/tools.json', 'windows/scripts/fetch-tools.mjs') }}
+      - name: Fetch bundled tools
+        id: fetch-tools
+        run: node scripts/fetch-tools.mjs
+      # Saved straight after a successful fetch, so a later failing step does not discard the download.
+      - name: Save bundled tools
+        if: always() && steps.fetch-tools.outcome == 'success' && steps.tools-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: windows/.tools
+          key: ${{ steps.tools-cache.outputs.cache-primary-key }}
+      - name: Test engine and bundled tools
         run: npm test
       - name: Compile Windows helper
         shell: powershell
