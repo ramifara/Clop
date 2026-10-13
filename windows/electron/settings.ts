@@ -13,6 +13,15 @@ export function parseOptions(value: unknown): ImageOptions {
 export function imageMode({ tier, factor }: CompressionQuality): ImageOptions['mode'] {
   return tier === 'lossless' ? 'lossless' : tier !== 'adaptive' && factor >= 50 ? 'aggressive' : 'balanced';
 }
+/**
+ * The compression a card mode asks for, the inverse of `imageMode`. Balanced runs the configured
+ * setting unless that is aggressive or lossless, aggressive is the macOS aggressive button (factor 64)
+ * unless the setting already is aggressive, and lossless is the Windows-only lossless tier.
+ */
+export function imageCompression(mode: ImageOptions['mode'], configured: CompressionQuality): { compression: CompressionQuality; aggressive?: boolean } {
+  if (mode === 'lossless') return { compression: { tier: 'lossless', factor: configured.factor } };
+  return imageMode(configured) === mode ? { compression: configured } : { compression: configured, aggressive: mode === 'aggressive' };
+}
 export function imageDefaults(settings: ClopSettings): ImageOptions {
   return { mode: imageMode(settings.imageCompression), format: settings.defaultImageFormat, scale: 1 };
 }

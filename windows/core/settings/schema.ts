@@ -147,7 +147,7 @@ export const settingsSchema = {
   useAggressiveOptimisationGIF: bool(false, 'Legacy aggressive GIF flag, superseded by `imageCompression`.'),
   gifFrameDropBehaviour: oneOf(['playFaster', 'keepDuration'], 'playFaster', 'What happens to GIF timing when high compression drops frames. macOS: `GIFFrameDropBehaviour`.'),
   convertHDRToSDR: bool(false, 'Tone map HDR images to SDR when processing them.'),
-  imageCompression: compression({ tier: 'custom', factor: NORMAL }, 'Image compression: tier plus factor (30 normal, 64 aggressive). Legacy Windows key: `defaultMode` (balanced 30, aggressive 64, lossless tier `lossless`).', { encoding: 'Windows also accepts tier `lossless` for images, the lossless mode of the original Windows app.' }),
+  imageCompression: compression({ tier: 'custom', factor: NORMAL }, 'Image compression: tier plus factor (30 normal, 64 aggressive). Legacy Windows key: `defaultMode` (balanced 30, aggressive 64, lossless tier `lossless`).', { encoding: 'Windows also accepts tier `lossless` for images: the true-lossless mode of the original Windows app, which changes no pixels. macOS has no lossless image tier; its image optimisers use only the factor.' }),
   audioCompression: compression({ tier: 'custom', factor: 35 }, 'Audio compression factor; 35 matches 192 kbps AAC.'),
   videoCompression: compression({ tier: 'fast', factor: 50 }, 'Video compression: `fast` uses the hardware encoder, `smaller` a software encoder at the factor\'s CRF, `lossless` CRF 17.'),
   compressionModelMigratedVersion: int(0, 'macOS migration guard for the unified compression keys.', UNSUPPORTED),

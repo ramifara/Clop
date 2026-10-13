@@ -4,7 +4,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { ImageOptions, ImageResult } from '../src/types';
-import { parseOptions } from './settings';
+import { defaultSettings, type ClopSettings } from '../core/settings/schema';
+import { optimiseImage } from '../core/media/image';
+import { imageCompression, parseOptions } from './settings';
 
 sharp.concurrency(2);
 sharp.cache({ memory: 32, files: 0, items: 32 });
@@ -13,10 +15,12 @@ const LIMIT = 128 * 1024 * 1024;
 const PIXELS = 60_000_000;
 const inputOptions = { animated: true, limitInputPixels: PIXELS, failOn: 'error' as const };
 interface Entry { result: ImageResult; originalPath: string; outputPath: string; directory: string; inputFormat: string; revision: number }
+export type ImageSettings = Pick<ClopSettings, 'imageCompression' | 'stripMetadata' | 'preserveColorMetadata' | 'gifFrameDropBehaviour'>;
 export class ImageEngine extends EventEmitter {
   private entries = new Map<string, Entry>();
   private queue: Promise<unknown> = Promise.resolve();
-  constructor(private root: string) { super(); }
+  /** `settings` is read for every job, so a changed compression setting applies to the next one. */
+  constructor(private root: string, private settings: () => ImageSettings = defaultSettings) { super(); }
   list() { return [...this.entries.values()].map(e => structuredClone(e.result)).reverse(); }
   get(id: string) { const entry = this.entries.get(id); if (!entry) throw new Error('This image is no longer in the shelf.'); return entry; }
   output(id: string) { const entry = this.get(id); if (entry.result.status !== 'ready') throw new Error('Wait for this image to finish first.'); return entry.outputPath; }
@@ -67,38 +71,19 @@ export class ImageEngine extends EventEmitter {
     const e = this.get(id), r = e.result;
     r.status = 'processing'; r.error = undefined; this.changed();
     try {
-      let format = options.format === 'auto' ? e.inputFormat : options.format;
-      if (format === 'tiff') format = 'png';
       const factor = Math.min(options.scale, options.maxEdge ? options.maxEdge / Math.max(r.originalWidth, r.originalHeight) : 1);
       const width = Math.max(1, Math.round(r.originalWidth * factor)), height = Math.max(1, Math.round(r.originalHeight * factor));
-      const resized = width !== r.originalWidth || height !== r.originalHeight;
-      if (r.animated && !['webp', 'gif'].includes(format)) throw new Error('Choose GIF or WebP to keep all animation frames.');
-      // JPEG cannot be re-encoded losslessly. Keep its original bytes, or use PNG after resizing.
-      if (options.mode === 'lossless' && format === 'jpeg') {
-        if (!resized && options.format === 'auto' && e.inputFormat === 'jpeg') {
-          Object.assign(r, { status: 'ready', options, format, width, height, preview: r.originalPreview, outputBytes: r.originalBytes, unchanged: true, restored: false });
-          e.outputPath = e.originalPath; this.changed(); this.emit('ready', id); return;
-        }
-        format = 'png';
-      }
-      const quality = options.mode === 'aggressive' ? 66 : 85;
-      let pipeline = sharp(e.originalPath, inputOptions).autoOrient().resize(width, height, { fit: 'inside', withoutEnlargement: true }).keepIccProfile();
-      switch (format) {
-        case 'png': pipeline = pipeline.png({ compressionLevel: 9, palette: options.mode !== 'lossless', quality: options.mode === 'aggressive' ? 70 : 95, effort: 7 }); break;
-        case 'jpeg': pipeline = pipeline.flatten({ background: '#ffffff' }).jpeg({ quality, mozjpeg: true }); break;
-        case 'webp': pipeline = pipeline.webp({ quality, lossless: options.mode === 'lossless', effort: 5 }); break;
-        case 'avif': pipeline = pipeline.avif({ quality: options.mode === 'aggressive' ? 45 : 60, lossless: options.mode === 'lossless', effort: 4 }); break;
-        case 'gif': pipeline = pipeline.gif({ effort: 7, interFrameMaxError: options.mode === 'aggressive' ? 8 : 0 }); break;
-        default: throw new Error('Choose a supported output format.');
-      }
-      const output = await pipeline.toBuffer();
-      const unchanged = !resized && format === e.inputFormat && output.length >= r.originalBytes;
-      const nextPath = unchanged ? e.originalPath : path.join(e.directory, `result-${++e.revision}.${format}`);
-      if (!unchanged) await writeFile(nextPath, output);
+      const settings = this.settings();
+      const output = await optimiseImage(e.originalPath, e.directory, {
+        ...imageCompression(options.mode, settings.imageCompression), format: options.format === 'auto' ? undefined : options.format, width, height,
+        stripMetadata: settings.stripMetadata, preserveColorMetadata: settings.preserveColorMetadata, gifFrameDropBehaviour: settings.gifFrameDropBehaviour, name: `result-${e.revision + 1}`,
+      });
+      if (!output.unchanged) e.revision++;
       // Keep earlier results until the session ends: other apps may still be pasting or dragging them.
-      e.outputPath = nextPath;
-      Object.assign(r, { status: 'ready', options, format, width, height, outputBytes: unchanged ? r.originalBytes : output.length,
-        preview: unchanged ? r.originalPreview : await thumbnail(nextPath), unchanged, restored: false });
+      e.outputPath = output.path;
+      for (const warning of output.warnings ?? []) console.warn(warning);
+      Object.assign(r, { status: 'ready', options, format: output.format, width: output.width ?? width, height: output.height ?? height, outputBytes: output.bytes,
+        preview: output.unchanged ? r.originalPreview : await thumbnail(output.path), unchanged: !!output.unchanged, restored: false });
       this.changed(); this.emit('ready', id);
     } catch (error) { r.status = 'error'; r.error = message(error); this.changed(); }
   }

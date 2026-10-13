@@ -306,7 +306,7 @@ else {
     const session = path.join(workdir.temp, `session-${Date.now()}`);
     workdir.protect(session);
     stopCleaner = workdir.startCleaner(() => store.get('workdirCleanupInterval'));
-    engine = new ImageEngine(session);
+    engine = new ImageEngine(session, () => settings);
     engine.on('change', () => { syncFloating(); broadcast(); });
     engine.on('ready', (id: string) => { hidden.delete(id); scheduleHide(id); syncFloating(); broadcast(); });
     await createWindows();

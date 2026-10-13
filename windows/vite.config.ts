@@ -10,7 +10,7 @@ import type { ImageOptions } from './src/types';
 
 function localImagePreview(): Plugin {
   let settings = defaultSettings();
-  const engine = new ImageEngine(path.resolve('.preview-data', `session-${Date.now()}`));
+  const engine = new ImageEngine(path.resolve('.preview-data', `session-${Date.now()}`), () => settings);
   return {
     name: 'clop-local-image-preview',
     transformIndexHtml(html, context) {
