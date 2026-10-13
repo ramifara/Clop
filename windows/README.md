@@ -43,7 +43,32 @@ Clop waits for the clipboard to settle before optimising, so an app that writes 
 
 Lossless PNG and WebP preserve decoded pixels. Lossless mode keeps original JPEG bytes when no resize is requested; resizing a JPEG in Lossless mode produces PNG. JPEG conversion uses white behind transparent pixels. Balanced and Smaller compression may discard detail.
 
-Originals and results remain in `%APPDATA%\Clop for Windows\images` for seven days. The app remembers up to 40 images during its session and automatically retires the oldest entries. Its local cache starts fresh on restart. Input limits are 128 MB, 60 million pixels across all frames, 250 animation frames and 20 files per drop.
+Originals and results live in the working directory (see below) and are deleted after the `workdirCleanupInterval` setting, three days by default. The app remembers up to 40 images during its session and automatically retires the oldest entries. Its local cache starts fresh on restart. Input limits are 128 MB, 60 million pixels across all frames, 250 animation frames and 20 files per drop.
+
+## Working directory, placement and names
+
+The working directory is `%APPDATA%\Clop for Windows\work` unless the `workdir` setting says otherwise (an absolute path; `~` and `$HOME` mean your profile folder; an empty or relative value is refused and Clop uses the default folder). A new `workdir` applies the next time Clop starts. It holds three folders:
+
+- `backups`: the original of every file Clop replaces in place, named `<name>-<hash>.<ext>`. Restoring copies it back byte for byte and keeps the original modification time.
+- `batch-backups`: batch-mode backups. Nothing here is ever deleted automatically, because it can be the only copy of a file.
+- `temp`: the running session's originals and results (`session-*`) and other scratch files.
+
+Clop only uses a folder that is empty, that it made before (it leaves a `.clop-workdir` file there) or that holds nothing but its own three folders, and it refuses a path with a link (symlink or junction) in it. Otherwise it reports the problem and uses the default folder. Every 10 minutes Clop deletes files in `backups` and `temp` that have not changed for longer than `workdirCleanupInterval` (10 minutes to 1 month, or never) and removes the folders that empty out. The running session's folder is kept until the next start. The older `%APPDATA%\Clop for Windows\images` folder is not migrated. It ages out with the same interval and disappears once empty. `core/workdir.ts` also provides `forceClean()`, which empties `backups` and `temp` but not `batch-backups` or the running session.
+
+`core/placement.ts` ports `FilePlacement.swift`. For each file type and kind (optimised, automatic conversion, manual conversion) the `optimised*Behaviour`, `converted*Behaviour` and `manualConverted*Behaviour` settings choose one of four modes:
+
+- `temporary`: the result stays in the working directory and the original is untouched.
+- `inPlace`: the original moves into `backups` and the result takes its place, with the result's extension. If the backup cannot be made, nothing is replaced.
+- `sameFolder`: the result is written next to the original under `sameFolderNameTemplate*` (default `%f-optimised`).
+- `specificFolder`: the result goes to the path made by `specificFolderNameTemplate*` (default `%P/optimised/%f`), creating folders as needed.
+
+If another file already sits at the destination, it is copied into `backups` first and the result reports it as `replaced`. Folders that come from `%P` or `%F` keep their names exactly; only the literal parts of a template and the file name are made safe.
+
+A file that already sits at its templated location is left there, so templates never stack (`a-optimised-optimised.png`). Copies go through a temporary file in the destination folder and replace the target in one rename, retrying while Defender or a preview handler holds the file. There are no copy-on-write clones on Windows; every backup is a full copy.
+
+Name templates (`core/template.ts`) use `%y` year, `%m` month, `%n` month name, `%d` day, `%w` weekday (1 is Sunday), `%H` hour, `%M` minutes, `%S` seconds, `%p` AM or PM, `%r` five random letters, `%i` auto-incrementing number (`lastAutoIncrementingNumber`), `%f` file name, `%e` extension, `%P` folder and `%F` full path. `~`, `$HOME` and a leading `%USERPROFILE%` mean your profile folder. As on macOS, file names replace the characters `/ : { } < > * | $ # & ^ ; ' "`, the backtick and control characters with `_`. Windows adds `\` and `?`, a trailing dot or space, and reserved device names such as `CON` and `NUL`, which get a `_`. As on macOS, `%p` reads AM from 12:00 to 12:59.
+
+Optimised files are remembered in `%APPDATA%\Clop for Windows\optimised.json`, keyed by path with the file's size and modification time. A file counts as optimised only while both still match, so editing it or saving it through a temporary file clears the mark. Entries older than 30 days or whose file no longer exists are dropped when the app starts, and the list holds at most 50,000 files. On NTFS Clop also writes a `clop.optimisation.status` alternate data stream as a hint. Zip, FAT, OneDrive sync and many editors lose it, so nothing relies on it.
 
 ## Shortcuts
 
