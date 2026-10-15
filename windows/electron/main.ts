@@ -55,6 +55,7 @@ import { explorerVerb, type VerbId } from '../core/shell-verbs';
 import { audioMetadata } from '../core/media/audio';
 import { stripExifFile } from '../core/media/strip-copy';
 import { closeExifTool, endStaleExifTool, recordExifToolPid } from '../core/media/exiftool';
+import { logToolRuns } from '../core/run';
 import { expandFolders, explorerRequest, failureName, skippedNote, stripAll, stripSummary, usableFiles, verbNotes } from './verbs';
 import { mirrorConsoleToFile } from './debug-log';
 import { newPipePath, type OptimisationRequest } from '../core/ipc/protocol';
@@ -1269,6 +1270,8 @@ else {
     // The built-in pipelines join the library once per version. Not over a settings file that could not be read: saving would replace it.
     if (!settingsError) settings = await store.update(current => ({ patch: seedBuiltinPipelines(current.savedPipelines, current.builtinPipelinesSeededVersion), result: undefined })).then(reply => reply.settings, error => { settingsError = error; return settings; });
     mirrorConsoleToFile(path.join(userData, 'logs', 'clop.log'), () => settings.persistDebugLogs);
+    // With the debug log on, every tool command line goes to it, as the process logs Clop keeps on macOS.
+    logToolRuns((name, args) => { if (settings.persistDebugLogs) console.log(`[${name}]`, args.map(arg => /[\s"]/.test(arg) ? JSON.stringify(arg) : arg).join(' ')); });
     const paths = { home: app.getPath('home'), desktop: app.getPath('desktop'), userData };
     updates = setupUpdates({ settings: () => settings, portable: isPortable(), releases: () => shell.openExternal(LINKS.releases), inform, settle: placementsSettled, hold: () => { updating = true; return () => { updating = false; }; } });
     saveDump = setupDebugDump({ settings: () => settings, userData, workdir: () => workdir?.root ?? settings.workdir, portable: isPortable() });

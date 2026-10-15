@@ -57,12 +57,19 @@ function lineSplitter(emit: (line: string) => void) {
   };
 }
 
+let toolLog: ((name: string, args: readonly string[]) => void) | undefined;
+/** Sets what every tool command line is reported to (the debug log, as the process logs Clop keeps on macOS), or nothing. */
+export function logToolRuns(log: typeof toolLog) { toolLog = log; }
+/** Reports a tool command line to `logToolRuns`'s listener. */
+export function reportToolRun(name: string, args: readonly string[]) { toolLog?.(name, args); }
+
 export function run(tool: ToolName | string, args: string[], opts: RunOptions = {}): Promise<RunResult> {
   const { signal, timeoutMs, onStderrLine, onStdoutLine } = opts;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(abortError(signal));
     const command = isToolName(tool) ? toolPath(tool) : tool;
     const name = path.basename(command);
+    reportToolRun(name, args);
     // Never the folder Clop happened to start in (an Explorer verb starts it in the selected file's folder, such as Downloads),
     // where a tool could find a DLL someone left there: the tool's own folder, or Clop's, unless the caller chose one.
     const cwd = opts.cwd ?? (path.isAbsolute(command) ? path.dirname(command) : path.dirname(process.execPath));
@@ -99,8 +106,15 @@ export function run(tool: ToolName | string, args: string[], opts: RunOptions = 
 
 export type QueueKind = 'image' | 'video' | 'pdf' | 'audio';
 export type Limiter = <T>(task: () => Promise<T>) => Promise<T>;
+/**
+ * How many images are optimised at once: half the logical cores, from 2 up to 8. The tools an image goes through (pngquant,
+ * jpegoptim, exiftool) each use one core, so one image rarely fills more than two; macOS runs one fewer than its cores, which
+ * have no SMT. The cap keeps a batch of 60-megapixel images within a few gigabytes, and the tools run below normal priority,
+ * so a full batch leaves the desktop responsive.
+ */
+export const imageConcurrency = (cores = os.availableParallelism()) => Math.max(2, Math.min(8, Math.ceil(cores / 2)));
 /** How many files of each kind run at once. */
-export const CONCURRENCY: Record<QueueKind, number> = { image: 2, video: 1, pdf: 2, audio: 2 };
+export const CONCURRENCY: Record<QueueKind, number> = { image: imageConcurrency(), video: 1, pdf: 2, audio: 2 };
 const limiters = new Map<QueueKind, Limiter>();
 
 /** Runs at most `max` tasks at once; the rest wait in order. */

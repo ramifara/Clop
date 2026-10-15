@@ -68,12 +68,14 @@ const SOURCES = new Set<string>([...IMAGE_FORMATS, 'tiff', 'bmp', 'svg']);
 const ADAPTIVE_GAIN = 100_000;
 const threads = () => `--threads=${availableParallelism()}`;
 /**
- * How sharp writes a JPEG result (an edited or converted image, or the adaptive tier's JPEG candidate): libjpeg-turbo with optimised
- * Huffman tables and full chroma, as jpegoptim kept from the quality-100 intermediate it used to get. mozjpeg's trellis quantisation
- * and scan search (`mozjpeg: true`) write files about a fifth smaller but take eight to ten times the CPU of this, around a second
- * per 2560 × 1440 image; a source JPEG still goes through jpegoptim as it is.
+ * How sharp writes a JPEG result (an edited or converted image, or the adaptive tier's JPEG candidate): mozjpeg's trellis
+ * quantisation, scan optimisation and quantisation tables, with 4:2:0 chroma, which is what jpegoptim wrote when it re-encoded the
+ * quality-100 intermediate sharp used to make (its mozjpeg build drops the intermediate's full chroma). Measured on 1080p and 4K
+ * photos, this writes files 5 to 7 % smaller than that two-pass route at the same PSNR, in 60 to 75 % of its CPU time. Plain
+ * libjpeg-turbo (`mozjpeg: false`) is five times faster still but writes files about 10 % larger than the two-pass route;
+ * full chroma (`'4:4:4'`) makes them 30 to 60 % larger.
  */
-const JPEG_ENCODER = { chromaSubsampling: '4:4:4', optimiseCoding: true } as const;
+const JPEG_ENCODER = { chromaSubsampling: '4:2:0', mozjpeg: true } as const;
 /**
  * Runs a tool in the job's temporary folder on bare file names. The Windows builds of jpegoptim,
  * pngquant and gifsicle open files through the ANSI code page, so a path with other characters

@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { killTree, lastLines, lowerPriority, run, ToolError, type RunResult } from '../run';
+import { killTree, lastLines, lowerPriority, reportToolRun, run, ToolError, type RunResult } from '../run';
 import { executableName, toolPath } from '../tools';
 
 // ExifTool is a Perl program: on Windows the bundled build spends most of a second starting, and Clop runs it for every result it
@@ -96,6 +96,7 @@ class ExifToolProcess {
       timer.unref();
       this.pending = { id, out: [], err: '', resolve, reject, timer };
       this.hold(true);
+      reportToolRun('exiftool', args);
       // One argument per line, as an argfile: nothing is quoted or split. After the command, the status echoes to stdout before
       // `{ready}`, and a mark echoes to stderr after whatever the command wrote there.
       // eslint-disable-next-line no-template-curly-in-string
@@ -163,9 +164,26 @@ class ExifToolProcess {
     clearTimeout(timer);
     this.hold(false);
   }
+
+  /** Ends the process at once, for a process exit that cannot wait. */
+  kill() {
+    this.dead = true;
+    clearTimeout(this.idle);
+    try { this.child.kill(); } catch { /* Already gone. */ }
+  }
 }
 
 let current: ExifToolProcess | undefined, enabled = process.env.CLOP_EXIFTOOL_ONESHOT !== '1', failedAt = 0, hooked = false;
+
+/**
+ * Runs exiftool as a process of its own, handing it the arguments as an argument file on its standard input rather than on the
+ * command line: the Windows build is a Perl program that reads the command line through the ANSI code page, so a path with
+ * characters outside it (`C:\Users\Zoë\写真`) only reaches it intact this way, as it does through the waiting process.
+ */
+function oneShot(args: string[], { signal, cwd }: { signal?: AbortSignal; cwd?: string } = {}) {
+  reportToolRun('exiftool', args);
+  return run('exiftool', ['-@', '-'], { signal, cwd, input: Buffer.from(args.join('\n') + '\n', 'utf8') });
+}
 /** Processes ending on their own (idle), so quitting can wait for them too. */
 const closing = new Set<Promise<void>>();
 let pidFile: string | undefined;
@@ -224,8 +242,19 @@ function process_() {
       closing.add(ended);
     });
   } catch { failedAt = Date.now(); return undefined; }
-  if (pidFile && current.pid !== undefined) void writeFile(pidFile, String(current.pid)).catch(() => {});
-  if (!hooked) { hooked = true; process.once('exit', () => { void current?.close(); }); }
+  const started = current;
+  if (pidFile && started.pid !== undefined) {
+    void writeFile(pidFile, String(started.pid)).catch(() => {});
+    // Once it has ended on its own (idle, or crashed), the note is stale: removed, unless a newer process has written its own.
+    void started.exited.then(async () => { if (pidFile && (await readFile(pidFile, 'utf8').catch(() => '')).trim() === String(started.pid)) await rm(pidFile, { force: true }).catch(() => {}); });
+  }
+  if (!hooked) {
+    hooked = true;
+    // A process that ends by draining its event loop (the command line) closes the waiting exiftool first: `close` holds the
+    // loop open until it has ended. On `exit` only synchronous work runs, so there it is ended outright.
+    process.on('beforeExit', () => { if (current) void closeExifTool(); });
+    process.once('exit', () => { current?.kill(); });
+  }
   return current;
 }
 
@@ -237,14 +266,14 @@ function process_() {
 export async function exiftool(args: string[], { signal, cwd }: { signal?: AbortSignal; cwd?: string } = {}): Promise<RunResult> {
   if (signal?.aborted) throw abortError(signal);
   const shared = enabled && !cwd ? process_() : undefined;
-  if (!shared) return run('exiftool', args, { signal, cwd });
+  if (!shared) return oneShot(args, { signal, cwd });
   let result: RunResult;
   try { result = await shared.run(args, signal); } catch (error) {
     if (error instanceof ToolError || signal?.aborted) throw error;
     // The process went away under the command: this one runs on its own, and a new process waits after a pause.
     failedAt = Date.now();
     if (current === shared) current = undefined;
-    return run('exiftool', args, { signal, cwd });
+    return oneShot(args, { signal, cwd });
   }
   if (signal?.aborted) throw abortError(signal);
   return result;

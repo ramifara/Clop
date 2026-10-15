@@ -55,6 +55,15 @@ const ENCODED_CONTAINERS = new Set(['mp4', 'mov', 'hevc']);
 // Linear light, BT.709 primaries, Hable's curve, then back to 8-bit BT.709 video. Needs ffmpeg built with zimg.
 const TONE_MAP = ['zscale=t=linear:npl=100', 'format=gbrpf32le', 'zscale=p=bt709', 'tonemap=tonemap=hable:desat=0', 'zscale=t=bt709:m=bt709:r=tv', 'format=yuv420p'];
 const SDR_TAGS = ['-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709'];
+/**
+ * Decodes the input on the GPU through Direct3D 11 (any vendor's driver), which on a 4K HEVC source cuts ffmpeg's CPU time to a
+ * tenth and halves the wall time of a hardware encode; the frames come back to system memory, so every filter and encoder takes
+ * them as before, and the output is bit for bit what a software decode gives. A codec or profile the GPU cannot decode is decoded
+ * in software by ffmpeg itself; an ffmpeg that fails outright is run again without it (see `decodeArgSets`). Windows only.
+ */
+export const HARDWARE_DECODE: readonly string[] = process.platform === 'win32' ? ['-hwaccel', 'd3d11va'] : [];
+/** `sets`, each first with hardware decoding and then without, so a failure of the decoder falls back before anything else is tried. */
+export const decodeArgSets = (sets: string[][]) => HARDWARE_DECODE.length ? sets.flatMap(args => [args, without(args, [...HARDWARE_DECODE])]) : sets;
 
 const extension = (file: string) => path.extname(file).slice(1).toLowerCase();
 const int = Math.trunc;
@@ -246,9 +255,9 @@ async function optimise(input: string, outputDir: string, opts: Options): Promis
 
   return withTemp(outputDir, async tmp => {
     const out = path.join(tmp, `video.${ext}`);
-    const args = ['-y', '-nostdin', '-hide_banner', '-i', input, ...(useEncoder ? encoder : []), ...audio, ...extra, ...metadata, ...movflags, ...(toneMap ? SDR_TAGS : []), ...PROGRESS, out];
+    const args = ['-y', '-nostdin', '-hide_banner', ...HARDWARE_DECODE, '-i', input, ...(useEncoder ? encoder : []), ...audio, ...extra, ...metadata, ...movflags, ...(toneMap ? SDR_TAGS : []), ...PROGRESS, out];
     // Without the stream maps, then also without copying the audio, for inputs those trip up.
-    const argSets = [args, without(args, maps), without(args, ['-c:a', 'copy', ...maps])].filter((set, i, all) => all.findIndex(other => other.join('\0') === set.join('\0')) === i);
+    const argSets = decodeArgSets([args, without(args, maps), without(args, ['-c:a', 'copy', ...maps])]).filter((set, i, all) => all.findIndex(other => other.join('\0') === set.join('\0')) === i);
     const totalUs = info.durationMs ? info.durationMs * 1000 / (speed ?? 1) : undefined;
     const onProgress = rising(opts.onProgress);
     await firstWorking('ffmpeg', argSets, { signal, onStderrLine: ffmpegProgress(totalUs, onProgress) });
@@ -299,9 +308,9 @@ export function watermarkVideo(input: string, outputDir: string, opts: Omit<Medi
     const ext = extension(input) || 'mp4', filters = watermarkFilters(info.width, watermark, info.height);
     return withTemp(outputDir, async tmp => {
       const out = path.join(tmp, `video.${ext}`), onProgress = rising(opts.onProgress);
-      const args = ['-y', '-nostdin', '-hide_banner', '-i', input, '-i', watermark.file, '-filter_complex', `[1:v]${filters.scale}[wm];[0:v][wm]${filters.overlay}`, '-c:a', 'copy', ...PROGRESS, out];
+      const args = ['-y', '-nostdin', '-hide_banner', ...HARDWARE_DECODE, '-i', input, '-i', watermark.file, '-filter_complex', `[1:v]${filters.scale}[wm];[0:v][wm]${filters.overlay}`, '-c:a', 'copy', ...PROGRESS, out];
       // An audio codec the container cannot copy is re-encoded on the second try.
-      await firstWorking('ffmpeg', [args, without(args, ['-c:a', 'copy'])], { signal, onStderrLine: ffmpegProgress(info.durationMs && info.durationMs * 1000, onProgress) });
+      await firstWorking('ffmpeg', decodeArgSets([args, without(args, ['-c:a', 'copy'])]), { signal, onStderrLine: ffmpegProgress(info.durationMs && info.durationMs * 1000, onProgress) });
       const result = await finish(input, out, outputDir, opts.name, ext, signal);
       onProgress?.(1);
       return result;
@@ -333,7 +342,7 @@ export function convertVideoToGIF(input: string, outputDir: string, opts: VideoT
       const frames = path.join(tmp, 'frames');
       // Each attempt starts from an empty folder, so a failed one leaves no stray frames.
       const emptyFrames = async () => { await rm(frames, { recursive: true, force: true }); await mkdir(frames); };
-      await firstWorking('ffmpeg', tries(['-y', '-nostdin', '-hide_banner', '-i', input, ...PROGRESS, '-fpsmax', String(fps), path.join(frames, 'frame%04d.png')]),
+      await firstWorking('ffmpeg', decodeArgSets(tries(['-y', '-nostdin', '-hide_banner', ...HARDWARE_DECODE, '-i', input, ...PROGRESS, '-fpsmax', String(fps), path.join(frames, 'frame%04d.png')])),
         { signal, onStderrLine: ffmpegProgress(info.durationMs && info.durationMs * 1000, onProgress, f => f / 2) }, emptyFrames);
       const pngs = (await readdir(frames)).filter(name => name.endsWith('.png'));
       if (!pngs.length) throw new Error(`${path.basename(input)} has no frames to make a GIF from.`);

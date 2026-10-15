@@ -65,6 +65,12 @@ test('a path with a hash, spaces and other scripts survives the argument file', 
   await sharp({ create: { width: 12, height: 6, channels: 3, background: '#fff' } }).png().toFile(file);
   await writeFile(path.join(dir, 'ignored.txt'), 'x');
   assert.equal(read((await exiftool(['-charset', 'filename=utf8', '-j', '-n', '-ImageWidth', file])).stdout).ImageWidth, 12);
+  // A process of its own gets its arguments the same way: on the command line, the Windows build would read the path through the ANSI code page and lose it.
+  keepExifToolRunning(false);
+  t.after(() => keepExifToolRunning(true));
+  assert.equal(read((await exiftool(['-charset', 'filename=utf8', '-j', '-n', '-ImageHeight', file])).stdout).ImageHeight, 6);
+  await exiftool(['-charset', 'filename=utf8', '-overwrite_original', '-Artist=Zoë 写真', file]);
+  assert.equal(read((await exiftool(['-charset', 'filename=utf8', '-j', '-Artist', file])).stdout).Artist, 'Zoë 写真');
 });
 
 test('a script that only waits for a command is not ended before the answer, and ends once idle', async t => {
@@ -84,23 +90,30 @@ test('a script that only waits for a command is not ended before the answer, and
 test('a process left idle ends itself, and the next command starts another', async t => {
   if (!needTools(t, 'exiftool')) return;
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-exiftool-'));
+  const pidFile = path.join(dir, 'exiftool.pid');
   setExifToolIdleMs(300);
-  t.after(async () => { setExifToolIdleMs(30_000); await closeExifTool(); await rm(dir, { recursive: true, force: true }); });
+  recordExifToolPid(pidFile);
+  t.after(async () => { setExifToolIdleMs(30_000); recordExifToolPid(undefined); await closeExifTool(); await rm(dir, { recursive: true, force: true }); });
   const file = path.join(dir, 'a.png');
   await sharp({ create: { width: 5, height: 5, channels: 3, background: '#000' } }).png().toFile(file);
   assert.equal(read((await exiftool(['-j', '-n', '-ImageWidth', file])).stdout).ImageWidth, 5);
   const ended = exifToolEnded();
   assert.ok(ended, 'a process is waiting after a command');
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.ok(Number(await readFile(pidFile, 'utf8')) > 0, 'the process is noted while it waits');
   // Ends on its own within the idle time, plus what ending takes on a busy machine; nothing asks it to.
   await Promise.race([ended, new Promise((_, reject) => setTimeout(() => reject(new Error('the idle process did not end')), 5000))]);
   assert.equal(exifToolEnded(), undefined);
+  // The note of a process that has ended is stale, so it goes with the process.
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(await readFile(pidFile, 'utf8').catch(() => undefined), undefined, 'the note is removed once the process has ended');
   // The next command starts a process again and gets its answer.
   assert.equal(read((await exiftool(['-j', '-n', '-ImageHeight', file])).stdout).ImageHeight, 5);
   assert.ok(exifToolEnded());
 });
 
 test('the app notes its process in a file, and a stale one from a run that could not close it is ended at the next start', async t => {
-  if (!needTools(t, 'exiftool') || process.platform === 'win32') return;
+  if (!needTools(t, 'exiftool')) return;
   const dir = await mkdtemp(path.join(os.tmpdir(), 'clop-exiftool-'));
   const pidFile = path.join(dir, 'exiftool.pid');
   recordExifToolPid(pidFile);
