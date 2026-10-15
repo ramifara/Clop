@@ -94,6 +94,12 @@ export interface ImportExtra {
 type Edit = (input: string, outputDir: string, name: string, signal: AbortSignal) => Promise<MediaOutput>;
 /** Dismissed results kept for `bringBack`. */
 const REMOVED = 40;
+/**
+ * What a dismissed item's signal aborts with. One object for all of them: an error made in `dismiss` would carry a stack trace,
+ * and V8 keeps the closures of a trace's frames alive with it. `dismiss` runs inside the closure of a clipboard import that holds the
+ * copied image's bytes (making room for it), so each entry in `removed` would keep a whole image in memory for the session.
+ */
+const DISMISSED = new DOMException('The item was dismissed.', 'AbortError');
 export type ItemSettings = Pick<ClopSettings, 'imageCompression' | 'stripMetadata' | 'preserveColorMetadata' | 'gifFrameDropBehaviour' | 'videoCompression' | 'videoEncoder' | 'capVideoFPS' | 'targetVideoFPS'
   | 'minVideoFPS' | 'removeAudioFromVideos' | 'convertAudioToAAC' | 'adaptiveVideoSize' | 'pdfDPI' | 'audioCompression' | 'formatsToConvertToAAC' | 'formatsToConvertToMP3' | 'formatsToConvertToJPEG' | 'formatsToConvertToPNG' | 'formatsToConvertToMP4' | 'formatsToConvertToOutputAudio' | 'audioFormat' | 'convertHDRToSDR' | 'audioCoverArt' | 'preserveDates'>;
 /**
@@ -438,7 +444,7 @@ export class ItemEngine extends EventEmitter {
     const entry = this.entries.get(id);
     if (!entry) return;
     this.entries.delete(id);
-    entry.cancel.abort();
+    entry.cancel.abort(DISMISSED);
     this.changed();
     // A result that was ready can be brought back; nothing can be pasting one that never was, so its folder goes, or a running job removes it once it stops.
     if (entry.shown || entry.placing) { this.removed.push(entry); this.removed.splice(0, this.removed.length - REMOVED); }
