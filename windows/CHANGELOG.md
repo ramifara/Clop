@@ -2,9 +2,9 @@
 
 Clop for Windows versions. Numbering is described in the README under [Versions](README.md#versions).
 
-## Unreleased
+## 1.0.0-beta.2 (2026-10-17)
 
-Performance. Nothing about the windows, cards or flows changes; each optimisation does less work.
+The first beta published on GitHub Releases, so `Check for updates` has something to find from here on. Performance and memory: nothing about the windows, cards or flows changes; each optimisation does less work.
 - exiftool, which every optimised image goes through, stays running between commands (`-stay_open`) instead of starting a Perl interpreter for each one. A command now costs the work alone; the process ends itself after 30 seconds without a command, and one left behind by a run that could not close it (a crash, a forced end) is ended at the next start. The command line ends it before exiting too. Set `CLOP_EXIFTOOL_ONESHOT=1` to start a process per command as before; such a process gets its arguments through an argument file as well, so a path with characters outside the ANSI code page reaches it either way.
 - An edited or converted JPEG, and the adaptive tier's JPEG candidate for a PNG, is written once at the target quality, instead of as a quality-100 intermediate that jpegoptim decoded and encoded again. It is written with mozjpeg's trellis quantisation and 4:2:0 chroma, as jpegoptim wrote the second pass: measured on 1080p and 4K photos, 5 to 7 % smaller than before at the same PSNR, in 60 to 75 % of the CPU time. A source JPEG still goes through jpegoptim as it is.
 - Images are optimised on half the logical cores at once, from 2 up to 8, instead of 2: a batch of 100 mixed photos and screenshots on a 12-core machine takes 11 seconds instead of 33 (57 before this release). macOS runs one fewer than its cores.
