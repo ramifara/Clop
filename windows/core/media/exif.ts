@@ -1,4 +1,5 @@
-import { run, ToolError } from '../run';
+import { ToolError } from '../run';
+import { exiftool as exiftoolRun } from './exiftool';
 
 // Tag lists from ClopUtils.swift and Shared.swift.
 export const PNG_PHYS_TAGS = ['PixelsPerUnitX', 'PixelsPerUnitY', 'PixelUnits'];
@@ -7,11 +8,11 @@ export const COLOUR_TAGS = ['-ColorSpaceTags', '-icc_profile', '-WhitePoint', '-
 /** The colour description a result keeps from its own encoder when metadata is copied (the tags `copyExifCGImage` removes, plus the profile). */
 const OWN_COLOUR_TAGS = ['ICC_Profile', 'ColorSpace', 'Gamma', 'WhitePoint', 'PrimaryChromaticities', 'YCbCrCoefficients', 'TransferFunction', 'ReferenceBlackWhite'];
 
-/** Runs exiftool; a file it cannot write is left as the optimiser wrote it, as on macOS. */
+/** Runs exiftool (through the process kept waiting, see `core/media/exiftool.ts`); a file it cannot write is left as the optimiser wrote it, as on macOS. */
 async function exiftool(file: string, args: string[], signal?: AbortSignal) {
   // A bare JXL codestream has nowhere to keep metadata; exiftool wraps it in a container only past that "minor" warning.
   const wrap = /\.jxl$/i.test(file) ? ['-m'] : [];
-  try { await run('exiftool', ['-charset', 'filename=utf8', '-overwrite_original', ...wrap, ...args, file], { signal }); } catch (error) { if (!(error instanceof ToolError)) throw error; }
+  try { await exiftoolRun(['-charset', 'filename=utf8', '-overwrite_original', ...wrap, ...args, file], { signal }); } catch (error) { if (!(error instanceof ToolError)) throw error; }
 }
 
 /**

@@ -8,7 +8,7 @@ import { needTools } from '../testing';
 import type { ToolName } from '../tools';
 import { probe, type VideoInfo } from './detect';
 import { ffprobe, probeNumber } from './ffprobe';
-import { adaptiveUsesSoftware, atempoChain, convertVideoToGIF, croppedSize, ffmpegProgress, optimiseVideo, removeVideoAudio, scaleFilters } from './video';
+import { adaptiveUsesSoftware, atempoChain, convertVideoToGIF, croppedSize, ffmpegProgress, optimiseVideo, removeVideoAudio, scaleFilters, decodeArgSets, HARDWARE_DECODE } from './video';
 import { clip, hdrClip } from './video.fixtures';
 
 const smaller = (factor = 50) => ({ tier: 'smaller', factor }) as const;
@@ -262,4 +262,11 @@ test('a video of a type formatsToConvertToMP4 lists becomes an MP4 even when lar
   assert.equal(path.basename(bare.path), 'bare.mov');
   const explicit = await optimiseVideo(mov, w.out, { compression: smaller(30), format: 'mov', name: 'explicit', formatsToConvertToMP4: ['mov'], allowLarger: true });
   assert.equal(path.basename(explicit.path), 'explicit.mov', 'an explicit format wins');
+});
+
+test('every ffmpeg argument set is tried with hardware decoding first, then without, on Windows', () => {
+  const sets = [['-y', ...HARDWARE_DECODE, '-i', 'in.mp4', 'out.mp4'], ['-y', ...HARDWARE_DECODE, '-i', 'in.mp4', '-an', 'out.mp4']];
+  if (process.platform !== 'win32') { assert.deepEqual(HARDWARE_DECODE, []); assert.deepEqual(decodeArgSets(sets), sets); return; }
+  assert.deepEqual(HARDWARE_DECODE, ['-hwaccel', 'd3d11va']);
+  assert.deepEqual(decodeArgSets(sets), [sets[0], ['-y', '-i', 'in.mp4', 'out.mp4'], sets[1], ['-y', '-i', 'in.mp4', '-an', 'out.mp4']]);
 });

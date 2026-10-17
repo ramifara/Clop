@@ -144,7 +144,8 @@ test('imports HEIC, JPEG XL, BMP and SVG with previews, and keeps the original t
     assert.equal(result.status, 'ready', `${name}: ${result.error}`);
     assert.deepEqual([result.format, result.originalWidth, result.originalHeight, result.width], [output, 600, 400, 600], name);
     assert.match(result.originalPreview, /^data:image\/png;base64,/);
-    assert.equal((await sharp(Buffer.from(result.preview.split(',')[1], 'base64')).metadata()).width, 600, name);
+    // The preview covers the card's box at twice its size (`cardPreviewSize`): a 600 × 400 image is scaled to 296 px tall.
+    assert.deepEqual([(await sharp(Buffer.from(result.preview.split(',')[1], 'base64')).metadata()).width, (await sharp(Buffer.from(result.preview.split(',')[1], 'base64')).metadata()).height], [444, 296], name);
     await engine.restore(id);
     assert.deepEqual(await readFile(engine.output(id)), bytes, name);
   }
@@ -489,4 +490,20 @@ test('a result dismissed while it is placed is placed in full and can still be b
   let other = '';
   await engine.importPath(file, 'folder', balanced, undefined, { placement: failing, staged: staged => { other = staged; } });
   assert.equal(engine.bringBack(other), undefined);
+});
+
+test('dismissed items share one abort reason, so none carries a stack trace that keeps a copied image alive', async t => {
+  const f = await fixture(t); if (!f) return;
+  const { engine } = f;
+  // `dismiss` runs inside the closure of a clipboard import that holds the copied image's bytes (making room for it). An error made
+  // there carries that frame in its stack trace, and V8 keeps the frame's closure, bytes included, as long as the dismissed entry
+  // (kept for Bring Back) holds the error as its signal's reason: measured in the app as the size of every copied image, for the session.
+  const a = await engine.importBuffer(await sampleImage(), 'a.png', 'clipboard', balanced), b = await engine.importBuffer(await sampleImage(), 'b.png', 'clipboard', balanced);
+  const signals = [engine.get(a).cancel.signal, engine.get(b).cancel.signal];
+  await engine.dismiss(a); await engine.dismiss(b);
+  assert.ok(signals.every(signal => signal.aborted));
+  assert.equal(signals[0].reason, signals[1].reason, 'one reason for every dismissal');
+  assert.equal((signals[0].reason as Error).name, 'AbortError');
+  assert.ok(!/at .*dismiss/.test(String((signals[0].reason as Error).stack ?? '')), 'the reason was not made inside dismiss');
+  engine.abort();
 });

@@ -94,6 +94,12 @@ export interface ImportExtra {
 type Edit = (input: string, outputDir: string, name: string, signal: AbortSignal) => Promise<MediaOutput>;
 /** Dismissed results kept for `bringBack`. */
 const REMOVED = 40;
+/**
+ * What a dismissed item's signal aborts with. One object for all of them: an error made in `dismiss` would carry a stack trace,
+ * and V8 keeps the closures of a trace's frames alive with it. `dismiss` runs inside the closure of a clipboard import that holds the
+ * copied image's bytes (making room for it), so each entry in `removed` would keep a whole image in memory for the session.
+ */
+const DISMISSED = new DOMException('The item was dismissed.', 'AbortError');
 export type ItemSettings = Pick<ClopSettings, 'imageCompression' | 'stripMetadata' | 'preserveColorMetadata' | 'gifFrameDropBehaviour' | 'videoCompression' | 'videoEncoder' | 'capVideoFPS' | 'targetVideoFPS'
   | 'minVideoFPS' | 'removeAudioFromVideos' | 'convertAudioToAAC' | 'adaptiveVideoSize' | 'pdfDPI' | 'audioCompression' | 'formatsToConvertToAAC' | 'formatsToConvertToMP3' | 'formatsToConvertToJPEG' | 'formatsToConvertToPNG' | 'formatsToConvertToMP4' | 'formatsToConvertToOutputAudio' | 'audioFormat' | 'convertHDRToSDR' | 'audioCoverArt' | 'preserveDates'>;
 /**
@@ -113,7 +119,7 @@ export class ItemEngine extends EventEmitter {
    * and drags carry), so a result pasted or dragged into a watched folder is not optimised a second time.
    */
   constructor(private root: string, private settings: () => ItemSettings = defaultSettings, private readonly mark: (file: string) => Promise<void> = async () => {}) { super(); }
-  list() { return [...this.entries.values()].map(e => structuredClone(e.result)).reverse(); }
+  list() { return [...this.entries.values()].map(e => snapshot(e.result)).reverse(); }
   get(id: string) { const entry = this.entries.get(id); if (!entry) throw new Error('This result is no longer in the shelf.'); return entry; }
   has(id: string) { return this.entries.has(id); }
   /** The result's file: where its placement put it, or the shelf's copy. */
@@ -438,7 +444,7 @@ export class ItemEngine extends EventEmitter {
     const entry = this.entries.get(id);
     if (!entry) return;
     this.entries.delete(id);
-    entry.cancel.abort();
+    entry.cancel.abort(DISMISSED);
     this.changed();
     // A result that was ready can be brought back; nothing can be pasting one that never was, so its folder goes, or a running job removes it once it stops.
     if (entry.shown || entry.placing) { this.removed.push(entry); this.removed.splice(0, this.removed.length - REMOVED); }
@@ -474,6 +480,8 @@ export function mediaExtension(info: VideoInfo | AudioInfo | undefined) {
   if (info.kind === 'video') return has('mp4') ? 'mp4' : has('webm') && /^(vp8|vp9|av1)$/.test(info.codec ?? '') ? 'webm' : has('matroska') ? 'mkv' : has('avi') ? 'avi' : has('mpeg') ? 'mpg' : 'mp4';
   return has('mp4') ? 'm4a' : has('mp3') ? 'mp3' : has('ogg') ? (info.codec === 'opus' ? 'opus' : 'ogg') : has('flac') ? 'flac' : has('wav') ? 'wav' : has('aiff') ? 'aiff' : has('aac') ? 'aac' : 'm4a';
 }
+/** A copy of a result for the windows, which must not see the engine's own object. The previews are the large part, and strings cannot change, so they are shared rather than copied. */
+function snapshot({ preview, originalPreview, ...rest }: ItemResult): ItemResult { return { ...structuredClone(rest), preview, originalPreview }; }
 /** Whether `file` is inside `dir`. */
 function within(dir: string, file: string) {
   const relative = path.relative(dir, file);

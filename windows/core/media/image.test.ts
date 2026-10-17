@@ -6,7 +6,7 @@ import path from 'node:path';
 import sharp, { type Sharp } from 'sharp';
 import { run } from '../run';
 import { needTools } from '../testing';
-import { gifFrameDropArgs, optimiseImage } from './image';
+import { gifFrameDropArgs, isOpaque, optimiseImage } from './image';
 import { animation, graphic, lines, photo } from './image.fixtures';
 
 const at = (factor: number) => ({ tier: 'custom', factor }) as const;
@@ -270,23 +270,23 @@ test('aborting while a tool runs stops it and removes the temporary files', asyn
   assert.ok((await readFile(input)).length > 0);
 });
 
-/** Puts a shell script in front of the real jpegoptim for one test. */
-async function fakeJpegoptim(t: TestContext, dir: string, script: string) {
+/** Puts a shell script in front of the real pngquant for one test. */
+async function fakePngquant(t: TestContext, dir: string, script: string) {
   const tools = path.join(dir, 'tools');
   await mkdir(tools);
-  await writeFile(path.join(tools, 'jpegoptim'), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+  await writeFile(path.join(tools, 'pngquant'), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
   const previous = process.env.CLOP_TOOLS_DIR;
   process.env.CLOP_TOOLS_DIR = tools;
   t.after(() => { if (previous === undefined) delete process.env.CLOP_TOOLS_DIR; else process.env.CLOP_TOOLS_DIR = previous; });
 }
 
-test('cancelling during the adaptive comparison cancels the job', { skip: process.platform === 'win32' && 'replaces jpegoptim with a shell script' }, async t => {
+test('cancelling during the adaptive comparison cancels the job', { skip: process.platform === 'win32' && 'replaces pngquant with a shell script' }, async t => {
   const w = await workspace(t); if (!w) return;
-  // The JPEG candidate starts well after pngquant has finished on this small image, then hangs until killed.
-  await fakeJpegoptim(t, w.dir, 'sleep 1\ntouch started\nexec sleep 30');
+  // The PNG candidate of a low-entropy JPEG starts well after jpegoptim has finished on it, then hangs until killed.
+  await fakePngquant(t, w.dir, 'sleep 1\ntouch started\nexec sleep 30');
   const controller = new AbortController();
   // With stripping off no other tool runs after the comparison, so only the comparison can notice the cancellation.
-  const job = optimiseImage(await w.file('photo.png', photo(320, 240).png()), w.out, { compression: adaptive, stripMetadata: false, signal: controller.signal });
+  const job = optimiseImage(await w.file('lines.jpg', lines(1200, 900).jpeg({ quality: 100 })), w.out, { compression: adaptive, stripMetadata: false, signal: controller.signal });
   const started = path.join(w.out, (await waitFor(async () => (await readdir(w.out).catch(() => [])).find(name => name.startsWith('.clop-'))))!, 'started');
   await waitFor(() => stat(started).then(() => true, () => false));
   controller.abort();
@@ -298,13 +298,31 @@ async function waitFor<T>(check: () => Promise<T>) {
   assert.fail('timed out waiting');
 }
 
-test('a failed adaptive comparison is a warning, not a failure', { skip: process.platform === 'win32' && 'replaces jpegoptim with a shell script' }, async t => {
+test('a failed adaptive comparison is a warning, not a failure', { skip: process.platform === 'win32' && 'replaces pngquant with a shell script' }, async t => {
   const w = await workspace(t); if (!w) return;
-  await fakeJpegoptim(t, w.dir, 'echo "jpegoptim is broken" >&2\nexit 1');
-  const output = await optimiseImage(await w.file('photo.png', photo(320, 240).png()), w.out, { compression: adaptive });
-  assert.equal(output.format, 'png');
+  await fakePngquant(t, w.dir, 'echo "pngquant is broken" >&2\nexit 1');
+  const output = await optimiseImage(await w.file('lines.jpg', lines(1200, 900).jpeg({ quality: 100 })), w.out, { compression: adaptive });
+  assert.equal(output.format, 'jpeg');
   assert.equal(output.warnings?.length, 1);
-  assert.match(output.warnings![0], /could not try JPEG.*jpegoptim is broken/s);
+  assert.match(output.warnings![0], /could not try PNG.*pngquant is broken/s);
+});
+
+test('the adaptive JPEG candidate of a PNG is written once by sharp, with jpegoptim left to source JPEGs', { skip: process.platform === 'win32' && 'replaces jpegoptim with a shell script' }, async t => {
+  const w = await workspace(t); if (!w) return;
+  // No jpegoptim at all: the PNG's JPEG candidate must not need it, while a source JPEG still does.
+  const tools = path.join(w.dir, 'tools');
+  await mkdir(tools);
+  await writeFile(path.join(tools, 'jpegoptim'), '#!/bin/sh\necho "no jpegoptim here" >&2\nexit 1\n', { mode: 0o755 });
+  const previous = process.env.CLOP_TOOLS_DIR;
+  process.env.CLOP_TOOLS_DIR = tools;
+  t.after(() => { if (previous === undefined) delete process.env.CLOP_TOOLS_DIR; else process.env.CLOP_TOOLS_DIR = previous; });
+  const picture = await optimiseImage(await w.file('photo.png', photo(1200, 900).png()), w.out, { compression: adaptive, name: 'picture' });
+  assert.equal(picture.format, 'jpeg');
+  assert.equal(picture.warnings, undefined);
+  // A resized JPEG is also written once, at the factor's quality, with no second pass.
+  const resized = await optimiseImage(await w.file('photo.jpg', photo(1200, 900).jpeg({ quality: 95 })), w.out, { compression: at(30), width: 600, height: 450, name: 'resized' });
+  assert.deepEqual([resized.format, resized.width, resized.height], ['jpeg', 600, 450]);
+  await assert.rejects(optimiseImage(await w.file('source.jpg', photo(640, 480).jpeg({ quality: 95 })), w.out, { compression: at(30), name: 'source' }), /no jpegoptim here/);
 });
 
 test('works in folders whose names fall outside the ANSI code page', async t => {
@@ -323,4 +341,17 @@ test('rejects files it cannot read as images', async t => {
   const w = await workspace(t); if (!w) return;
   const text = await w.file('notes.png', Buffer.from('not an image'));
   await assert.rejects(optimiseImage(text, w.out, { compression: at(30) }), /cannot optimise this/);
+});
+
+test('isOpaque reads the alpha channel alone, for 8-bit, 16-bit and greyscale images', async t => {
+  const w = await workspace(t); if (!w) return;
+  const rgba = (alpha: number) => { const data = Buffer.alloc(16 * 8 * 4, 90); for (let i = 3; i < data.length; i += 4) data[i] = alpha; return sharp(data, { raw: { width: 16, height: 8, channels: 4 } }); };
+  assert.equal(await isOpaque(await w.file('rgb.png', photo(16, 8).png())), true);
+  assert.equal(await isOpaque(await w.file('opaque.png', rgba(255).png())), true);
+  assert.equal(await isOpaque(await w.file('clear.png', rgba(254).png())), false);
+  assert.equal(await isOpaque(await w.file('opaque16.png', rgba(255).toColourspace('rgb16').png())), true);
+  assert.equal(await isOpaque(await w.file('clear16.png', rgba(128).toColourspace('rgb16').png())), false);
+  const grey = (alpha: number) => { const data = Buffer.alloc(16 * 8 * 2, 90); for (let i = 1; i < data.length; i += 2) data[i] = alpha; return sharp(data, { raw: { width: 16, height: 8, channels: 2 } }); };
+  assert.equal(await isOpaque(await w.file('grey-alpha.png', grey(255).png())), true);
+  assert.equal(await isOpaque(await w.file('grey-clear.png', grey(128).png())), false);
 });

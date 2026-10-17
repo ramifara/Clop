@@ -4,6 +4,7 @@ import { sharpInput } from './sharp-input';
 import { access, copyFile, mkdtemp, open, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { run, type RunOptions } from '../run';
+import { exiftool } from './exiftool';
 import type { CompressionQuality } from '../settings/schema';
 import * as cq from './compression';
 import { isHDR, probeColour, toneMapToSDR, type Colour } from './hdr';
@@ -36,7 +37,7 @@ export async function probeImage(file: string, signal?: AbortSignal): Promise<Im
   const { format, meta } = await sniffImage(file);
   if (!format) throw new Error('This is not an image Clop can read.');
   if (!meta) {
-    const { stdout } = await run('exiftool', ['-charset', 'filename=utf8', '-j', '-n', '-ImageWidth', '-ImageHeight', file], { signal });
+    const { stdout } = await exiftool(['-charset', 'filename=utf8', '-j', '-n', '-ImageWidth', '-ImageHeight', file], { signal });
     const { ImageWidth: width, ImageHeight: height } = JSON.parse(stdout.toString())[0];
     return { format, width: Math.abs(width ?? 0), height: Math.abs(height ?? 0), pages: 1, deep: false, pixels: Math.abs((width ?? 0) * (height ?? 0)) };
   }
@@ -125,16 +126,27 @@ export async function encodeJXL(png: string, out: string, compression: Compressi
   return out;
 }
 
-/** The PNG for the clipboard bitmap: an 8-bit PNG as it is, anything else (other formats, 16-bit and HDR PNGs) through `toPNG`. */
+/**
+ * The PNG for the clipboard bitmap: an 8-bit PNG as it is, anything else (other formats, 16-bit and HDR PNGs) through `toPNG`.
+ * That PNG is read back at once and only stays on the clipboard, so it is written at a fast compression level rather than the default.
+ */
 export async function clipboardPNG(input: string, output: string, opts: { signal?: AbortSignal; limitInputPixels?: number } = {}) {
   const info = await probeImage(input, opts.signal);
   if (info.format === 'png' && !info.deep) await copyFile(input, output);
-  else await toPNG(input, output, opts);
+  else await toPNG(input, output, { ...opts, compressionLevel: 3 });
   return output;
 }
 
+export interface ToPNGOptions {
+  signal?: AbortSignal; limitInputPixels?: number;
+  /** Scale the picture to fit this box (never enlarged), for a preview. */
+  box?: { width: number; height: number };
+  /** zlib level, 0 to 9; sharp's default (6) when omitted. */
+  compressionLevel?: number;
+}
+
 /** Writes any image Clop accepts as an oriented SDR PNG, for previews and the clipboard. */
-export async function toPNG(input: string, output: string, { signal, limitInputPixels }: { signal?: AbortSignal; limitInputPixels?: number } = {}) {
+export async function toPNG(input: string, output: string, { signal, limitInputPixels, box, compressionLevel }: ToPNGOptions = {}) {
   const { format } = await sniffImage(input);
   if (!format) throw new Error('This is not an image Clop can read.');
   const tmp = await mkdtemp(path.join(path.dirname(output), '.clop-png-'));
@@ -142,7 +154,9 @@ export async function toPNG(input: string, output: string, { signal, limitInputP
     const copy = path.join(tmp, `source.${format}`);
     await copyFile(input, copy);
     const { file } = await readableImage(copy, format, { signal });
-    await sharp(file, { limitInputPixels }).autoOrient().png().toFile(output);
+    let image = sharp(file, { limitInputPixels }).autoOrient();
+    if (box) image = image.resize({ ...box, fit: 'inside', withoutEnlargement: true });
+    await image.png(compressionLevel === undefined ? {} : { compressionLevel }).toFile(output);
   } finally { await rm(tmp, { recursive: true, force: true }); }
   return output;
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { queue, retryBusy, run, ToolError, type QueueKind } from './run';
+import { queue, retryBusy, run, ToolError, type QueueKind, CONCURRENCY, imageConcurrency } from './run';
 
 const node = process.execPath;
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -90,8 +90,13 @@ test('each media type has its own concurrency limit', async () => {
     await Promise.all(Array.from({ length: 5 }, () => queue(kind)(async () => { max = Math.max(max, ++active); await delay(20); active--; })));
     return max;
   };
-  assert.deepEqual(await Promise.all((['image', 'video', 'pdf', 'audio'] as const).map(peak)), [2, 1, 2, 2]);
+  assert.deepEqual(await Promise.all((['image', 'video', 'pdf', 'audio'] as const).map(peak)), [Math.min(5, CONCURRENCY.image), 1, 2, 2]);
   assert.equal(queue('video'), queue('video'));
+});
+
+test('images run on half the logical cores, from two up to eight', () => {
+  assert.deepEqual([1, 2, 4, 6, 8, 12, 16, 24, 64].map(cores => imageConcurrency(cores)), [2, 2, 2, 3, 4, 6, 8, 8, 8]);
+  assert.equal(CONCURRENCY.image, imageConcurrency());
 });
 
 test('a failed task releases its queue slot', async () => {
